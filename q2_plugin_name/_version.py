@@ -43,8 +43,8 @@ def get_config():
     cfg.VCS = "git"
     cfg.style = "pep440"
     cfg.tag_prefix = ""
-    cfg.parentdir_prefix = "q2-plugin-name-"
-    cfg.versionfile_source = "q2_plugin_name/_version.py"
+    cfg.parentdir_prefix = "q2-time-"
+    cfg.versionfile_source = "q2_time/_version.py"
     cfg.verbose = False
     return cfg
 

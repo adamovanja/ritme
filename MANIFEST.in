@@ -1,2 +1,2 @@
 include versioneer.py
-include q2_plugin_name/_version.py
+include q2_time/_version.py

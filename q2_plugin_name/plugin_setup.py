@@ -8,15 +8,15 @@
 
 from qiime2.plugin import Citations, Plugin
 
-from q2_plugin_name import __version__
+from q2_time import __version__
 
-citations = Citations.load("citations.bib", package="q2_plugin_name")
+citations = Citations.load("citations.bib", package="q2_time")
 
 plugin = Plugin(
-    name="plugin-name",
+    name="time",
     version=__version__,
-    website="https://github.com/bokulich-lab/q2-plugin-name",
-    package="q2_plugin_name",
+    website="https://github.com/bokulich-lab/q2-time",
+    package="q2_time",
     description="This is a template for building a new QIIME 2 plugin.",
     short_description="",
 )

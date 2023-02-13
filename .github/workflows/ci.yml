@@ -45,7 +45,7 @@ jobs:
     # TODO: update this to @v1 when it lands
     - uses: qiime2/action-library-packaging@alpha1
       with:
-        package-name: q2-plugin-name
+        package-name: q2-time
         additional-tests: ${{ env.COV }}
         build-target: dev
         library-token: ${{ secrets.LIBRARY_TOKEN }}
