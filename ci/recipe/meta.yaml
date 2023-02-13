@@ -19,6 +19,10 @@ requirements:
   run:
     - python {{ python }}
     - qiime2 {{ qiime2_epoch }}.*
+    - numpy
+    - pandas
+    - scipy
+    - scikit-learn
 
 test:
   requires:
@@ -31,6 +35,6 @@ test:
     - pytest --cov q2_time --pyargs q2_time
 
 about:
-  home: https://github.com/bokulich-lab/q2-time
+  home: https://github.com/adamovanja/q2-time
   license: BSD-3-Clause
   license_family: BSD

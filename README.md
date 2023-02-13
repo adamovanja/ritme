@@ -3,16 +3,25 @@ Longitudinal modeling approaches accounting for high-dimensional, sparse and com
 
 ## Setup
 <!-- TODO: replace plugin name "time" with something better-->
-<!-- TODO update & clean yml file at the end: -->
-<!--`conda env export > environment.yml` -->
-<!-- conda env update --prefix ./env --file environment.yml --prune -->
 
-To install required dependencies run:
+To install required dependencies for this package run:
+```shell
+conda create -y -n time \
+   -c qiime2 -c conda-forge -c bioconda -c defaults \
+  qiime2 q2cli numpy pandas scipy scikit-learn
+
+conda activate time
+
 ```
-conda env create -f environment.yml
-conda activate LM
-```
-To install src packages locally run:
-```
-pip install -e .
+
+For developers run:
+
+```shell
+conda create -y -n time \
+   -c qiime2 -c conda-forge -c bioconda -c anaconda -c defaults \
+  qiime2 q2cli numpy pandas scipy scikit-learn \
+  versioneer pre-commit ruff black pytest flake8
+
+conda activate time
+
 ```

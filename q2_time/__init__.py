@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------------
-# Copyright (c) 2022, <developer name>.
+# Copyright (c) 2023, Anja Adamov.
 #
 # Distributed under the terms of the Modified BSD License.
 #

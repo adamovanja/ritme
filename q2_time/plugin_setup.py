@@ -1,5 +1,5 @@
 # ----------------------------------------------------------------------------
-# Copyright (c) 2022, <developer name>.
+# Copyright (c) 2023, Anja Adamov.
 #
 # Distributed under the terms of the Modified BSD License.
 #
@@ -15,8 +15,9 @@ citations = Citations.load("citations.bib", package="q2_time")
 plugin = Plugin(
     name="time",
     version=__version__,
-    website="https://github.com/bokulich-lab/q2-time",
+    website="https://github.com/adamovanja/q2-time",
     package="q2_time",
-    description="This is a template for building a new QIIME 2 plugin.",
+    description="This is a QIIME 2 plugin for longitudinal modeling applied to "
+    "microbial time-series.",
     short_description="",
 )

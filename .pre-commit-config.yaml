@@ -1,38 +1,50 @@
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v2.3.0
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    # Ruff version.
+    rev: 'v0.0.246'
     hooks:
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
+      - id: ruff
+  - repo: https://github.com/nbQA-dev/nbQA
+    # Run ruff on Jupyter notebooks too
+    rev: 1.6.1
+    hooks:
+      - id: nbqa-ruff
+      - id: nbqa-isort
+        args: ["--float-to-top"]
+  # Spelling mistakes:
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.2.2
+    hooks:
+      - id: codespell
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: check-ast
       - id: check-merge-conflict
+      # - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: name-tests-test
+        args:
+          - --unittest
+      - id: pretty-format-json
+        args:
+          - --autofix
+      - id: requirements-txt-fixer
+      - id: trailing-whitespace
   - repo: https://github.com/PyCQA/isort
-    rev: 5.10.1
+    rev: 5.12.0
     hooks:
       - id: isort
-        args:
-          - --profile
-          - black
-        files: ^(.+)(?<!\_version)\.py$
   - repo: https://github.com/psf/black
-    rev: 22.3.0
+    rev: 23.1.0
     hooks:
       - id: black
         args:
           - --safe
           - --quiet
         files: ^(.+)(?<!\_version)\.py$
-  - repo: https://github.com/PyCQA/flake8
-    rev: 4.0.1
-    hooks:
-      - id: flake8
-        additional_dependencies:
-          - pycodestyle==2.8.0
-          - pyflakes==2.4.0
-          - pydocstyle==6.1.1
-          - flake8-comprehensions==3.8.0
-          - flake8-noqa==1.2.1
-          - mccabe==0.6.1
-        files: ^(.+)(?<!\_version)\.py$
+      - id: black-jupyter
 #  - repo: local
 #    hooks:
 #      - id: pytest

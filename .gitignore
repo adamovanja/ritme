@@ -130,3 +130,9 @@ dmypy.json
 
 # PyCharm configuration
 .idea/
+
+# VSCode config
+.vscode/
+
+# Ruff cache
+.ruff_cache/
