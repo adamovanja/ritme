@@ -1,0 +1,56 @@
+name: Test and build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up python 3.8
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.8
+
+    - name: Install dependencies
+      run: |
+        pip install -q https://github.com/qiime2/q2lint/archive/master.zip
+        pip install -q flake8
+
+    - name: Lint
+      run: make lint
+
+  build-and-test:
+    needs: lint
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        # necessary for versioneer
+        fetch-depth: 0
+
+    - name: Hack - template coverage output path
+      run: echo "COV=coverage xml -o $GITHUB_WORKSPACE/coverage.xml" >> $GITHUB_ENV
+
+    # TODO: update this to @v1 when it lands
+    - uses: qiime2/action-library-packaging@alpha1
+      with:
+        package-name: q2-plugin-name
+        additional-tests: ${{ env.COV }}
+        build-target: dev
+        library-token: ${{ secrets.LIBRARY_TOKEN }}
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v2
+      with:
+        fail_ci_if_error: true

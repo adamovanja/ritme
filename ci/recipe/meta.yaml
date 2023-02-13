@@ -1,0 +1,36 @@
+{% set data = load_setup_py_data() %}
+{% set version = data.get('version') or 'placehold' %}
+
+package:
+  name: q2-plugin-name
+  version: {{ version }}
+
+source:
+  path: ../..
+
+build:
+  script: make install
+
+requirements:
+  host:
+    - python {{ python }}
+    - setuptools
+
+  run:
+    - python {{ python }}
+    - qiime2 {{ qiime2_epoch }}.*
+
+test:
+  requires:
+    - coverage
+    - pytest-cov
+  imports:
+    - q2_plugin_name
+    - qiime2.plugins.plugin_name
+  commands:
+    - pytest --cov q2_plugin_name --pyargs q2_plugin_name
+
+about:
+  home: https://github.com/bokulich-lab/q2-plugin-name
+  license: BSD-3-Clause
+  license_family: BSD
