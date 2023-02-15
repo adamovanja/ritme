@@ -23,6 +23,7 @@ requirements:
     - pandas
     - scipy
     - scikit-learn
+    - scikit-bio
 
 test:
   requires:
