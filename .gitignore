@@ -136,3 +136,6 @@ dmypy.json
 
 # Ruff cache
 .ruff_cache/
+
+# personal scratchpad
+x_*
