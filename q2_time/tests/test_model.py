@@ -1,20 +1,33 @@
+import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
+from sklearn.linear_model import LinearRegression
 
-from q2_time.model import fit_model, split_data_by_host
+from q2_time.model import fit_model, save_predictions, split_data_by_host
 
 
-class TestSplit(TestPluginBase):
+class TestModel(TestPluginBase):
     package = "q2_time.test"
 
+    def setUp(self):
+        # called before every test
+        super().setUp()
+        self.data = pd.DataFrame(
+            {
+                "id": ["a", "b", "c", "c"],
+                "F0": [0.12, 0.23, 0.33, 0.44],
+                "F1": [0.1, 0.2, 0.3, 0.4],
+                "supertarget": [1, 2, 5, 7],
+            }
+        )
+        self.data.set_index("id", inplace=True)
+
     def test_split_data_by_host(self):
-        data = pd.DataFrame({"id": ["a", "b", "c", "c"], "supertarget": [1, 2, 1, 2]})
+        train_obs, test_obs = split_data_by_host(self.data, "id", 0.5)
 
-        train_obs, test_obs = split_data_by_host(data, "id", 0.5)
-
-        train_exp = data.iloc[2:, :].copy()
-        test_exp = data.iloc[:2, :].copy()
+        train_exp = self.data.iloc[2:, :].copy()
+        test_exp = self.data.iloc[:2, :].copy()
 
         assert_frame_equal(train_obs, train_exp)
         assert_frame_equal(test_obs, test_exp)
@@ -30,28 +43,23 @@ class TestSplit(TestPluginBase):
         ):
             split_data_by_host(data, "id", 0.5)
 
-
-class TestFitModel(TestPluginBase):
-    package = "q2_time.test"
-
     def test_fit_model(self):
         # todo: add all other models as well with decorator
-        train = pd.DataFrame(
-            {
-                "id": ["a", "b", "c", "c"],
-                "F": [0.12, 0.23, 0.33, 0.44],
-                "supertarget": [1, 2, 5, 7],
-            }
-        )
-
         model_type = "LinReg"
-        trained_model = fit_model(train, "supertarget", ["F"], model_type)
+        trained_model = fit_model(self.data, "supertarget", ["F0", "F1"], model_type)
         self.assertEqual(type(trained_model).__name__, "LinearRegression")
 
-
-class TestSavePredictions(TestPluginBase):
-    package = "q2_time.test"
-
     def test_save_predictions(self):
-        # todo: add proper test
-        self.assertEqual(1, 1)
+        # todo adjust for all existing models with mock decorator
+        target = "supertarget"
+        ls_feat = ["F0", "F1"]
+        model = LinearRegression().fit(self.data[ls_feat], self.data[target])
+        pred_obs = save_predictions(model, target, ls_feat, self.data)
+
+        pred_exp = pd.DataFrame(columns=["true", "pred"], index=self.data.index)
+        pred_exp["true"] = self.data[target].copy()
+        # todo: adjust for all existing models
+        pred_logreg = np.array([0.75, 2.25, 5.25, 6.75])
+        pred_exp["pred"] = pred_logreg
+
+        assert_frame_equal(pred_exp, pred_obs)
