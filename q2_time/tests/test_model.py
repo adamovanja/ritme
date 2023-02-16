@@ -15,16 +15,16 @@ class TestModel(TestPluginBase):
         super().setUp()
         self.data = pd.DataFrame(
             {
-                "id": ["a", "b", "c", "c"],
+                "host_id": ["a", "b", "c", "c"],
                 "F0": [0.12, 0.23, 0.33, 0.44],
                 "F1": [0.1, 0.2, 0.3, 0.4],
                 "supertarget": [1, 2, 5, 7],
             }
         )
-        self.data.set_index("id", inplace=True)
+        self.data.index = ["SR1", "SR2", "SR3", "SR4"]
 
     def test_split_data_by_host(self):
-        train_obs, test_obs = split_data_by_host(self.data, "id", 0.5)
+        train_obs, test_obs = split_data_by_host(self.data, "host_id", 0.5)
 
         train_exp = self.data.iloc[2:, :].copy()
         test_exp = self.data.iloc[:2, :].copy()
@@ -32,16 +32,21 @@ class TestModel(TestPluginBase):
         assert_frame_equal(train_obs, train_exp)
         assert_frame_equal(test_obs, test_exp)
 
-        overlap = [x for x in train_obs["id"].unique() if x in test_obs["id"].unique()]
+        overlap = [
+            x
+            for x in train_obs["host_id"].unique()
+            if x in test_obs["host_id"].unique()
+        ]
         assert len(overlap) == 0
 
     def test_split_data_by_host_error_one_host(self):
-        data = pd.DataFrame({"id": ["c", "c", "c", "c"], "supertarget": [1, 2, 1, 2]})
-
+        data = pd.DataFrame(
+            {"host_id": ["c", "c", "c", "c"], "supertarget": [1, 2, 1, 2]}
+        )
         with self.assertRaisesRegex(
             ValueError, "Only one unique host available in dataset."
         ):
-            split_data_by_host(data, "id", 0.5)
+            split_data_by_host(data, "host_id", 0.5)
 
     def test_fit_model(self):
         # todo: add all other models as well with decorator

@@ -55,7 +55,7 @@ def save_predictions(model, target, ls_features, subset):
     return saved_pred
 
 
-def model(
+def fit_n_predict_model(
     md: pd.DataFrame,
     feat: pd.DataFrame,
     target: str = TARGET,
@@ -64,7 +64,7 @@ def model(
     train_size: float = TRAIN_SIZE,
     seed: int = SEED,
 ):
-    """Train and predict model on data provided"""
+    """Fit and predict model on data provided"""
     # assumption: features are all columns provided in feat
     ls_features = [x for x in feat.columns]
     # merge md_df and feat_df to flat table (maybe 3D needed for dynamic)
