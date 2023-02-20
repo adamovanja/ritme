@@ -14,7 +14,9 @@ def transform_features(
         feat.replace(0, pseudocount, inplace=True)
 
         feat_trans = pd.DataFrame(clr(feat), index=feat.index, columns=feat.columns)
-    # todo: add ilr: http://scikit-bio.org/docs/0.4.2/generated/generated/skbio.stats.composition.ilr.html#skbio.stats.composition.ilr
+    # todo: add ilr:
+    # http://scikit-bio.org/docs/0.4.2/generated/generated/
+    # skbio.stats.composition.ilr.html#skbio.stats.composition.ilr
     else:
         raise ValueError(f"Method {method} is not implemented yet.")
 
