@@ -27,6 +27,7 @@ requirements:
 
 test:
   requires:
+    - parameterized
     - coverage
     - pytest-cov
   imports:
