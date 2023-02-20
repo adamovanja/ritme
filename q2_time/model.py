@@ -1,8 +1,9 @@
 import time
 
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import GroupShuffleSplit, RandomizedSearchCV
 
 TARGET = "age_days"
 HOST_ID = "host_id"
@@ -25,16 +26,45 @@ def split_data_by_host(data, host_id, train_size=TRAIN_SIZE, seed=SEED):
     return train, test
 
 
-def fit_model(train, target, ls_features, model_type):
+def fit_model(train, target, ls_features, model_type, seed):
     """Fit model to train set"""
     # choose estimator
-    if model_type == "LinReg":
+    if model_type == "LinRegressor":
         estimator = LinearRegression()
+        params = {}
+    elif model_type == "RFRegressor":
+        # todo: add CV fitting
+        estimator = RandomForestRegressor(
+            max_depth=2, random_state=seed, criterion="squared_error"
+        )
+        params = {
+            "n_estimators": [10, 50, 100, 500],
+            "max_depth": [2, 8, 16, None],
+            "min_samples_split": [0.0001, 0.001, 0.01, 0.1],
+            "min_samples_leaf": [0.00001, 0.0001],
+            "max_features": [None, "sqrt", "log2", 0.1, 0.2, 0.5, 0.8],
+            "min_impurity_decrease": [0.0001, 0.001, 0.01],
+            "bootstrap": [True, False],
+        }
     # elif model_type == "LSTM":
     #     estimator = KerasClassifier(
     #         build_fn=create_LSTM_model, epochs=10, batch_size=2, verbose=0
     #     )
 
+    # CV for best parameters
+    if len(params) > 0:
+        # todo: adjust number of n_iter to try
+        # todo: adjust scoring depending on classification vs. regression
+        split_cv = min(5, train.shape[0])
+        estimator = RandomizedSearchCV(
+            estimator,
+            params,
+            n_iter=10,
+            scoring="neg_mean_squared_error",
+            n_jobs=-1,
+            cv=split_cv,
+            random_state=seed,
+        )
     print("Training model...")
     start = time.time()
     # assumption: features to use for modelling all available in given feat
@@ -42,6 +72,10 @@ def fit_model(train, target, ls_features, model_type):
     end = time.time()
     dur_min = (end - start) / 60.0
     print(f"... lasted {dur_min} min.")
+
+    # in case of CV
+    if len(params) > 0:
+        model = model.best_estimator_
 
     return model
 
@@ -73,7 +107,7 @@ def fit_n_predict_model(
 
     train, test = split_data_by_host(data, host_id, train_size, seed)
 
-    model = fit_model(train, target, ls_features, model_type)
+    model = fit_model(train, target, ls_features, model_type, seed)
 
     # create model predictions: train & test
     pred_train = save_predictions(model, target, ls_features, train)

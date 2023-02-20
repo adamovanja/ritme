@@ -1,6 +1,9 @@
+from unittest.mock import patch
+
 import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
+from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
 from sklearn.linear_model import LinearRegression
 
@@ -50,9 +53,21 @@ class TestModel(TestPluginBase):
 
     def test_fit_model(self):
         # todo: add all other models as well with decorator
-        model_type = "LinReg"
-        trained_model = fit_model(self.data, "supertarget", ["F0", "F1"], model_type)
+        model_type = "LinRegressor"  # RFRegressor
+        trained_model = fit_model(
+            self.data, "supertarget", ["F0", "F1"], model_type, 12
+        )
+
         self.assertEqual(type(trained_model).__name__, "LinearRegression")
+        # RandomForestRegressor
+
+    # @patch("sklearn.model_selection.RandomizedSearchCV")
+    @parameterized.expand([("RFRegressor", 1), ("LinRegressor", 0)])
+    @patch("q2_time.model.RandomizedSearchCV")
+    def test_fit_model_random_cv(self, model_type, exp_count, mocked_cv):
+        # todo: add check not called with LinReg
+        fit_model(self.data, "supertarget", ["F0", "F1"], model_type, 12)
+        self.assertEqual(mocked_cv.call_count, exp_count)
 
     def test_save_predictions(self):
         # todo adjust for all existing models with mock decorator

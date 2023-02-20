@@ -20,7 +20,7 @@ For developers run:
 conda create -y -n time \
    -c qiime2 -c conda-forge -c bioconda -c anaconda -c defaults \
   qiime2 q2cli numpy pandas scipy scikit-learn scikit-bio \
-  versioneer pre-commit ruff black pytest flake8
+  versioneer pre-commit ruff black pytest flake8 parameterized
 
 conda activate time
 
