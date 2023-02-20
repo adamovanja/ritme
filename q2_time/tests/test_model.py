@@ -14,7 +14,6 @@ class TestModel(TestPluginBase):
     package = "q2_time.test"
 
     def setUp(self):
-        # called before every test
         super().setUp()
         self.data = pd.DataFrame(
             {
@@ -51,26 +50,23 @@ class TestModel(TestPluginBase):
         ):
             split_data_by_host(data, "host_id", 0.5)
 
-    def test_fit_model(self):
-        # todo: add all other models as well with decorator
-        model_type = "LinRegressor"  # RFRegressor
+    @parameterized.expand(
+        [("LinRegressor", "LinearRegression"), ("RFRegressor", "RandomForestRegressor")]
+    )
+    def test_fit_model(self, model_type, exp_name):
         trained_model = fit_model(
             self.data, "supertarget", ["F0", "F1"], model_type, 12
         )
 
-        self.assertEqual(type(trained_model).__name__, "LinearRegression")
-        # RandomForestRegressor
+        self.assertEqual(type(trained_model).__name__, exp_name)
 
-    # @patch("sklearn.model_selection.RandomizedSearchCV")
     @parameterized.expand([("RFRegressor", 1), ("LinRegressor", 0)])
     @patch("q2_time.model.RandomizedSearchCV")
     def test_fit_model_random_cv(self, model_type, exp_count, mocked_cv):
-        # todo: add check not called with LinReg
         fit_model(self.data, "supertarget", ["F0", "F1"], model_type, 12)
         self.assertEqual(mocked_cv.call_count, exp_count)
 
     def test_save_predictions(self):
-        # todo adjust for all existing models with mock decorator
         target = "supertarget"
         ls_feat = ["F0", "F1"]
         model = LinearRegression().fit(self.data[ls_feat], self.data[target])
@@ -78,7 +74,6 @@ class TestModel(TestPluginBase):
 
         pred_exp = pd.DataFrame(columns=["true", "pred"], index=self.data.index)
         pred_exp["true"] = self.data[target].copy()
-        # todo: adjust for all existing models
         pred_logreg = np.array([0.75, 2.25, 5.25, 6.75])
         pred_exp["pred"] = pred_logreg
 
