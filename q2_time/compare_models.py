@@ -32,8 +32,10 @@ def compare_config(dic_models):
     # todo: add unit tests
     df_config = None
 
-    for tag, conf in dic_models.items():
-        df_config_model = pd.DataFrame({tag: conf}).transpose()
+    for tag, model in dic_models.items():
+        # todo: reconsider what to retrieve as model configuration here
+        config = model.get_params()
+        df_config_model = pd.DataFrame({tag: config}).transpose()
 
         if df_config is None:
             df_config = df_config_model.copy(deep=True)

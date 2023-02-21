@@ -108,11 +108,9 @@ def fit_n_predict_model(
     train, test = split_data_by_host(data, host_id, train_size, seed)
 
     model = fit_model(train, target, ls_features, model_type, seed)
-    # todo: reconsider what you are saving as model configuration here
-    model_config = model.get_params()
 
     # create model predictions: train & test
     pred_train = save_predictions(model, target, ls_features, train)
     pred_test = save_predictions(model, target, ls_features, test)
 
-    return model, model_config, pred_train, pred_test
+    return model, pred_train, pred_test
