@@ -1,3 +1,4 @@
+import random
 import time
 
 import pandas as pd
@@ -96,7 +97,8 @@ def fit_n_predict_model(
     host_id: str = HOST_ID,
     model_type: str = "LinReg",
     train_size: float = TRAIN_SIZE,
-    seed: int = SEED,
+    seed_data: int = SEED,
+    seed_model: int = SEED,
 ):
     """Fit and predict model on data provided"""
     # assumption: features are all columns provided in feat
@@ -105,12 +107,47 @@ def fit_n_predict_model(
     data = md.join(feat, how="left")
     data.sort_values([host_id, target], inplace=True)
 
-    train, test = split_data_by_host(data, host_id, train_size, seed)
+    train, test = split_data_by_host(data, host_id, train_size, seed_data)
 
-    model = fit_model(train, target, ls_features, model_type, seed)
+    model = fit_model(train, target, ls_features, model_type, seed_model)
 
     # create model predictions: train & test
     pred_train = save_predictions(model, target, ls_features, train)
     pred_test = save_predictions(model, target, ls_features, test)
 
     return model, pred_train, pred_test
+
+
+def run_models(dic_models, random_runs=10, seed_simulations=SEED):
+    """
+    Run `random_runs` model simulations - for demo purposes for now.
+    `dic_model` must contain label of simulation as key and within item in this
+    order: metadata, feature table and model to use.
+    """
+    random.seed(seed_simulations)
+    seed_model_ls = random.sample(range(0, 10000), random_runs)
+
+    out_dic = {}
+    for tag, inpts in dic_models.items():
+        md = inpts[0]
+        ft = inpts[1]
+        model = inpts[2]
+
+        ls_train = []
+        ls_test = []
+        for seed_model in seed_model_ls:
+            _, train, test = fit_n_predict_model(
+                md,
+                ft,
+                "age_days",
+                "host_id",
+                model,
+                # todo: decide do we want to shuffle data
+                # todo: randomly or stick with fixed split?
+                # seed_data=seed_model,
+                seed_model=seed_model,
+            )
+            ls_train.append(train)
+            ls_test.append(test)
+        out_dic[tag] = [ls_train, ls_test]
+    return out_dic

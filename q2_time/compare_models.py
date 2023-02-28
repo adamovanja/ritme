@@ -1,5 +1,7 @@
+import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
+from sklearn.metrics import mean_squared_error
 
 
 def _highlight_differing_cols(x):
@@ -45,3 +47,38 @@ def compare_config(dic_models):
     table = df_config.style.apply(_highlight_differing_cols, axis=None)
 
     return display(table)
+
+
+def eval_simulations(dic_out, set="test"):
+    """
+    Plot train/test MSE from simulations - for demo purposes for now
+    This function relies a lot on the output of model.run_models for now.
+    """
+    # plot settings
+    # todo: set default plot settings across package
+    plt.style.use("seaborn-v0_8-colorblind")  # ("tableau-colorblind10")
+    titlesize = 14
+    labelsize = 13
+    ticklabel = 12
+    plt.rcParams.update({"font.size": labelsize})
+
+    # hardcoded index given from run_models output
+    if set == "test":
+        idx = 1
+    else:
+        idx = 0
+    metrics_df = pd.DataFrame()
+    for tag, preds in dic_out.items():
+        mse = []
+        for ind_pred in preds[idx]:  # 1 is test, 0 would be train
+            mse.append(mean_squared_error(ind_pred["true"], ind_pred["pred"]))
+        metrics_df[tag] = mse
+
+    metrics_df.plot(kind="box", figsize=(12, 6))
+
+    plt.xticks(fontsize=ticklabel)
+    plt.yticks(fontsize=ticklabel)
+    plt.ylabel("MSE", fontsize=labelsize)
+    plt.xlabel("Simulation Tag", fontsize=labelsize)
+    plt.title(f"Metrics comparison: {set.upper()}", fontsize=titlesize)
+    plt.show()
