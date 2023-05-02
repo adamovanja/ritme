@@ -26,7 +26,6 @@ requirements:
     - scipy
     - scikit-learn
     - scikit-bio
-    - tensorflow
 
   run_constrained:
     - pip:
