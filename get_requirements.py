@@ -22,30 +22,43 @@ def load_meta_yaml(file_path: str, default_versions: Dict[str, str]) -> Dict:
         return yaml.safe_load(rendered_content)
 
 
-def print_requirements(meta_yaml_data: Dict) -> None:
+def print_requirements(meta_yaml_data: Dict, req_type: str) -> None:
     """
-    Print the 'run' requirements from the given meta.yaml
-    data with a double equal sign between package name and version.
+    Print the 'run' requirements from the given meta.yaml data, either
+    'conda' or 'pip' requirements, with a double equal sign between
+    package name and version.
 
     :param meta_yaml_data: dict, parsed meta.yaml data
     """
     requirements = meta_yaml_data.get("requirements", {})
-    run_requirements = requirements.get("run", [])
+    if req_type == "conda":
+        run_requirements = requirements.get("run", [])
 
-    for requirement in run_requirements:
-        if " " in requirement:
-            package, version = requirement.split(" ")
-            print(f"{package}=={version}")
-        else:
-            print(requirement)
+        for requirement in run_requirements:
+            if " " in requirement:
+                package, version = requirement.split(" ")
+                print(f"{package}=={version}")
+            else:
+                print(requirement)
+    elif req_type == "pip":
+        run_constrained = requirements.get("run_constrained", [])
+
+        for constraint in run_constrained:
+            if isinstance(constraint, dict) and "pip" in constraint:
+                pip_packages = constraint["pip"]
+
+                for pip_package in pip_packages:
+                    print(pip_package)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract requirements from meta.yaml")
     parser.add_argument("meta_yaml_path", help="Path to meta.yaml file")
+    parser.add_argument("req_type", help="Conda or pip requirements", default="conda")
     parser.add_argument(
         "--qiime2_epoch", help="Set version for qiime2_epoch", default="2023.2"
     )
+    # todo: maybe remove Q2 to access newest Python version
     parser.add_argument("--python", help="Default Python version", default="3.8")
     args = parser.parse_args()
 
@@ -55,4 +68,4 @@ if __name__ == "__main__":
     }
 
     meta_yaml_data = load_meta_yaml(args.meta_yaml_path, default_versions)
-    print_requirements(meta_yaml_data)
+    print_requirements(meta_yaml_data, args.req_type)

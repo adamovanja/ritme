@@ -15,16 +15,21 @@ requirements:
   host:
     - python {{ python }}
     - setuptools
+    - pip
 
   run:
     - python {{ python }}
-    - qiime2 {{ qiime2_epoch }}.*
-    - q2-feature-table {{ qiime2_epoch }}.*
     - numpy
     - pandas
     - scipy
     - scikit-learn
     - scikit-bio
+    - tensorflow
+
+  run_constrained:
+    - pip:
+        - ray[tune]
+        - tune-sklearn
 
 test:
   requires:
