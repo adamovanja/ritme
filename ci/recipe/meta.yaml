@@ -27,11 +27,6 @@ requirements:
     - scikit-learn
     - scikit-bio
 
-  run_constrained:
-    - pip:
-        - ray[tune]
-        - tune-sklearn
-
 test:
   requires:
     - parameterized
