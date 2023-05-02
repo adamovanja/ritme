@@ -26,9 +26,8 @@ requirements:
     - scipy
     - scikit-learn
     - scikit-bio
-    - pip:
-        - ray[tune]
-        - tune-sklearn
+    - ray-tune
+    - tune-sklearn
 
 test:
   requires:
