@@ -1,29 +1,57 @@
 repos:
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    # Ruff version.
-    rev: 'v0.0.246'
+  # Formatting scripts
+  - repo: https://github.com/psf/black
+    rev: 23.1.0
     hooks:
-      - id: ruff
+      - id: black
+        args: [ --safe, --quiet ]
+        files: ^(.+)(?<!\_version)\.py$
+      - id: black-jupyter
+  # Sorting scripts
+  - repo: https://github.com/pycqa/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        args: [ --profile, black ]
+        files: ^(.+)(?<!\_version)\.py$
+
+  # Sorting and ruff linter on Jupyter notebooks
   - repo: https://github.com/nbQA-dev/nbQA
-    # Run ruff on Jupyter notebooks too
     rev: 1.6.1
     hooks:
-      - id: nbqa-ruff
       - id: nbqa-isort
-        args: ["--float-to-top"]
-  # Spelling mistakes:
+      - id: nbqa-ruff
+
+  # Ruff linting other scripts
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: 'v0.0.260'
+    hooks:
+      - id: ruff
+
+  # Other code analysis tools:
+  # - repo: https://github.com/pre-commit/mirrors-mypy
+  #   rev: v0.991
+  #   hooks:
+  #     - id: mypy
+  #       args: [ --ignore-missing-imports, --pretty, --show-error-codes ]
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.2.2
+    rev: v2.2.4
     hooks:
       - id: codespell
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0
     hooks:
       - id: check-ast
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: check-json
       - id: check-merge-conflict
-      # - id: check-yaml
-      #   args:
-      #   - --unsafe
+      - id: debug-statements
+      - id: check-symlinks
+      - id: check-yaml
+        # doesn't support variables embedding
+        exclude: 'ci/recipe/meta.yaml'
+        args: [ --unsafe, --allow-multiple-documents ]
       - id: detect-private-key
       - id: end-of-file-fixer
       - id: name-tests-test
@@ -34,29 +62,17 @@ repos:
           - --autofix
       - id: requirements-txt-fixer
       - id: trailing-whitespace
-  - repo: https://github.com/PyCQA/isort
-    rev: 5.12.0
-    hooks:
-      - id: isort
-  - repo: https://github.com/psf/black
-    rev: 23.1.0
-    hooks:
-      - id: black
-        args:
-          - --safe
-          - --quiet
-        files: ^(.+)(?<!\_version)\.py$
-      - id: black-jupyter
-#  - repo: local
-#    hooks:
-#      - id: pytest
-#        name: pytest
-#        language: python
-#        types:
-#          - python
-#        pass_filenames: false
-#        entry: make test-cov
-#        additional_dependencies:
-#          - coverage
-#          - pytest
-#        stages: [ push ]
+  # # Testing
+  # - repo: local
+  #   hooks:
+  #     - id: pytest
+  #       name: pytest
+  #       language: python
+  #       types:
+  #         - python
+  #       pass_filenames: false
+  #       entry: make test-cov
+  #       additional_dependencies:
+  #         - coverage
+  #         - pytest
+  #       stages: [ push ]

@@ -139,3 +139,4 @@ dmypy.json
 
 # personal scratchpad
 x_*
+.DS_Store

@@ -1,4 +1,4 @@
-.PHONY: all lint test test-cov install dev prep-dev-container clean distclean
+.PHONY: all lint test test-cov install create-env install-req dev prep-dev-container clean distclean
 
 PYTHON ?= python
 
@@ -17,8 +17,15 @@ test-cov: all
 install: all
 	$(PYTHON) setup.py install
 
+create-env: install-req
+	mamba create -y -n time -c qiime2 -c conda-forge -c bioconda -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
+
+install-req:
+	@command -v mamba >/dev/null 2>&1 || { echo "Installing mamba..."; conda install -y mamba -n base -c conda-forge; }
+	pip install PyYAML jinja2
+
 dev: all
-	pip install pre-commit
+	pip install pre-commit parameterized ruff black pytest flake8 versioneer mypy types-PyYAML $(shell python get_requirements.py ci/recipe/meta.yaml pip)
 	pip install -e .
 	pre-commit install
 
