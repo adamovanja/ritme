@@ -51,7 +51,10 @@ class TestModel(TestPluginBase):
             split_data_by_host(data, "host_id", 0.5)
 
     @parameterized.expand(
-        [("LinRegressor", "LinearRegression"), ("RFRegressor", "RandomForestRegressor")]
+        [
+            ("LinRegressor", "LinearRegression"),
+            ("RFRegressor", "TuneSearchCV"),
+        ]
     )
     def test_fit_model(self, model_type, exp_name):
         trained_model = fit_model(
@@ -61,8 +64,8 @@ class TestModel(TestPluginBase):
         self.assertEqual(type(trained_model).__name__, exp_name)
 
     @parameterized.expand([("RFRegressor", 1), ("LinRegressor", 0)])
-    @patch("q2_time.model.RandomizedSearchCV")
-    def test_fit_model_random_cv(self, model_type, exp_count, mocked_cv):
+    @patch("q2_time.model.TuneSearchCV")
+    def test_fit_model_tunesearch_cv(self, model_type, exp_count, mocked_cv):
         fit_model(self.data, "supertarget", ["F0", "F1"], model_type, 12)
         self.assertEqual(mocked_cv.call_count, exp_count)
 
