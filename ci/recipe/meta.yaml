@@ -32,6 +32,7 @@ requirements:
       - ray[tune]
       - tensorflow
       - tune-sklearn
+      - mlflow
 
 test:
   requires:
