@@ -32,11 +32,9 @@ def transform_features(
     # note to self: clr and ilr methods include initial transformation of feature table
     # to relative abundances (closure). For alr this is not done as transformed result
     # is the same.
-    # todo: create processing pipeline only on train set (not incl. test) see:
-    # see https://scikit-learn.org/stable/data_transforms.html
 
     # add pseudocounts
-    feat.replace(0, pseudocount, inplace=True)
+    feat = feat.replace(0, pseudocount).copy()
 
     # transform & rename columns
     method_map = {"clr": clr, "ilr": ilr, "alr": alr}
