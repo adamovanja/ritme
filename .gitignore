@@ -143,5 +143,8 @@ dmypy.json
 # MLflow model logs
 **/mlruns/**
 
+# Ray result logs
+**/ray_results/**
+
 # personal scratchpad
 x_*
