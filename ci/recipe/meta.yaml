@@ -33,6 +33,7 @@ requirements:
       - tensorflow
       - tune-sklearn
       - mlflow
+      - xgboost
 
 test:
   requires:
