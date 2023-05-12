@@ -40,7 +40,6 @@ def fit_model(train, target, ls_features, model_type, seed):
         estimator = RandomForestRegressor(
             # random_state=seed, criterion="squared_error"
         )
-        # todo: set distributions here
         params = {
             # when using early_stopping do not set n_estimators
             # "n_estimators": [10, 50, 100, 500],
@@ -51,8 +50,6 @@ def fit_model(train, target, ls_features, model_type, seed):
             "min_impurity_decrease": tune.choice([0.0001, 0.001, 0.01]),
             "bootstrap": tune.choice([True, False]),
         }
-    # elif model_type == "LSTM": estimator = KerasClassifier(
-    #     build_fn=create_LSTM_model, epochs=10, batch_size=2, verbose=0 )
 
     # CV for best parameters
     if len(params) > 0:
@@ -91,10 +88,6 @@ def fit_model(train, target, ls_features, model_type, seed):
     end = time.time()
     dur_min = (end - start) / 60.0
     print(f"... lasted {dur_min} min.")
-
-    # # in case of CV
-    # if len(params) > 0:
-    #     model = model.best_estimator_
 
     return model
 
