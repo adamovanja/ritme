@@ -63,11 +63,19 @@ def run_trials(
             # complete experiment name with subfolders of trials within
             name=exp_name,
             local_dir="ray_results",
+            # checkpoint: to store best model
+            checkpoint_config=air.CheckpointConfig(
+                checkpoint_score_attribute="rmse_val",
+                num_to_keep=3,
+            ),
+            # callback: executing specific tasks (e.g. logging)
+            # at specific points in training
             callbacks=[
                 MLflowLoggerCallback(
                     tracking_uri=mlflow_tracking_uri,
                     experiment_name=exp_name,
-                    save_artifact=True,
+                    # # todo: double saving: Tune local_dir as artifact here
+                    # save_artifact=True,
                 ),
             ],
         ),
