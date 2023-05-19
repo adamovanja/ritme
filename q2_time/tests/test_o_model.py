@@ -7,7 +7,7 @@ from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
 from sklearn.linear_model import LinearRegression
 
-from q2_time.model import fit_model, save_predictions, split_data_by_host
+from q2_time._o_model import fit_model, save_predictions, split_data_by_host
 
 
 class TestModel(TestPluginBase):
@@ -64,7 +64,7 @@ class TestModel(TestPluginBase):
         self.assertEqual(type(trained_model).__name__, exp_name)
 
     @parameterized.expand([("RFRegressor", 1), ("LinRegressor", 0)])
-    @patch("q2_time.model.TuneSearchCV")
+    @patch("q2_time._o_model.TuneSearchCV")
     def test_fit_model_tunesearch_cv(self, model_type, exp_count, mocked_cv):
         fit_model(self.data, "supertarget", ["F0", "F1"], model_type, 12)
         self.assertEqual(mocked_cv.call_count, exp_count)
