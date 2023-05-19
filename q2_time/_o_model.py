@@ -6,27 +6,9 @@ from ray import tune
 from ray.tune.sklearn import TuneSearchCV
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import GroupShuffleSplit
 
-TARGET = "age_days"
-HOST_ID = "host_id"
-SEED = 12
-TRAIN_SIZE = 0.8
-
-
-def split_data_by_host(data, host_id, train_size=TRAIN_SIZE, seed=SEED):
-    """Randomly split dataset into train & test split based on host_id"""
-    if len(data[host_id].unique()) == 1:
-        raise ValueError("Only one unique host available in dataset.")
-
-    gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
-    split = gss.split(data, groups=data[host_id])
-    train_idx, test_idx = next(split)
-
-    train, test = data.iloc[train_idx], data.iloc[test_idx]
-    print(f"Train: {train.shape}, Test: {test.shape}")
-
-    return train, test
+from q2_time.config import HOST_ID, SEED_DATA, SEED_MODEL, TARGET, TRAIN_SIZE
+from q2_time.process_data import split_data_by_host
 
 
 def fit_model(train, target, ls_features, model_type, seed):
@@ -108,8 +90,8 @@ def fit_n_predict_model(
     host_id: str = HOST_ID,
     model_type: str = "LinReg",
     train_size: float = TRAIN_SIZE,
-    seed_data: int = SEED,
-    seed_model: int = SEED,
+    seed_data: int = SEED_DATA,
+    seed_model: int = SEED_MODEL,
 ):
     """Fit and predict model on data provided"""
     # assumption: features are all columns provided in feat
@@ -129,7 +111,7 @@ def fit_n_predict_model(
     return model, pred_train, pred_test
 
 
-def run_models(dic_models, random_runs=10, seed_simulations=SEED):
+def run_models(dic_models, random_runs=10, seed_simulations=SEED_MODEL):
     """
     Run `random_runs` model simulations - for demo purposes for now. `dic_model`
     must contain label of simulation as key and within item in this order:
