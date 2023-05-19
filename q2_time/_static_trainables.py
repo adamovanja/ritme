@@ -7,8 +7,8 @@ import numpy as np
 import tensorflow as tf
 import xgboost as xgb
 from ray.air import session
-from ray.tune.integration.keras import TuneReportCallback
-from ray.tune.integration.xgboost import TuneReportCheckpointCallback
+from ray.tune.integration.keras import TuneReportCheckpointCallback as k_cc
+from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
@@ -98,10 +98,11 @@ def train_nn(config, train_val, target, host_id, seed_data, seed_model):
     mlflow.tensorflow.autolog()
 
     # Add TuneReportCallback to report metrics for each epoch
-    report_callback = TuneReportCallback(
+    checkpoint_callback = k_cc(
         # tune: keras
         {"rmse_val": "val_rmse", "rmse_train": "rmse"},
         on="epoch_end",
+        filename="checkpoint",
     )
 
     model.fit(
@@ -110,7 +111,7 @@ def train_nn(config, train_val, target, host_id, seed_data, seed_model):
         validation_data=(X_val, y_val),
         epochs=100,
         batch_size=config["batch_size"],
-        callbacks=[report_callback],
+        callbacks=[checkpoint_callback],
         verbose=0,
     )
 
@@ -129,10 +130,11 @@ def train_xgb(config, train_val, target, host_id, seed_data, seed_model):
     dval = xgb.DMatrix(X_val, label=y_val)
 
     # ! model
-    # Initialize the callback
-    tune_callback = TuneReportCheckpointCallback(
+    # Initialize the checkpoint callback
+    checkpoint_callback = xgb_cc(
         # tune:xgboost
         metrics={"rmse_train": "train-rmse", "rmse_val": "val-rmse"},
+        filename="checkpoint",
     )
     # todo: add test here to be tracked as well
 
@@ -140,5 +142,5 @@ def train_xgb(config, train_val, target, host_id, seed_data, seed_model):
         config,
         dtrain,
         evals=[(dtrain, "train"), (dval, "val")],
-        callbacks=[tune_callback],
+        callbacks=[checkpoint_callback],
     )
