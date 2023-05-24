@@ -1,11 +1,14 @@
 """Module with tune trainables of all static models"""
 import math
+import os
 import random
 
+import joblib
 import mlflow
 import numpy as np
 import tensorflow as tf
 import xgboost as xgb
+from ray import tune
 from ray.air import session
 from ray.tune.integration.keras import TuneReportCheckpointCallback as k_cc
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
@@ -22,6 +25,12 @@ def _predict_rmse(model, X, y):
     return math.sqrt(mean_squared_error(y, y_pred))
 
 
+def _save_sklearn_model(model):
+    model_path = os.path.join(tune.get_trial_dir(), "model.pkl")
+    joblib.dump(model, model_path)
+    return model_path
+
+
 # Linear Regression (for consistency with other training)
 def train_linreg(config, train_val, target, host_id, seed_data, seed_model):
     # ! process dataset
@@ -34,9 +43,18 @@ def train_linreg(config, train_val, target, host_id, seed_data, seed_model):
     linreg = LinearRegression(fit_intercept=config["fit_intercept"])
     linreg.fit(X_train, y_train)
 
+    model_path = _save_sklearn_model(linreg)
+
     score_train = _predict_rmse(linreg, X_train, y_train)
     score_val = _predict_rmse(linreg, X_val, y_val)
-    session.report({"rmse_val": score_val, "rmse_train": score_train})
+
+    session.report(
+        metrics={
+            "rmse_val": score_val,
+            "rmse_train": score_train,
+            "model_path": model_path,
+        }
+    )
 
 
 # Define a training function for RandomForest
@@ -54,9 +72,17 @@ def train_rf(config, train_val, target, host_id, seed_data, seed_model):
     )
     rf.fit(X_train, y_train)
 
+    model_path = _save_sklearn_model(rf)
+
     score_train = _predict_rmse(rf, X_train, y_train)
     score_val = _predict_rmse(rf, X_val, y_val)
-    session.report({"rmse_val": score_val, "rmse_train": score_train})
+    session.report(
+        {
+            "rmse_val": score_val,
+            "rmse_train": score_train,
+            "model_path": model_path,
+        }
+    )
 
 
 # Define a training function for Keras neural network

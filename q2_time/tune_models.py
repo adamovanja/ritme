@@ -1,3 +1,4 @@
+import os
 import random
 
 import numpy as np
@@ -23,6 +24,9 @@ def run_trials(
     scheduler_max_t=100,
     resources={"cpu": 1},
 ):
+    if not os.path.exists(mlflow_tracking_uri):
+        os.makedirs(mlflow_tracking_uri)
+
     # set seed for search algorithms/schedulers
     random.seed(seed_model)
     np.random.seed(seed_model)
@@ -74,7 +78,7 @@ def run_trials(
                 MLflowLoggerCallback(
                     tracking_uri=mlflow_tracking_uri,
                     experiment_name=exp_name,
-                    # # todo: double saving: Tune local_dir as artifact here
+                    # below would be double saving: local_dir as artifact here
                     # save_artifact=True,
                 ),
             ],
