@@ -32,10 +32,10 @@ def _save_sklearn_model(model):
 
 
 # Linear Regression (for consistency with other training)
-def train_linreg(config, train_val, target, host_id, seed_data, seed_model):
-    # ! process dataset
+def train_linreg(config, train_val, target, features, host_id, seed_data, seed_model):
+    # ! process dataset: X with features & y with host_id
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, features, host_id, seed_data
     )
 
     # ! model
@@ -58,10 +58,10 @@ def train_linreg(config, train_val, target, host_id, seed_data, seed_model):
 
 
 # Define a training function for RandomForest
-def train_rf(config, train_val, target, host_id, seed_data, seed_model):
+def train_rf(config, train_val, target, features, host_id, seed_data, seed_model):
     # ! process dataset
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, features, host_id, seed_data
     )
 
     # ! model
@@ -86,10 +86,10 @@ def train_rf(config, train_val, target, host_id, seed_data, seed_model):
 
 
 # Define a training function for Keras neural network
-def train_nn(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn(config, train_val, target, features, host_id, seed_data, seed_model):
     # ! process dataset
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, features, host_id, seed_data
     )
 
     # ! model
@@ -142,10 +142,10 @@ def train_nn(config, train_val, target, host_id, seed_data, seed_model):
     )
 
 
-def train_xgb(config, train_val, target, host_id, seed_data, seed_model):
+def train_xgb(config, train_val, target, features, host_id, seed_data, seed_model):
     # ! process dataset
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, features, host_id, seed_data
     )
     # Set seeds
     np.random.seed(seed_model)

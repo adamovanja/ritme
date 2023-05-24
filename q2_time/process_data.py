@@ -34,12 +34,15 @@ def load_data(path2md, path2ft):
     else:
         ft, md = simulate_data(100)
 
-    return ft, md
+    # extract all microbiome features
+    micro_fts = ft.columns.tolist()
+
+    return ft, md, micro_fts
 
 
 def load_n_split_data(path2md=None, path2ft=None):
-    ft, md = load_data(path2md, path2ft)
+    ft, md, micro_fts = load_data(path2md, path2ft)
     data = merge_n_sort(md, ft)
     train_val, test = split_data_by_host(data)
 
-    return train_val, test
+    return train_val, test, micro_fts

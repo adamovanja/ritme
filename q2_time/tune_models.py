@@ -15,6 +15,7 @@ def run_trials(
     search_space,
     train_val,
     target,
+    features,
     host_id,
     seed_data,
     seed_model,
@@ -56,6 +57,7 @@ def run_trials(
                 trainable,
                 train_val=train_val,
                 target=target,
+                features=features,
                 host_id=host_id,
                 seed_data=seed_data,
                 seed_model=seed_model,
@@ -100,19 +102,4 @@ def run_trials(
     return analysis.fit()
 
 
-# def tune_models(run_config):
-
-#     train_val, test = load_n_split_data()
-
-#     results_xgb = run_trials(
-#     MLFLOW_TRACKING_URI,
-#     "xgb",
-#     st.train_xgb,
-#     ss.xgb_space,
-#     train_val,
-#     TARGET,
-#     HOST_ID,
-#     SEED_DATA,
-#     SEED_MODEL,
-#     fully_reproducible=False,
-#     )
+# def run_all_trials(model_types=["xgb", "nn", "linreg", "rf"]):
