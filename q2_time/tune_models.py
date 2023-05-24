@@ -7,6 +7,12 @@ from ray import air, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
+from q2_time import _static_searchspace as ss
+from q2_time import _static_trainables as st
+
+# todo: adjust to json file to be read in from user
+from q2_time.config import HOST_ID, MLFLOW_TRACKING_URI, SEED_DATA, SEED_MODEL, TARGET
+
 
 def run_trials(
     mlflow_tracking_uri,  # MLflow with MLflowLoggerCallback
@@ -15,7 +21,6 @@ def run_trials(
     search_space,
     train_val,
     target,
-    features,
     host_id,
     seed_data,
     seed_model,
@@ -57,7 +62,6 @@ def run_trials(
                 trainable,
                 train_val=train_val,
                 target=target,
-                features=features,
                 host_id=host_id,
                 seed_data=seed_data,
                 seed_model=seed_model,
@@ -102,4 +106,38 @@ def run_trials(
     return analysis.fit()
 
 
-# def run_all_trials(model_types=["xgb", "nn", "linreg", "rf"]):
+model_trainables = {
+    # model_type: trainable
+    "xgb": st.train_xgb,
+    "nn": st.train_nn,
+    "linreg": st.train_linreg,
+    "rf": st.train_rf,
+}
+
+model_search_space = {
+    # model_type: search_space
+    "xgb": ss.xgb_space,
+    "nn": ss.nn_space,
+    "linreg": ss.linreg_space,
+    "rf": ss.rf_space,
+}
+
+
+def run_all_trials(train_val, model_types=["xgb", "nn", "linreg", "rf"]):
+    results_all = {}
+    for model in model_types:
+        print(f"Ray tune training of: {model}...")
+        result = run_trials(
+            MLFLOW_TRACKING_URI,
+            model,
+            model_trainables[model],
+            model_search_space[model],
+            train_val,
+            TARGET,
+            HOST_ID,
+            SEED_DATA,
+            SEED_MODEL,
+            fully_reproducible=False,
+        )
+        results_all[model] = result
+    return results_all

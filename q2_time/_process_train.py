@@ -2,8 +2,9 @@ from q2_time._o_model import split_data_by_host
 from q2_time.engineer_features import transform_features
 
 
-def process_train(config, train_val, target, features, host_id, seed_data):
+def process_train(config, train_val, target, host_id, seed_data):
     non_features = [target, host_id]
+    features = [x for x in train_val if x not in non_features]
 
     # feature engineering method -> config
     if config["data_transform"] is None:
