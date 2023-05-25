@@ -71,3 +71,9 @@ def get_best_model(model_type: str, result_grid: ResultGrid) -> Any:
     best_model = model_loaders[model_type](best_result)
 
     return best_model
+
+
+def get_best_data_processing(result_grid: ResultGrid) -> str:
+    best_result = result_grid.get_best_result()
+    config_data = {k: v for k, v in best_result.config.items() if k.startswith("data_")}
+    return config_data

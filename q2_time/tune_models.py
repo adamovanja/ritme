@@ -2,6 +2,7 @@ import os
 import random
 
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 from ray import air, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
@@ -123,7 +124,9 @@ model_search_space = {
 }
 
 
-def run_all_trials(train_val, model_types=["xgb", "nn", "linreg", "rf"]):
+def run_all_trials(
+    train_val: pd.DataFrame, model_types: list = ["xgb", "nn", "linreg", "rf"]
+) -> dict:
     results_all = {}
     for model in model_types:
         print(f"Ray tune training of: {model}...")

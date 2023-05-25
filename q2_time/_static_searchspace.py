@@ -7,7 +7,7 @@ data_eng_space = {
     # new nb_trials= num_trials * nb of options in data_transform
     "data_transform": tune.grid_search([None, "clr", "ilr", "alr"]),
     # todo: remove manual setting of max number of features (19 now)
-    "alr_denom_idx": tune.randint(0, 19),
+    "data_alr_denom_idx": tune.randint(0, 19),
 }
 
 # ! adding models

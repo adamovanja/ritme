@@ -7,14 +7,11 @@ def process_train(config, train_val, target, host_id, seed_data):
     features = [x for x in train_val if x not in non_features]
 
     # feature engineering method -> config
-    if config["data_transform"] is None:
-        ft_transformed = train_val[features].copy()
-    else:
-        ft_transformed = transform_features(
-            train_val[features],
-            config["data_transform"],
-            config["alr_denom_idx"],
-        )
+    ft_transformed = transform_features(
+        train_val[features],
+        config["data_transform"],
+        config["data_alr_denom_idx"],
+    )
     train_val_t = train_val[non_features].join(ft_transformed)
 
     # train & val split - for training purposes

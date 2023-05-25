@@ -1,5 +1,4 @@
 """Module with tune trainables of all static models"""
-import math
 import os
 import random
 
@@ -22,7 +21,7 @@ from q2_time._process_train import process_train
 
 def _predict_rmse(model, X, y):
     y_pred = model.predict(X)
-    return math.sqrt(mean_squared_error(y, y_pred))
+    return mean_squared_error(y, y_pred, squared=False)
 
 
 def _save_sklearn_model(model):
