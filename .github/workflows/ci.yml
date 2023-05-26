@@ -39,6 +39,11 @@ jobs:
         # necessary for versioneer
         fetch-depth: 0
 
+    - name: Set up python 3.8
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.8
+
     - name: Setup Miniconda
       uses: conda-incubator/setup-miniconda@v2
       with:
