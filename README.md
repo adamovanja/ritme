@@ -1,4 +1,7 @@
 # q2-time
+![CI](https://github.com/adamovanja/q2-time/blob/main/.github/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/adamovanja/q2-time/branch/main/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/q2-time)
+
 Longitudinal modeling approaches accounting for high-dimensional, sparse and compositional nature of microbial time-series.
 
 ## Setup
