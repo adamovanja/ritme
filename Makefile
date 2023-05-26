@@ -11,8 +11,9 @@ lint:
 test: all
 	py.test
 
+# todo: adjust coverage threshold once final
 test-cov: all
-	py.test --cov=q2_time
+	py.test --cov=q2_time --cov-report xml:coverage.xml --cov-fail-under=45
 
 install: all
 	$(PYTHON) setup.py install
@@ -25,7 +26,7 @@ install-req:
 	pip install PyYAML jinja2
 
 dev: all
-	pip install pre-commit parameterized ruff black pytest flake8 versioneer mypy types-PyYAML $(shell python get_requirements.py ci/recipe/meta.yaml pip)
+	pip install pre-commit parameterized ruff black pytest pytest-cov flake8 versioneer mypy types-PyYAML $(shell python get_requirements.py ci/recipe/meta.yaml pip)
 	pip install -e .
 	pre-commit install
 

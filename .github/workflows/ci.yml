@@ -53,7 +53,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         make create-env
-        conda activate time && bash ci_run_tests.sh
+        conda activate time && make dev && make test-cov
 
     - name: Hack - template coverage output path
       run: echo "COV=coverage xml -o $GITHUB_WORKSPACE/coverage.xml" >> $GITHUB_ENV
