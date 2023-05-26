@@ -48,6 +48,7 @@ jobs:
     - name: Install dependencies
       run: |
         make create-env
+        make dev
 
     - name: Run tests
       run: make test
