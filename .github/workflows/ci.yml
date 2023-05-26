@@ -15,7 +15,7 @@ jobs:
     - uses: actions/checkout@v2
 
     - name: Set up python 3.8
-      uses: actions/setup-python@v1
+      uses: actions/setup-python@v2
       with:
         python-version: 3.8
 
@@ -39,11 +39,6 @@ jobs:
         # necessary for versioneer
         fetch-depth: 0
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.8
-
     - name: Setup Miniconda
       uses: conda-incubator/setup-miniconda@v2
       with:
@@ -55,19 +50,18 @@ jobs:
         make create-env
 
     - name: Run tests
-      run: |
-        pytest
+      run: make test
 
     - name: Hack - template coverage output path
       run: echo "COV=coverage xml -o $GITHUB_WORKSPACE/coverage.xml" >> $GITHUB_ENV
 
-    # TODO: update this to @v1 when it lands
-    - uses: qiime2/action-library-packaging@alpha1
-      with:
-        package-name: q2-time
-        additional-tests: ${{ env.COV }}
-        build-target: dev
-        library-token: ${{ secrets.LIBRARY_TOKEN }}
+    # # TODO: include this once this is a Q2 plugin
+    # - uses: qiime2/action-library-packaging@alpha1
+    #   with:
+    #     package-name: q2-time
+    #     additional-tests: ${{ env.COV }}
+    #     build-target: dev
+    #     library-token: ${{ secrets.LIBRARY_TOKEN }}
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
