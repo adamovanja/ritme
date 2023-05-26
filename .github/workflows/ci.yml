@@ -49,17 +49,15 @@ jobs:
         auto-update-conda: true
         python-version: 3.8
     - name: Run tests
+      # ugly because I wanted to keep one location of dependencies
       run: |
         python -m pip install --upgrade pip
-        make create-env
-        conda activate time && make dev
-        conda activate time && qiime dev refresh-cache
-        conda activate time && make test
+        bash ci_run_tests.sh
 
     - name: Hack - template coverage output path
       run: echo "COV=coverage xml -o $GITHUB_WORKSPACE/coverage.xml" >> $GITHUB_ENV
 
-    # # TODO: include this once this is a Q2 plugin
+    # # TODO: include this once this is a Q2 plugin and remove above run tests
     # - uses: qiime2/action-library-packaging@alpha1
     #   with:
     #     package-name: q2-time
