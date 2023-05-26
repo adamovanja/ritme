@@ -5,4 +5,4 @@ set -e
 
 # Run the test commands.
 make dev
-make test
+make test-cov
