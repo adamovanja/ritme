@@ -32,14 +32,12 @@ def transform_features(
     # note to self: clr and ilr methods include initial transformation of feature table
     # to relative abundances (closure). For alr this is not done as transformed result
     # is the same.
-    # todo: create processing pipeline only on train set (not incl. test) see:
-    # see https://scikit-learn.org/stable/data_transforms.html
 
     # add pseudocounts
-    feat.replace(0, pseudocount, inplace=True)
+    feat = feat.replace(0, pseudocount).copy()
 
     # transform & rename columns
-    method_map = {"clr": clr, "ilr": ilr, "alr": alr}
+    method_map = {"clr": clr, "ilr": ilr, "alr": alr, None: None}
     if method not in method_map.keys():
         raise ValueError(f"Method {method} is not implemented yet.")
 
@@ -47,6 +45,8 @@ def transform_features(
     if method == "alr":
         feat_trans = method_map[method](feat, denom_idx)
         feat_trans = feat_trans.add_prefix(f"{method}_")
+    elif method is None:
+        feat_trans = feat.copy()
     else:
         if method == "clr":
             # ! do we ignore 1 dimension after clr?

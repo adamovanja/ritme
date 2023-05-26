@@ -5,10 +5,10 @@ import pandas as pd
 import scipy
 
 DENSITY = 0.3
-SEED = 12
+SEED_SIM = 12
 
 
-def simulate_feature_table(n_samples, n_feat, density=DENSITY, seed=SEED):
+def simulate_feature_table(n_samples, n_feat, density=DENSITY, seed=SEED_SIM):
     """Creates random sparse matrix of integers"""
     # sparse matrix
     # todo: improve simulation here - semesterproject
@@ -28,7 +28,7 @@ def simulate_feature_table(n_samples, n_feat, density=DENSITY, seed=SEED):
     return feat_df
 
 
-def simulate_metadata(feat_df, n_hosts, seed=SEED):
+def simulate_metadata(feat_df, n_hosts, seed=SEED_SIM):
     """Create simulated metadata table matching provided feature table
     with n_hosts number of unique hosts."""
     n_samples = feat_df.shape[0]
@@ -57,7 +57,7 @@ def simulate_data(
     n_feat: int = 20,
     n_hosts: int = 4,
     density: float = DENSITY,
-    seed: int = SEED,
+    seed: int = SEED_SIM,
 ):
     ft = simulate_feature_table(n_samples, n_feat, density, seed)
     md = simulate_metadata(ft, n_hosts, seed)

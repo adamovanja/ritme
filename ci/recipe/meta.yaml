@@ -26,6 +26,14 @@ requirements:
     - scipy
     - scikit-learn
     - scikit-bio
+  # TODO: build conda package from pypip
+  run_constrained:
+    - pip:
+      - ray[tune]
+      - tensorflow
+      - tune-sklearn
+      - mlflow
+      - xgboost
 
 test:
   requires:

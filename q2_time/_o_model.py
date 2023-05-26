@@ -2,29 +2,13 @@ import random
 import time
 
 import pandas as pd
+from ray import tune
+from ray.tune.sklearn import TuneSearchCV
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import GroupShuffleSplit, RandomizedSearchCV
 
-TARGET = "age_days"
-HOST_ID = "host_id"
-SEED = 12
-TRAIN_SIZE = 0.8
-
-
-def split_data_by_host(data, host_id, train_size=TRAIN_SIZE, seed=SEED):
-    """Randomly split dataset into train & test split based on host_id"""
-    if len(data[host_id].unique()) == 1:
-        raise ValueError("Only one unique host available in dataset.")
-
-    gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
-    split = gss.split(data, groups=data[host_id])
-    train_idx, test_idx = next(split)
-
-    train, test = data.iloc[train_idx], data.iloc[test_idx]
-    print(f"Train: {train.shape}, Test: {test.shape}")
-
-    return train, test
+from q2_time.config import HOST_ID, SEED_DATA, SEED_MODEL, TARGET, TRAIN_SIZE
+from q2_time.process_data import split_data_by_host
 
 
 def fit_model(train, target, ls_features, model_type, seed):
@@ -36,35 +20,48 @@ def fit_model(train, target, ls_features, model_type, seed):
     elif model_type == "RFRegressor":
         # todo: add CV fitting
         estimator = RandomForestRegressor(
-            max_depth=2, random_state=seed, criterion="squared_error"
+            # random_state=seed, criterion="squared_error"
         )
         params = {
-            "n_estimators": [10, 50, 100, 500],
-            "max_depth": [2, 8, 16, None],
-            "min_samples_split": [0.0001, 0.001, 0.01, 0.1],
-            "min_samples_leaf": [0.00001, 0.0001],
-            "max_features": [None, "sqrt", "log2", 0.1, 0.2, 0.5, 0.8],
-            "min_impurity_decrease": [0.0001, 0.001, 0.01],
-            "bootstrap": [True, False],
+            # when using early_stopping do not set n_estimators
+            # "n_estimators": [10, 50, 100, 500],
+            "max_depth": tune.choice([2, 8, 16, None]),
+            "min_samples_split": tune.choice([0.0001, 0.001, 0.01, 0.1]),
+            "min_samples_leaf": tune.choice([0.00001, 0.0001]),
+            "max_features": tune.choice([None, "sqrt", "log2", 0.1, 0.2, 0.5, 0.8]),
+            "min_impurity_decrease": tune.choice([0.0001, 0.001, 0.01]),
+            "bootstrap": tune.choice([True, False]),
         }
-    # elif model_type == "LSTM":
-    #     estimator = KerasClassifier(
-    #         build_fn=create_LSTM_model, epochs=10, batch_size=2, verbose=0
-    #     )
 
     # CV for best parameters
     if len(params) > 0:
-        # todo: adjust number of n_iter to try
-        # todo: adjust scoring depending on classification vs. regression
+        # todo: adjust number of n_iter to try todo: adjust scoring depending on
+        # classification vs. regression
         split_cv = min(5, train.shape[0])
-        estimator = RandomizedSearchCV(
+        # ! for distributed execution: connect to Ray cluster
+        # ray.shutdown()
+        # ray.init(address="auto")
+        # TuneSearchCV replaces RandomizedSearchCV &
+        # TuneGridSearchCV replaces GridSearchCV
+        estimator = TuneSearchCV(
             estimator,
             params,
-            n_iter=10,
+            early_stopping=True,
+            n_trials=10,
             scoring="neg_mean_squared_error",
+            # todo: adjust this be an input parameter to user
             n_jobs=-1,
+            refit=True,
             cv=split_cv,
             random_state=seed,
+            # todo: adjust where checkpoints and logs are stored
+            # local_dir=
+            # todo: define variable for experiment name
+            name="exp_test",
+            # todo: add logging with mlflow here
+            # loggers="mlflow",
+            # todo: add option to use GPUs
+            use_gpu=False,
         )
     print("Training model...")
     start = time.time()
@@ -73,10 +70,6 @@ def fit_model(train, target, ls_features, model_type, seed):
     end = time.time()
     dur_min = (end - start) / 60.0
     print(f"... lasted {dur_min} min.")
-
-    # in case of CV
-    if len(params) > 0:
-        model = model.best_estimator_
 
     return model
 
@@ -97,8 +90,8 @@ def fit_n_predict_model(
     host_id: str = HOST_ID,
     model_type: str = "LinReg",
     train_size: float = TRAIN_SIZE,
-    seed_data: int = SEED,
-    seed_model: int = SEED,
+    seed_data: int = SEED_DATA,
+    seed_model: int = SEED_MODEL,
 ):
     """Fit and predict model on data provided"""
     # assumption: features are all columns provided in feat
@@ -118,11 +111,11 @@ def fit_n_predict_model(
     return model, pred_train, pred_test
 
 
-def run_models(dic_models, random_runs=10, seed_simulations=SEED):
+def run_models(dic_models, random_runs=10, seed_simulations=SEED_MODEL):
     """
-    Run `random_runs` model simulations - for demo purposes for now.
-    `dic_model` must contain label of simulation as key and within item in this
-    order: metadata, feature table and model to use.
+    Run `random_runs` model simulations - for demo purposes for now. `dic_model`
+    must contain label of simulation as key and within item in this order:
+    metadata, feature table and model to use.
     """
     random.seed(seed_simulations)
     seed_model_ls = random.sample(range(0, 10000), random_runs)
@@ -142,9 +135,8 @@ def run_models(dic_models, random_runs=10, seed_simulations=SEED):
                 "age_days",
                 "host_id",
                 model,
-                # todo: decide do we want to shuffle data
-                # todo: randomly or stick with fixed split?
-                # seed_data=seed_model,
+                # todo: decide do we want to shuffle data todo: randomly or
+                # stick with fixed split? seed_data=seed_model,
                 seed_model=seed_model,
             )
             ls_train.append(train)

@@ -137,6 +137,14 @@ dmypy.json
 # Ruff cache
 .ruff_cache/
 
+# notebooks
+.DS_Store
+
+# MLflow model logs
+**/mlruns/**
+
+# Ray result logs
+**/ray_results/**
+
 # personal scratchpad
 x_*
-.DS_Store
