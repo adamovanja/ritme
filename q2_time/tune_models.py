@@ -14,6 +14,22 @@ from q2_time import _static_trainables as st
 # todo: adjust to json file to be read in from user
 from q2_time.config import HOST_ID, MLFLOW_TRACKING_URI, SEED_DATA, SEED_MODEL, TARGET
 
+model_trainables = {
+    # model_type: trainable
+    "xgb": st.train_xgb,
+    "nn": st.train_nn,
+    "linreg": st.train_linreg,
+    "rf": st.train_rf,
+}
+
+model_search_space = {
+    # model_type: search_space
+    "xgb": ss.xgb_space,
+    "nn": ss.nn_space,
+    "linreg": ss.linreg_space,
+    "rf": ss.rf_space,
+}
+
 
 def run_trials(
     mlflow_tracking_uri,  # MLflow with MLflowLoggerCallback
@@ -105,23 +121,6 @@ def run_trials(
     )
     # ResultGrid output
     return analysis.fit()
-
-
-model_trainables = {
-    # model_type: trainable
-    "xgb": st.train_xgb,
-    "nn": st.train_nn,
-    "linreg": st.train_linreg,
-    "rf": st.train_rf,
-}
-
-model_search_space = {
-    # model_type: search_space
-    "xgb": ss.xgb_space,
-    "nn": ss.nn_space,
-    "linreg": ss.linreg_space,
-    "rf": ss.rf_space,
-}
 
 
 def run_all_trials(

@@ -6,8 +6,91 @@ from q2_time.config import HOST_ID, SEED_DATA, TARGET, TRAIN_SIZE
 from q2_time.simulate_data import simulate_data
 
 
-def split_data_by_host(data, host_id=HOST_ID, train_size=TRAIN_SIZE, seed=SEED_DATA):
-    """Randomly split dataset into train & test split based on host_id"""
+def load_data(path2md: str, path2ft: str) -> (pd.DataFrame, pd.DataFrame):
+    """
+    Load data from the provided paths or generate simulated data.
+
+    Parameters
+    ----------
+    path2md : str or None
+        Path to metadata file. If None, simulated data is used
+    path2ft : str or None
+        Path to features file. If None, simulated data is used
+
+    Returns
+    -------
+    tuple of pandas.DataFrame
+        Returns two dataframes, first for features, second for metadata
+    """
+    if path2md and path2ft:
+        md = pd.read_csv(path2md, sep="\t", index_col=0)
+        ft = pd.read_csv(path2ft, sep="\t", index_col=0)
+    else:
+        ft, md = simulate_data(100)
+
+    return ft, md
+
+
+def merge_n_sort(
+    md: pd.DataFrame,
+    ft: pd.DataFrame,
+    host_id: str = HOST_ID,
+    target: str = TARGET,
+) -> pd.DataFrame:
+    """
+    Merge metadata and features and sort by host_id and target.
+
+    Parameters
+    ----------
+    md : pandas.DataFrame
+        Dataframe containing metadata
+    ft : pandas.DataFrame
+        Dataframe containing features
+    host_id : str
+        ID of the host machine, default is HOST_ID from config
+    target : str
+        Target variable, default is TARGET from config
+
+    Returns
+    -------
+    pandas.DataFrame
+        Merged and sorted data
+    """
+    data = md.join(ft, how="left")
+    data.sort_values([host_id, target], inplace=True)
+    return data
+
+
+def split_data_by_host(
+    data: pd.DataFrame,
+    host_id: str = HOST_ID,
+    train_size: float = TRAIN_SIZE,
+    seed: int = SEED_DATA,
+) -> (pd.DataFrame, pd.DataFrame):
+    """
+    Randomly split dataset into train & test split based on host_id
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Merged dataset to be split.
+    host_id : str
+        ID of the host, default is HOST_ID from config
+    train_size : float
+        The proportion of the dataset to include in the train split
+    seed : int
+        Random seed for reproducibility
+
+    Returns
+    -------
+    tuple of pandas.DataFrame
+        Tuple containing train and test dataframes
+
+    Raises
+    ------
+    ValueError
+        If only one unique host is available in the dataset
+    """
     if len(data[host_id].unique()) == 1:
         raise ValueError("Only one unique host available in dataset.")
 
@@ -21,23 +104,24 @@ def split_data_by_host(data, host_id=HOST_ID, train_size=TRAIN_SIZE, seed=SEED_D
     return train, test
 
 
-def merge_n_sort(md, ft, host_id=HOST_ID, target=TARGET):
-    data = md.join(ft, how="left")
-    data.sort_values([host_id, target], inplace=True)
-    return data
+def load_n_split_data(
+    path2md: str = None, path2ft: str = None
+) -> (pd.DataFrame, pd.DataFrame):
+    """
+    Load, merge and sort data, then split intro train-test sets by host_id
 
+    Parameters
+    ----------
+    path2md : str or None
+        Path to metadata file. If None, simulated data is used
+    path2ft : str or None
+        Path to features file. If None, simulated data is used
 
-def load_data(path2md, path2ft):
-    if path2md and path2ft:
-        md = pd.read_csv(path2md, sep="\t", index_col=0)
-        ft = pd.read_csv(path2ft, sep="\t", index_col=0)
-    else:
-        ft, md = simulate_data(100)
-
-    return ft, md
-
-
-def load_n_split_data(path2md=None, path2ft=None):
+    Returns
+    -------
+    tuple of pandas.DataFrame
+        Tuple containing train and test dataframes
+    """
     ft, md = load_data(path2md, path2ft)
     data = merge_n_sort(md, ft)
     train_val, test = split_data_by_host(data)
