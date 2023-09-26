@@ -29,7 +29,9 @@ def load_data(path2md: str, path2ft: str) -> (pd.DataFrame, pd.DataFrame):
             ft = q2.Artifact.load(path2ft).view(pd.DataFrame)
 
         # flag microbial features with prefix "F"
-        ft.columns = [f"F{i}" for i in ft.columns.tolist()]
+        first_letter = set([i[0] for i in ft.columns.tolist()])
+        if first_letter != {"F"}:
+            ft.columns = [f"F{i}" for i in ft.columns.tolist()]
     else:
         ft, md = simulate_data(100)
 

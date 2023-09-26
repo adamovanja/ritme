@@ -27,8 +27,8 @@ class TestProcessData(TestPluginBase):
 
     def test_load_data(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_md_path = os.path.join(tmpdir, "test_md.csv")
-            tmp_ft_path = os.path.join(tmpdir, "test_ft.csv")
+            tmp_md_path = os.path.join(tmpdir, "test_md.tsv")
+            tmp_ft_path = os.path.join(tmpdir, "test_ft.tsv")
 
             self.md.to_csv(tmp_md_path, sep="\t")
             self.ft.to_csv(tmp_ft_path, sep="\t")
