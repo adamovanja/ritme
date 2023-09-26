@@ -1,4 +1,5 @@
 import pandas as pd
+import qiime2 as q2
 from sklearn.model_selection import GroupShuffleSplit
 
 # todo: adjust to json file to be read in from user
@@ -20,7 +21,15 @@ def load_data(path2md: str, path2ft: str) -> (pd.DataFrame, pd.DataFrame):
     """
     if path2md and path2ft:
         md = pd.read_csv(path2md, sep="\t", index_col=0)
-        ft = pd.read_csv(path2ft, sep="\t", index_col=0)
+
+        # todo: add test for distinction between qza and tsv
+        if path2ft.endswith(".tsv"):
+            ft = pd.read_csv(path2ft, sep="\t", index_col=0)
+        elif path2ft.endswith(".qza"):
+            ft = q2.Artifact.load(path2ft).view(pd.DataFrame)
+
+        # flag microbial features with prefix "F"
+        ft.columns = [f"F{i}" for i in ft.columns.tolist()]
     else:
         ft, md = simulate_data(100)
 
@@ -85,7 +94,7 @@ def split_data_by_host(
 
 
 def load_n_split_data(
-    path2md: str = None, path2ft: str = None
+    path2md: str = None, path2ft: str = None, filter_md: list = None
 ) -> (pd.DataFrame, pd.DataFrame):
     """
     Load, merge and sort data, then split intro train-test sets by host_id.
@@ -98,7 +107,14 @@ def load_n_split_data(
         tuple: A tuple containing train and test dataframes.
     """
     ft, md = load_data(path2md, path2ft)
+
+    # add filter on metadata fields to include
+    # todo: add test for this
+    if filter_md:
+        md = md[filter_md].copy()
+
     data = merge_n_sort(md, ft)
+
     train_val, test = split_data_by_host(data)
 
     return train_val, test
