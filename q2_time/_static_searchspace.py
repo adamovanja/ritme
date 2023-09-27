@@ -38,6 +38,7 @@ nn_space = {
     "batch_size": tune.choice([32, 64, 128]),
 }
 for i in range(9):
+    # todo: increase!
     nn_space[f"n_units_l{i}"] = tune.randint(3, 64)
 
 # xgb
