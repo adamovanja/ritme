@@ -7,7 +7,7 @@ from q2_time.config import HOST_ID, SEED_DATA, TARGET, TRAIN_SIZE
 from q2_time.simulate_data import simulate_data
 
 
-def load_data(path2md: str, path2ft: str) -> (pd.DataFrame, pd.DataFrame):
+def load_data(path2md: str = None, path2ft: str = None) -> (pd.DataFrame, pd.DataFrame):
     """
     Load data from the provided paths or generate simulated data.
 
@@ -22,7 +22,6 @@ def load_data(path2md: str, path2ft: str) -> (pd.DataFrame, pd.DataFrame):
     if path2md and path2ft:
         md = pd.read_csv(path2md, sep="\t", index_col=0)
 
-        # todo: add test for distinction between qza and tsv
         if path2ft.endswith(".tsv"):
             ft = pd.read_csv(path2ft, sep="\t", index_col=0)
         elif path2ft.endswith(".qza"):
@@ -41,8 +40,8 @@ def load_data(path2md: str, path2ft: str) -> (pd.DataFrame, pd.DataFrame):
 def filter_merge_n_sort(
     md: pd.DataFrame,
     ft: pd.DataFrame,
-    host_id: str = HOST_ID,
-    target: str = TARGET,
+    host_id: str,
+    target: str,
     filter_md: list = None,
 ) -> pd.DataFrame:
     """
@@ -51,8 +50,8 @@ def filter_merge_n_sort(
     Args:
         md (pd.DataFrame): Dataframe containing metadata.
         ft (pd.DataFrame): Dataframe containing features.
-        host_id (str): ID of the host machine, default is HOST_ID from config.
-        target (str): Target variable, default is TARGET from config.
+        host_id (str): ID name of the host.
+        target (str): Name of target variable.
         filter_md (list): List of metadata fields to include.
 
     Returns:
@@ -101,23 +100,40 @@ def split_data_by_host(
 
 
 def load_n_split_data(
-    path2md: str = None, path2ft: str = None
+    path2md: str = None,
+    path2ft: str = None,
+    host_id: str = HOST_ID,
+    target: str = TARGET,
+    filter_md: list = None,
+    train_size: float = TRAIN_SIZE,
+    seed: int = SEED_DATA,
 ) -> (pd.DataFrame, pd.DataFrame):
     """
-    Load, merge and sort data, then split intro train-test sets by host_id.
+    Load, merge and sort data, then split into train-test sets by host_id.
 
     Args:
-        path2md (str, optional): Path to metadata file. If None, simulated data is used.
-        path2ft (str, optional): Path to features file. If None, simulated data is used.
+        path2md (str, optional): Path to metadata file. If None, simulated data
+        is used.
+        path2ft (str, optional): Path to features file. If None, simulated data
+        is used.
+        host_id (str, optional): ID of the host. Default is HOST_ID from config.
+        target (str, optional): Name of target variable. Default is TARGET from
+        config.
+        filter_md (list, optional): List of metadata fields to include. If None,
+        all fields are included.
+        train_size (float, optional): The proportion of the dataset to include
+        in the train split. Default is TRAIN_SIZE from config.
+        seed (int, optional): Random seed for reproducibility. Default is
+        SEED_DATA from config.
 
     Returns:
         tuple: A tuple containing train and test dataframes.
     """
     ft, md = load_data(path2md, path2ft)
 
-    data = filter_merge_n_sort(md, ft)
+    data = filter_merge_n_sort(md, ft, host_id, target, filter_md)
 
     # todo: add split also by study_id
-    train_val, test = split_data_by_host(data)
+    train_val, test = split_data_by_host(data, host_id, train_size, seed)
 
     return train_val, test

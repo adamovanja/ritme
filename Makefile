@@ -13,7 +13,7 @@ test: all
 
 # todo: adjust coverage threshold once final
 test-cov: all
-	py.test --cov=q2_time --cov-report xml:coverage.xml --cov-fail-under=45
+	py.test --cov=q2_time --cov-report xml:coverage.xml --cov-fail-under=50
 
 install: all
 	$(PYTHON) setup.py install

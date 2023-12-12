@@ -2,10 +2,16 @@ import os
 import tempfile
 
 import pandas as pd
+import qiime2 as q2
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 
-from q2_time.process_data import filter_merge_n_sort, load_data, split_data_by_host
+from q2_time.process_data import (
+    filter_merge_n_sort,
+    load_data,
+    load_n_split_data,
+    split_data_by_host,
+)
 
 
 class TestProcessData(TestPluginBase):
@@ -29,19 +35,41 @@ class TestProcessData(TestPluginBase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.tmp_md_path = os.path.join(self.tmpdir.name, "test_md.tsv")
         self.tmp_ft_path = os.path.join(self.tmpdir.name, "test_ft.tsv")
-
         self.md.to_csv(self.tmp_md_path, sep="\t")
         self.ft.to_csv(self.tmp_ft_path, sep="\t")
 
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_load_data(self):
+    def test_load_data_ft_tsv(self):
         # Load the data from the temporary files
         ft, md = load_data(self.tmp_md_path, self.tmp_ft_path)
 
         pd.testing.assert_frame_equal(ft, self.ft)
         pd.testing.assert_frame_equal(md, self.md)
+
+    def test_load_data_ft_qza(self):
+        art_ft = q2.Artifact.import_data("FeatureTable[Frequency]", self.ft)
+        tmp_ft_path_art = self.tmp_ft_path.replace(".tsv", ".qza")
+        art_ft.save(tmp_ft_path_art)
+        # Load the data from the temporary files
+        ft, md = load_data(self.tmp_md_path, tmp_ft_path_art)
+
+        pd.testing.assert_frame_equal(ft, self.ft)
+        pd.testing.assert_frame_equal(md, self.md)
+
+    def test_load_data_simulated(self):
+        ft, md = load_data()
+        assert ft.shape[0] == 100
+        assert md.shape[0] == 100
+
+    def test_load_data_no_feature_prefix(self):
+        tmp_ft_path_noprefix = self.tmp_ft_path.replace(".tsv", "_noprefix.tsv")
+        ft_noprefix = self.ft.rename(columns={"F0": "0", "F1": "1"})
+        ft_noprefix.to_csv(tmp_ft_path_noprefix, sep="\t")
+
+        ft, _ = load_data(self.tmp_md_path, tmp_ft_path_noprefix)
+        assert set([i[0] for i in ft.columns.tolist()]) == {"F"}
 
     def test_filter_merge_n_sort_w_filter(self):
         obs = filter_merge_n_sort(
@@ -109,3 +137,21 @@ class TestProcessData(TestPluginBase):
             ValueError, "Only one unique host available in dataset."
         ):
             split_data_by_host(data, "host_id", 0.5)
+
+    def test_load_n_split_data(self):
+        # Call the function with the test paths
+        train_val, test = load_n_split_data(
+            self.tmp_md_path,
+            self.tmp_ft_path,
+            host_id="host_id",
+            target="supertarget",
+            filter_md=["host_id", "supertarget"],
+        )
+
+        # Check that the dataframes are not empty
+        self.assertFalse(train_val.empty)
+        self.assertFalse(test.empty)
+
+        # Check that the dataframes do not overlap
+        overlap = pd.merge(train_val, test, how="inner")
+        self.assertEqual(len(overlap), 0)
