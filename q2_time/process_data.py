@@ -38,24 +38,29 @@ def load_data(path2md: str, path2ft: str) -> (pd.DataFrame, pd.DataFrame):
     return ft, md
 
 
-def merge_n_sort(
+def filter_merge_n_sort(
     md: pd.DataFrame,
     ft: pd.DataFrame,
     host_id: str = HOST_ID,
     target: str = TARGET,
+    filter_md: list = None,
 ) -> pd.DataFrame:
     """
-    Merge metadata and features and sort by host_id and target.
+    Merge filtered metadata and features and sort by host_id and target.
 
     Args:
         md (pd.DataFrame): Dataframe containing metadata.
         ft (pd.DataFrame): Dataframe containing features.
         host_id (str): ID of the host machine, default is HOST_ID from config.
         target (str): Target variable, default is TARGET from config.
+        filter_md (list): List of metadata fields to include.
 
     Returns:
         pd.DataFrame: Merged and sorted data.
     """
+    # filter on metadata fields to include
+    if filter_md:
+        md = md[filter_md].copy()
     data = md.join(ft, how="left")
     data.sort_values([host_id, target], inplace=True)
     return data
@@ -96,7 +101,7 @@ def split_data_by_host(
 
 
 def load_n_split_data(
-    path2md: str = None, path2ft: str = None, filter_md: list = None
+    path2md: str = None, path2ft: str = None
 ) -> (pd.DataFrame, pd.DataFrame):
     """
     Load, merge and sort data, then split intro train-test sets by host_id.
@@ -110,13 +115,9 @@ def load_n_split_data(
     """
     ft, md = load_data(path2md, path2ft)
 
-    # add filter on metadata fields to include
-    # todo: add test for this
-    if filter_md:
-        md = md[filter_md].copy()
+    data = filter_merge_n_sort(md, ft)
 
-    data = merge_n_sort(md, ft)
-
+    # todo: add split also by study_id
     train_val, test = split_data_by_host(data)
 
     return train_val, test

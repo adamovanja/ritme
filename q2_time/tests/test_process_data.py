@@ -5,7 +5,7 @@ import pandas as pd
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 
-from q2_time.process_data import load_data, merge_n_sort, split_data_by_host
+from q2_time.process_data import filter_merge_n_sort, load_data, split_data_by_host
 
 
 class TestProcessData(TestPluginBase):
@@ -19,33 +19,64 @@ class TestProcessData(TestPluginBase):
                 "F0": [0.12, 0.23, 0.33, 0.44],
                 "F1": [0.1, 0.2, 0.3, 0.4],
                 "supertarget": [1, 2, 5, 7],
+                "covariate": [0, 1, 0, 1],
             }
         )
         self.data.index = ["SR1", "SR2", "SR3", "SR4"]
-        self.md = self.data[["host_id", "supertarget"]]
+        self.md = self.data[["host_id", "supertarget", "covariate"]]
         self.ft = self.data[["F0", "F1"]]
 
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_md_path = os.path.join(self.tmpdir.name, "test_md.tsv")
+        self.tmp_ft_path = os.path.join(self.tmpdir.name, "test_ft.tsv")
+
+        self.md.to_csv(self.tmp_md_path, sep="\t")
+        self.ft.to_csv(self.tmp_ft_path, sep="\t")
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
     def test_load_data(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_md_path = os.path.join(tmpdir, "test_md.tsv")
-            tmp_ft_path = os.path.join(tmpdir, "test_ft.tsv")
-
-            self.md.to_csv(tmp_md_path, sep="\t")
-            self.ft.to_csv(tmp_ft_path, sep="\t")
-
-            # Load the data from the temporary files
-            ft, md = load_data(tmp_md_path, tmp_ft_path)
+        # Load the data from the temporary files
+        ft, md = load_data(self.tmp_md_path, self.tmp_ft_path)
 
         pd.testing.assert_frame_equal(ft, self.ft)
         pd.testing.assert_frame_equal(md, self.md)
 
-    def test_merge_n_sort(self):
-        obs = merge_n_sort(self.md, self.ft, host_id="host_id", target="supertarget")
+    def test_filter_merge_n_sort_w_filter(self):
+        obs = filter_merge_n_sort(
+            self.md,
+            self.ft,
+            host_id="host_id",
+            target="supertarget",
+            filter_md=["host_id", "supertarget"],
+        )
 
         exp = pd.DataFrame(
             {
                 "host_id": ["a", "b", "c", "c"],
                 "supertarget": [7, 2, 1, 5],
+                "F0": [0.44, 0.23, 0.12, 0.33],
+                "F1": [0.4, 0.2, 0.1, 0.3],
+            },
+            index=["SR4", "SR2", "SR1", "SR3"],
+        )
+
+        pd.testing.assert_frame_equal(obs, exp)
+
+    def test_filter_merge_n_sort_no_filter(self):
+        obs = filter_merge_n_sort(
+            self.md,
+            self.ft,
+            host_id="host_id",
+            target="supertarget",
+        )
+
+        exp = pd.DataFrame(
+            {
+                "host_id": ["a", "b", "c", "c"],
+                "supertarget": [7, 2, 1, 5],
+                "covariate": [1, 1, 0, 0],
                 "F0": [0.44, 0.23, 0.12, 0.33],
                 "F1": [0.4, 0.2, 0.1, 0.3],
             },
