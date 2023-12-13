@@ -5,7 +5,11 @@ from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 from scipy.stats.mstats import gmean
 
-from q2_time.engineer_features import PSEUDOCOUNT, alr, transform_features
+from q2_time.feature_space.transform_features import (
+    PSEUDOCOUNT,
+    alr,
+    transform_features,
+)
 
 
 class TestTransformFeatures(TestPluginBase):

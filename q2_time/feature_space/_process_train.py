@@ -1,4 +1,4 @@
-from q2_time.engineer_features import transform_features
+from q2_time.feature_space.transform_features import transform_features
 from q2_time.process_data import split_data_by_host
 
 
