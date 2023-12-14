@@ -3,7 +3,7 @@ from qiime2.plugin.testing import TestPluginBase
 from q2_time.model_space import _static_searchspace as ss
 
 
-class TestStatisSearchSpace(TestPluginBase):
+class TestStaticSearchSpace(TestPluginBase):
     """Test all static search space dictionaries"""
 
     package = "q2_time.tests"
