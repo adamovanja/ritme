@@ -48,11 +48,11 @@ def transform_features(
     elif method is None:
         feat_trans = feat.copy()
     else:
-        if method == "clr":
-            # ! do we ignore 1 dimension after clr?
-            col_names = [f"{method}_{x}" for x in feat.columns]
-        elif method == "ilr":
-            col_names = [f"ilr_{x}" for x in range(len(feat.columns) - 1)]
+        col_names = (
+            [f"{method}_{x}" for x in feat.columns]
+            if method == "clr"
+            else [f"ilr_{x}" for x in range(len(feat.columns) - 1)]
+        )
         feat_trans = pd.DataFrame(
             method_map[method](feat), index=feat.index, columns=col_names
         )
