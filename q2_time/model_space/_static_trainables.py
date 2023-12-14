@@ -283,7 +283,7 @@ def train_xgb(
         metrics={"rmse_train": "train-rmse", "rmse_val": "val-rmse"},
         filename="checkpoint",
     )
-    # todo: add test here to be tracked as well
+    # todo: add test set here to be tracked as well
 
     xgb.train(
         config,
