@@ -9,8 +9,8 @@ from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
 # todo: adjust to json file to be read in from user
-from q2_time.model_space import _static_searchspace as ss
-from q2_time.model_space import _static_trainables as st
+from q2_ritme.model_space import _static_searchspace as ss
+from q2_ritme.model_space import _static_trainables as st
 
 model_trainables = {
     # model_type: trainable

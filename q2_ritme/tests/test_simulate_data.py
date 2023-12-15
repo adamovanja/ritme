@@ -3,13 +3,13 @@ import pandas as pd
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 
-from q2_time.simulate_data import simulate_feature_table, simulate_metadata
+from q2_ritme.simulate_data import simulate_feature_table, simulate_metadata
 
 
 class TestFeatureTableSimulation(TestPluginBase):
     """Test all related to simulate_feature_table"""
 
-    package = "q2_time.tests"
+    package = "q2_ritme.tests"
 
     def test_default_feature_table(self):
         """Test default functionality"""
@@ -40,7 +40,7 @@ class TestFeatureTableSimulation(TestPluginBase):
 class TestMetadataSimulation(TestPluginBase):
     """Test all related to simulate_metadata"""
 
-    package = "q2_time.tests"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()

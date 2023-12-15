@@ -6,7 +6,7 @@ import qiime2 as q2
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 
-from q2_time.process_data import (
+from q2_ritme.process_data import (
     filter_merge_n_sort,
     load_data,
     load_n_split_data,
@@ -15,7 +15,7 @@ from q2_time.process_data import (
 
 
 class TestProcessData(TestPluginBase):
-    package = "q2_time.test"
+    package = "q2_ritme.test"
 
     def setUp(self):
         super().setUp()

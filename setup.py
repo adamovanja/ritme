@@ -11,7 +11,7 @@ from setuptools import find_packages, setup
 import versioneer
 
 setup(
-    name="q2-time",
+    name="q2-ritme",
     version=versioneer.get_version(),
     cmdclass=versioneer.get_cmdclass(),
     license="BSD-3-Clause",
@@ -20,10 +20,10 @@ setup(
     author_email="anja.adamov@hest.ethz.ch",
     description="This is a QIIME 2 plugin for longitudinal modeling applied to "
     "microbial time-series.",
-    url="https://github.com/adamovanja/q2-time",
-    entry_points={"qiime2.plugins": ["q2-time=q2_time.plugin_setup:plugin"]},
+    url="https://github.com/adamovanja/q2-ritme",
+    entry_points={"qiime2.plugins": ["q2-ritme=q2_ritme.plugin_setup:plugin"]},
     package_data={
-        "q2_time": ["citations.bib"],
+        "q2_ritme": ["citations.bib"],
     },
     zip_safe=False,
 )

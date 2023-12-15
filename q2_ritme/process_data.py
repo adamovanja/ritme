@@ -3,8 +3,8 @@ import qiime2 as q2
 from sklearn.model_selection import GroupShuffleSplit
 
 # todo: adjust to json file to be read in from user
-from q2_time.config import HOST_ID, SEED_DATA, TARGET, TRAIN_SIZE
-from q2_time.simulate_data import simulate_data
+from q2_ritme.config import HOST_ID, SEED_DATA, TARGET, TRAIN_SIZE
+from q2_ritme.simulate_data import simulate_data
 
 
 def load_data(path2md: str = None, path2ft: str = None) -> (pd.DataFrame, pd.DataFrame):

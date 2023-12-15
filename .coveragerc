@@ -3,7 +3,7 @@ branch = True
 omit =
     */tests*
     */__init__.py
-    q2_time/_version.py
+    q2_ritme/_version.py
     versioneer.py
 
 [report]
@@ -11,5 +11,5 @@ fail_under = 90
 omit =
     */tests*
     */__init__.py
-    q2_time/_version.py
+    q2_ritme/_version.py
     versioneer.py

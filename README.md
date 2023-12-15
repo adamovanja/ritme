@@ -1,15 +1,15 @@
-# q2-time
-![CI](https://github.com/adamovanja/q2-time/actions/workflows/ci.yml/badge.svg)
-[![codecov](https://codecov.io/gh/adamovanja/q2-time/branch/main/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/q2-time)
+# q2-ritme
+![CI](https://github.com/adamovanja/q2-ritme/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/adamovanja/q2-ritme/branch/main/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/q2-ritme)
 
 Longitudinal modeling approaches accounting for high-dimensional, sparse and compositional nature of microbial time-series.
 
 ## Setup
-<!-- TODO: replace plugin name "q2-time" with something better-->
+<!-- TODO: replace plugin name "q2-ritme" with something better-->
 To install the required dependencies for this package run:
 ```shell
 make create-env
-conda activate time
+conda activate ritme
 make dev
 ```
 

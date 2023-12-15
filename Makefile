@@ -13,13 +13,13 @@ test: all
 
 # todo: adjust coverage threshold once final
 test-cov: all
-	py.test --cov=q2_time --cov-report xml:coverage.xml --cov-fail-under=80
+	py.test --cov=q2_ritme --cov-report xml:coverage.xml --cov-fail-under=80
 
 install: all
 	$(PYTHON) setup.py install
 
 create-env: install-req
-	mamba create -y -n time -c qiime2 -c conda-forge -c bioconda -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
+	mamba create -y -n ritme -c qiime2 -c conda-forge -c bioconda -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
 
 install-req:
 	@command -v mamba >/dev/null 2>&1 || { echo "Installing mamba..."; conda install -y mamba -n base -c conda-forge; }
