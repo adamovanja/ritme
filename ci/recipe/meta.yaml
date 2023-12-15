@@ -2,7 +2,7 @@
 {% set version = data.get('version') or 'placehold' %}
 
 package:
-  name: q2-time
+  name: q2-ritme
   version: {{ version }}
 
 source:
@@ -44,12 +44,12 @@ test:
     - coverage
     - pytest-cov
   imports:
-    - q2_time
-    - qiime2.plugins.time
+    - q2_ritme
+    - qiime2.plugins.ritme
   commands:
-    - pytest --cov q2_time --pyargs q2_time
+    - pytest --cov q2_ritme --pyargs q2_ritme
 
 about:
-  home: https://github.com/adamovanja/q2-time
+  home: https://github.com/adamovanja/q2-ritme
   license: BSD-3-Clause
   license_family: BSD

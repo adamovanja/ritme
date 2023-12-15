@@ -19,7 +19,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 from tensorflow.keras import layers, models, optimizers
 
-from q2_time.feature_space._process_train import process_train
+from q2_ritme.feature_space._process_train import process_train
 
 
 def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:

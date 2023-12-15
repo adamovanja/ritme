@@ -1,5 +1,5 @@
-from q2_time.feature_space.transform_features import transform_features
-from q2_time.process_data import split_data_by_host
+from q2_ritme.feature_space.transform_features import transform_features
+from q2_ritme.process_data import split_data_by_host
 
 
 def process_train(config, train_val, target, host_id, seed_data):

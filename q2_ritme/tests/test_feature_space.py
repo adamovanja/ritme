@@ -7,8 +7,8 @@ from qiime2.plugin.testing import TestPluginBase
 from scipy.stats.mstats import gmean
 from skbio.stats.composition import ilr
 
-from q2_time.feature_space._process_train import process_train
-from q2_time.feature_space.transform_features import (
+from q2_ritme.feature_space._process_train import process_train
+from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
     alr,
     transform_features,
@@ -16,7 +16,7 @@ from q2_time.feature_space.transform_features import (
 
 
 class TestTransformFeatures(TestPluginBase):
-    package = "q2_time.test"
+    package = "q2_ritme.test"
 
     def setUp(self):
         super().setUp()
@@ -119,7 +119,7 @@ class TestTransformFeatures(TestPluginBase):
 
 
 class TestProcessTrain(TestPluginBase):
-    package = "q2_time.test"
+    package = "q2_ritme.test"
 
     def setUp(self):
         super().setUp()
@@ -144,8 +144,8 @@ class TestProcessTrain(TestPluginBase):
         for expected, actual in zip(expected_args, args[1:]):
             assert expected == actual, f"Expected {expected}, but got {actual}"
 
-    @patch("q2_time.feature_space._process_train.transform_features")
-    @patch("q2_time.feature_space._process_train.split_data_by_host")
+    @patch("q2_ritme.feature_space._process_train.transform_features")
+    @patch("q2_ritme.feature_space._process_train.split_data_by_host")
     def test_process_train(self, mock_split_data_by_host, mock_transform_features):
         # Arrange
         ls_ft = ["F0", "F1"]

@@ -55,7 +55,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         make create-env
-        conda activate time && make dev && make test-cov
+        conda activate ritme && make dev && make test-cov
 
     - name: Hack - template coverage output path
       run: echo "COV=coverage xml -o $GITHUB_WORKSPACE/coverage.xml" >> $GITHUB_ENV
@@ -63,14 +63,15 @@ jobs:
     # # TODO: include this once this is a Q2 plugin and remove above run tests
     # - uses: qiime2/action-library-packaging@alpha1
     #   with:
-    #     package-name: q2-time
+    #     package-name: q2-ritme
     #     additional-tests: ${{ env.COV }}
     #     build-target: dev
     #     library-token: ${{ secrets.LIBRARY_TOKEN }}
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        # TODO: remove token when repos is public
-        token: ${{ secrets.CODECOV_TOKEN }}
-        fail_ci_if_error: true
+    # # TODO: add back codecov once repos renaming is detected correctly
+    # - name: Upload coverage to Codecov
+    #   uses: codecov/codecov-action@v3
+    #   with:
+    #     # TODO: remove token when repos is public
+    #     token: ${{ secrets.CODECOV_TOKEN }}
+    #     fail_ci_if_error: true

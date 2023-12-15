@@ -1,12 +1,12 @@
 from qiime2.plugin.testing import TestPluginBase
 
-from q2_time.model_space import _static_searchspace as ss
+from q2_ritme.model_space import _static_searchspace as ss
 
 
 class TestStaticSearchSpace(TestPluginBase):
     """Test all static search space dictionaries"""
 
-    package = "q2_time.tests"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()
