@@ -8,11 +8,25 @@ from ray import air, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
-from q2_time import _static_searchspace as ss
-from q2_time import _static_trainables as st
-
 # todo: adjust to json file to be read in from user
-from q2_time.config import HOST_ID, MLFLOW_TRACKING_URI, SEED_DATA, SEED_MODEL, TARGET
+from q2_time.model_space import _static_searchspace as ss
+from q2_time.model_space import _static_trainables as st
+
+model_trainables = {
+    # model_type: trainable
+    "xgb": st.train_xgb,
+    "nn": st.train_nn,
+    "linreg": st.train_linreg,
+    "rf": st.train_rf,
+}
+
+model_search_space = {
+    # model_type: search_space
+    "xgb": ss.xgb_space,
+    "nn": ss.nn_space,
+    "linreg": ss.linreg_space,
+    "rf": ss.rf_space,
+}
 
 
 def run_trials(
@@ -107,39 +121,28 @@ def run_trials(
     return analysis.fit()
 
 
-model_trainables = {
-    # model_type: trainable
-    "xgb": st.train_xgb,
-    "nn": st.train_nn,
-    "linreg": st.train_linreg,
-    "rf": st.train_rf,
-}
-
-model_search_space = {
-    # model_type: search_space
-    "xgb": ss.xgb_space,
-    "nn": ss.nn_space,
-    "linreg": ss.linreg_space,
-    "rf": ss.rf_space,
-}
-
-
 def run_all_trials(
-    train_val: pd.DataFrame, model_types: list = ["xgb", "nn", "linreg", "rf"]
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    seed_data: int,
+    seed_model: int,
+    mlflow_uri: str,
+    model_types: list = ["xgb", "nn", "linreg", "rf"],
 ) -> dict:
     results_all = {}
     for model in model_types:
         print(f"Ray tune training of: {model}...")
         result = run_trials(
-            MLFLOW_TRACKING_URI,
+            mlflow_uri,
             model,
             model_trainables[model],
             model_search_space[model],
             train_val,
-            TARGET,
-            HOST_ID,
-            SEED_DATA,
-            SEED_MODEL,
+            target,
+            host_id,
+            seed_data,
+            seed_model,
             fully_reproducible=False,
         )
         results_all[model] = result

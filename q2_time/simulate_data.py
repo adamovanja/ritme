@@ -8,10 +8,22 @@ DENSITY = 0.3
 SEED_SIM = 12
 
 
-def simulate_feature_table(n_samples, n_feat, density=DENSITY, seed=SEED_SIM):
-    """Creates random sparse matrix of integers"""
+def simulate_feature_table(
+    n_samples: int, n_feat: int, density: float = DENSITY, seed: int = SEED_SIM
+) -> pd.DataFrame:
+    """
+    Creates a random sparse matrix of integers and transforms it into a DataFrame.
+
+    Parameters:
+    n_samples (int): Number of samples.
+    n_feat (int): Number of features.
+    density (float): Density of the sparse matrix. Default value is DENSITY.
+    seed (int): Seed for the random number generator. Default value is SEED_SIM.
+
+    Returns:
+    pd.DataFrame: Transformed dense matrix as a DataFrame.
+    """
     # sparse matrix
-    # todo: improve simulation here - semesterproject
     rvs = scipy.stats.binom(200, 0.1).rvs
     # rvs = scipy.stats.norm(40, 15).rvs
     # rvs = scipy.stats.expon(3).rvs
@@ -28,9 +40,25 @@ def simulate_feature_table(n_samples, n_feat, density=DENSITY, seed=SEED_SIM):
     return feat_df
 
 
-def simulate_metadata(feat_df, n_hosts, seed=SEED_SIM):
-    """Create simulated metadata table matching provided feature table
-    with n_hosts number of unique hosts."""
+def simulate_metadata(
+    feat_df: pd.DataFrame, n_hosts: int, seed: int = SEED_SIM
+) -> pd.DataFrame:
+    """
+    Create simulated metadata table matching provided feature table with given
+    number of unique hosts.
+
+    Args:
+        feat_df (pd.DataFrame): The feature DataFrame to match.
+        n_hosts (int): The number of unique hosts.
+        seed (int, optional): The seed for the random number generator. Defaults
+        to SEED_SIM.
+
+    Raises:
+        ValueError: If the number of hosts is greater than the number of samples.
+
+    Returns:
+        pd.DataFrame: The simulated metadata.
+    """
     n_samples = feat_df.shape[0]
     if n_hosts > n_samples:
         raise ValueError("More hosts than samples. Reset n_hosts to match the samples")
@@ -58,28 +86,22 @@ def simulate_data(
     n_hosts: int = 4,
     density: float = DENSITY,
     seed: int = SEED_SIM,
-):
+) -> (pd.DataFrame, pd.DataFrame):
+    """
+    Simulates data by calling the functions simulate_feature_table and
+    simulate_metadata with the provided parameters.
+
+    Parameters:
+    n_samples (int): Number of samples. Default value is 10.
+    n_feat (int): Number of features. Default value is 20.
+    n_hosts (int): Number of hosts. Default value is 4.
+    density (float): Density of the sparse matrix. Default value is DENSITY.
+    seed (int): Seed for the random number generator. Default value is SEED_SIM.
+
+    Returns:
+    tuple: A tuple containing the feature table and metadata as two DataFrames.
+    """
     ft = simulate_feature_table(n_samples, n_feat, density, seed)
     md = simulate_metadata(ft, n_hosts, seed)
-
-    # # saving created ft and md files
-    # str_dens = str(density).replace(".", "")
-    # config_suffix = (
-    #     f"{n_samples}x{n_feat}_H{n_hosts}_D{str_dens}_S{seed}"
-    # )
-    # path_md = os.path.join(
-    #     outdir,
-    #     f"md_sim_{config_suffix}.tsv",
-    # )
-    # md.to_csv(path_md, sep="\t")
-
-    # # todo: adjust to save as Q2 FeatureTable[Frequency] artifact
-    # path_ft = os.path.join(
-    #     outdir,
-    #     f"ft_sim_{config_suffix}.tsv",
-    # )
-    # ft.to_csv(path_ft, sep="\t")
-
-    # print(f"Saved simulated datasets in: {outdir}")
 
     return ft, md

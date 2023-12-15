@@ -19,6 +19,7 @@ requirements:
 
   run:
     - python {{ python }}
+    - importlib-metadata
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
     - numpy
@@ -29,11 +30,13 @@ requirements:
   # TODO: build conda package from pypip
   run_constrained:
     - pip:
+    # TODO: try to find conda equivalents
       - ray[tune]
       - tensorflow
       - tune-sklearn
       - mlflow
       - xgboost
+      - zipp
 
 test:
   requires:

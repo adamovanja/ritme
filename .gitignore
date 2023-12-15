@@ -146,5 +146,8 @@ dmypy.json
 # Ray result logs
 **/ray_results/**
 
+# Sequence and metadata
+**/experiments/data/**
+
 # personal scratchpad
 x_*

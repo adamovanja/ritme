@@ -34,10 +34,10 @@ repos:
   #   hooks:
   #     - id: mypy
   #       args: [ --ignore-missing-imports, --pretty, --show-error-codes ]
-  - repo: https://github.com/codespell-project/codespell
-    rev: v2.2.4
-    hooks:
-      - id: codespell
+  # - repo: https://github.com/codespell-project/codespell
+  #   rev: v2.2.4
+  #   hooks:
+  #     - id: codespell
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0
     hooks:
