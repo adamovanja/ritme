@@ -68,9 +68,9 @@ jobs:
     #     build-target: dev
     #     library-token: ${{ secrets.LIBRARY_TOKEN }}
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        # TODO: remove token when repos is public
-        token: ${{ secrets.CODECOV_TOKEN }}
-        fail_ci_if_error: true
+    # - name: Upload coverage to Codecov
+    #   uses: codecov/codecov-action@v3
+    #   with:
+    #     # TODO: remove token when repos is public
+    #     token: ${{ secrets.CODECOV_TOKEN }}
+    #     fail_ci_if_error: true
