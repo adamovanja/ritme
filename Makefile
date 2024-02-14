@@ -19,14 +19,14 @@ install: all
 	$(PYTHON) setup.py install
 
 create-env: install-req
-	mamba create -y -n ritme -c qiime2 -c conda-forge -c bioconda -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
+	mamba create -y -n ritme -c qiime2 -c conda-forge -c bioconda -c pytorch -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
 
 install-req:
 	@command -v mamba >/dev/null 2>&1 || { echo "Installing mamba..."; conda install -y mamba -n base -c conda-forge; }
 	pip install PyYAML jinja2
 
 dev: all
-	pip install pre-commit parameterized ruff black pytest pytest-cov flake8 versioneer mypy types-PyYAML $(shell python get_requirements.py ci/recipe/meta.yaml pip)
+	pip install pre-commit parameterized ruff black pytest pytest-cov flake8 versioneer mypy types-PyYAML ipykernel
 	pip install -e .
 	pre-commit install
 

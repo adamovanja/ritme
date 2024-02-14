@@ -132,6 +132,7 @@ def run_all_trials(
 ) -> dict:
     results_all = {}
     for model in model_types:
+        # todo: parallelize this for loop
         print(f"Ray tune training of: {model}...")
         result = run_trials(
             mlflow_uri,
