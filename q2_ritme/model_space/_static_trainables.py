@@ -1,23 +1,24 @@
 """Module with tune trainables of all static models"""
+import json
 import os
 import random
 from typing import Any, Dict
 
 import joblib
-import mlflow
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+import torch
 import xgboost as xgb
 from ray import tune
 from ray.air import session
-from ray.tune.integration.keras import TuneReportCheckpointCallback as k_cc
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
-from tensorflow.keras import layers, models, optimizers
+from torch import nn
+from torch.optim import Adam
+from torch.utils.data import DataLoader, TensorDataset
 
 from q2_ritme.feature_space._process_train import process_train
 
@@ -162,6 +163,42 @@ def train_rf(
     _report_results_manually(rf, X_train, y_train, X_val, y_val)
 
 
+class NeuralNet(nn.Module):
+    def __init__(self, n_units):
+        super(NeuralNet, self).__init__()
+        self.layers = nn.ModuleList()
+        n_layers = len(n_units)
+        for i in range(n_layers - 1):
+            self.layers.append(nn.Linear(n_units[i], n_units[i + 1]))
+            if i != len(n_units) - 2:  # No activation after the last layer
+                self.layers.append(nn.ReLU())
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+
+def load_data(X_train, y_train, X_val, y_val, config):
+    train_dataset = TensorDataset(
+        torch.tensor(X_train, dtype=torch.float32),
+        torch.tensor(y_train, dtype=torch.float32),
+    )
+    val_dataset = TensorDataset(
+        torch.tensor(X_val, dtype=torch.float32),
+        torch.tensor(y_val, dtype=torch.float32),
+    )
+    train_loader = DataLoader(
+        train_dataset, batch_size=config["batch_size"], shuffle=True
+    )
+    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"])
+    return train_loader, val_loader
+
+
+def _determine_device():
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def train_nn(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -191,54 +228,77 @@ def train_nn(
 
     # ! model
     # set seeds
-    random.seed(seed_model)
+    torch.manual_seed(seed_model)
     np.random.seed(seed_model)
-    tf.random.set_seed(seed_model)
-    tf.compat.v1.set_random_seed(seed_model)
+    random.seed(seed_model)
+
+    # Get cpu or gpu device for training.
+    device = _determine_device()
+    # print(f"Using {device} device")
+
+    # load data
+    train_loader, val_loader = load_data(X_train, y_train, X_val, y_val, config)
 
     # define neural network
-    model = models.Sequential()
-    model.add(layers.Input(shape=(X_train.shape[1],)))
-
-    n_layers = config["n_layers"]
-    for i in range(n_layers):
-        num_hidden = config[f"n_units_l{i}"]
-        model.add(layers.Dense(num_hidden, activation="relu"))
-
-    model.add(layers.Dense(1))
-
-    # define learning
-    learning_rate = config["learning_rate"]
-    optimizer = optimizers.Adam(learning_rate=learning_rate)
-    model.compile(
-        optimizer=optimizer,
-        loss="mse",
-        metrics=[tf.keras.metrics.RootMeanSquaredError(name="rmse")],
+    n_layers = config["n_hidden_layers"]
+    n_units = (
+        # input layer
+        [X_train.shape[1]]
+        # hidden layers
+        + [config[f"n_units_hl{i}"] for i in range(0, n_layers)]
+        # output layer defined by target: cont. regression
+        + [1]
     )
+    assert len(n_units) == n_layers + 2
+    model = NeuralNet(n_units).to(device)
+    # print(model)
 
-    # todo: reconsider adding early stopping
-    # early_stopping = callbacks.EarlyStopping(
-    #   patience=10, restore_best_weights=True)
-    mlflow.tensorflow.autolog()
+    # define optimizer and training loss
+    train_loss = nn.MSELoss()
+    optimizer = Adam(model.parameters(), lr=config["learning_rate"])
 
-    # Add TuneReportCallback to report metrics for each epoch - which is
-    # built-in support for keras models in Ray Tune
-    checkpoint_callback = k_cc(
-        # tune: keras
-        {"rmse_val": "val_rmse", "rmse_train": "rmse"},
-        on="epoch_end",
-        filename="checkpoint",
-    )
+    # fit model
+    for epoch in range(config["epochs"]):
+        # Training
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            # model output: [batch_size, 1] and target [batch_size] hence
+            # using squeeze to match dimensions
+            pred = model(inputs).squeeze()
+            loss = train_loss(pred, targets)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
 
-    model.fit(
-        X_train,
-        y_train,
-        validation_data=(X_val, y_val),
-        epochs=100,
-        batch_size=config["batch_size"],
-        callbacks=[checkpoint_callback],
-        verbose=0,
-    )
+        # Validation
+        with torch.no_grad():
+            val_loss = 0
+            val_rmse = 0
+            n = 0
+            for inputs, targets in val_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                pred = model(inputs).squeeze()
+                loss = train_loss(pred, targets)
+                val_loss += loss.item()
+                val_rmse += torch.sqrt(loss).item()
+                n += 1
+            val_loss /= n
+            val_rmse /= n
+
+        # Save checkpoint at last epoch
+        if epoch == config["epochs"] - 1:
+            with tune.checkpoint_dir(step=epoch) as checkpoint_dir:
+                path = os.path.join(checkpoint_dir, "checkpoint.pth")
+                torch.save(model.state_dict(), path)
+
+                # Serialize and save n_units
+                n_units_path = os.path.join(checkpoint_dir, "n_units.json")
+                with open(n_units_path, "w") as f:
+                    json.dump(n_units, f)
+
+        # report results to Ray Tune
+        # print(epoch, val_loss, val_rmse)
+        tune.report(rmse_val=val_rmse, rmse_train=loss.item())
 
 
 def train_xgb(

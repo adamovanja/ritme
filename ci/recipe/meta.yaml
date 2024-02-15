@@ -31,7 +31,6 @@ requirements:
     - scipy
     - scikit-learn
     - scikit-bio
-    - tensorflow
     - torchvision
     - zipp
 

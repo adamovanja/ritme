@@ -35,7 +35,7 @@ class TestStaticSearchSpace(TestPluginBase):
         required_keys = [
             "data_transform",
             "data_alr_denom_idx",
-            "n_layers",
+            "n_hidden_layers",
             "learning_rate",
             "batch_size",
         ]
@@ -43,8 +43,8 @@ class TestStaticSearchSpace(TestPluginBase):
             assert key in ss.nn_space, f"Key '{key}' not found in nn_space"
         for i in range(9):
             assert (
-                f"n_units_l{i}" in ss.nn_space
-            ), f"Key 'n_units_l{i}' not found in nn_space"
+                f"n_units_hl{i}" in ss.nn_space
+            ), f"Key 'n_units_hl{i}' not found in nn_space"
 
     def test_xgb_space_keys(self):
         required_keys = [

@@ -122,45 +122,8 @@ class TestTrainables(TestPluginBase):
         mock_rf_instance.fit.assert_called_once()
         mock_report.assert_called_once()
 
-    @patch("q2_ritme.model_space._static_trainables.process_train")
-    @patch("q2_ritme.model_space._static_trainables.models.Sequential")
-    @patch("q2_ritme.model_space._static_trainables.k_cc")
-    def test_train_nn(self, mock_checkpoint, mock_nn, mock_process_train):
-        # Arrange
-        config = {
-            "n_layers": 2,
-            "n_units_l0": 32,
-            "n_units_l1": 64,
-            "learning_rate": 0.01,
-            "batch_size": 32,
-        }
-        mock_train = self.train_val.iloc[:2, :]
-        mock_test = self.train_val.iloc[2:, :]
-        mock_process_train.return_value = (
-            mock_train[["F1", "F2"]].values,
-            mock_train[self.target].values,
-            mock_test[["F1", "F2"]].values,
-            mock_test[self.target].values,
-        )
-        mock_nn_instance = mock_nn.return_value
-
-        # Act
-        st.train_nn(
-            config,
-            self.train_val,
-            self.target,
-            self.host_id,
-            self.seed_data,
-            self.seed_model,
-        )
-
-        # Assert
-        mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.seed_data
-        )
-        mock_nn.assert_called_once()
-        mock_nn_instance.fit.assert_called_once()
-        mock_checkpoint.assert_called_once()
+    # def test_train_nn(self, mock_adam, mock_neural_net, mock_process_train):
+    #     # todo: add unit test for pytorch NN
 
     @patch("q2_ritme.model_space._static_trainables.process_train")
     @patch("q2_ritme.model_space._static_trainables.xgb.DMatrix")
