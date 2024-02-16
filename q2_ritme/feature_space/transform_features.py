@@ -1,7 +1,7 @@
 import pandas as pd
 from skbio.stats.composition import clr, ilr
 
-PSEUDOCOUNT = 0.0001
+PSEUDOCOUNT = 0.000001
 
 
 def alr(feat: pd.DataFrame, denom_idx: int) -> pd.DataFrame:

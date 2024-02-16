@@ -22,21 +22,18 @@ requirements:
     - importlib-metadata
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
+    - mlflow
     - numpy
     - pandas
+    - pytorch
+    - py-xgboost
+    # todo: update to newest ray-tune version
+    - ray-tune==2.6.3
     - scipy
     - scikit-learn
     - scikit-bio
-  # TODO: build conda package from pypip
-  run_constrained:
-    - pip:
-    # TODO: try to find conda equivalents
-      - ray[tune]
-      - tensorflow
-      - tune-sklearn
-      - mlflow
-      - xgboost
-      - zipp
+    - torchvision
+    - zipp
 
 test:
   requires:

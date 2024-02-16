@@ -3,7 +3,7 @@ import random
 
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+import torch
 from ray import air, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
@@ -40,7 +40,7 @@ def run_trials(
     seed_data,
     seed_model,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
-    num_trials=2,  # todo: increase default num_trials
+    num_trials=1,  # todo: increase default num_trials
     scheduler_grace_period=5,
     scheduler_max_t=100,
     resources={"cpu": 1},
@@ -51,8 +51,9 @@ def run_trials(
     # set seed for search algorithms/schedulers
     random.seed(seed_model)
     np.random.seed(seed_model)
-    tf.random.set_seed(seed_model)
+    torch.manual_seed(seed_model)
 
+    # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
         # AsyncHyperBand enables aggressive early stopping of bad trials.
         # ! efficient & fast BUT
@@ -69,6 +70,8 @@ def run_trials(
         # ! improves the reproducibility of experiments by ensuring that all trials
         # ! are evaluated in the same order.
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
+
+    storage_path = os.path.abspath("best_models")
 
     analysis = tune.Tuner(
         # trainable with input parameters passed and set resources
@@ -87,14 +90,15 @@ def run_trials(
         run_config=air.RunConfig(
             # complete experiment name with subfolders of trials within
             name=exp_name,
-            local_dir="ray_results",
-            # checkpoint: to store best model
+            storage_path=storage_path,
+            # ! checkpoint: to store best model - is retrieved in
+            # evaluate_models.py
             checkpoint_config=air.CheckpointConfig(
                 checkpoint_score_attribute="rmse_val",
                 num_to_keep=3,
             ),
-            # callback: executing specific tasks (e.g. logging)
-            # at specific points in training
+            # ! callback: executing specific tasks (e.g. logging) at specific
+            # points in training - used in MLflow browser interface
             callbacks=[
                 MLflowLoggerCallback(
                     tracking_uri=mlflow_tracking_uri,
@@ -111,7 +115,7 @@ def run_trials(
             mode="min",
             # define the scheduler
             scheduler=scheduler,
-            # number of trials to run
+            # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
             # ! set seed
             search_alg=tune.search.BasicVariantGenerator(),
@@ -129,9 +133,11 @@ def run_all_trials(
     seed_model: int,
     mlflow_uri: str,
     model_types: list = ["xgb", "nn", "linreg", "rf"],
+    fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}
     for model in model_types:
+        # todo: parallelize this for loop
         print(f"Ray tune training of: {model}...")
         result = run_trials(
             mlflow_uri,
@@ -143,7 +149,7 @@ def run_all_trials(
             host_id,
             seed_data,
             seed_model,
-            fully_reproducible=False,
+            fully_reproducible=fully_reproducible,
         )
         results_all[model] = result
     return results_all

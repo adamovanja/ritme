@@ -30,16 +30,19 @@ rf_space = {
 }
 
 # keras neural network
+max_layers = 12
 nn_space = {
     **data_eng_space,
     # Sample random uniformly between [1,9] rounding to multiples of 3
-    "n_layers": tune.qrandint(1, 9, 3),
+    "n_hidden_layers": tune.qrandint(1, max_layers, 3),
     "learning_rate": tune.loguniform(1e-5, 1e-1),
     "batch_size": tune.choice([32, 64, 128]),
+    "epochs": tune.choice([10, 50, 100, 200]),
 }
-for i in range(9):
+# first and last layer are fixed by shape of features and target
+for i in range(0, max_layers):
     # todo: increase!
-    nn_space[f"n_units_l{i}"] = tune.randint(3, 64)
+    nn_space[f"n_units_hl{i}"] = tune.randint(3, 64)
 
 # xgb
 xgb_space = {

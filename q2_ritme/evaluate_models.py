@@ -1,11 +1,14 @@
+import json
 import os
 from typing import Any
 
+import torch
 import xgboost as xgb
 from joblib import load
 from ray.air.result import Result
 from ray.tune.result_grid import ResultGrid
-from tensorflow.keras.models import load_model
+
+from q2_ritme.model_space._static_trainables import NeuralNet, _determine_device
 
 
 def _get_checkpoint_path(result: Result) -> str:
@@ -48,8 +51,14 @@ def load_nn_model(result: Result) -> Any:
     :param result: The result object containing the checkpoint information.
     :return: The loaded neural network model.
     """
-    ckpt_path = _get_checkpoint_path(result)
-    return load_model(ckpt_path)
+    ckpt_path = _get_checkpoint_path(result) + ".pth"
+    # ! n_units is needed - which needs to be saved
+    unit_path = ckpt_path.replace("checkpoint.pth", "n_units.json")
+    n_units = json.load(open(unit_path, "r"))
+    model = NeuralNet(n_units).to(_determine_device())
+    model.load_state_dict(torch.load(ckpt_path))
+
+    return model
 
 
 def get_best_model(model_type: str, result_grid: ResultGrid) -> Any:

@@ -5,13 +5,16 @@
 Longitudinal modeling approaches accounting for high-dimensional, sparse and compositional nature of microbial time-series.
 
 ## Setup
-<!-- TODO: replace plugin name "q2-ritme" with something better-->
 To install the required dependencies for this package run:
 ```shell
 make create-env
 conda activate ritme
 make dev
 ```
+
+## Model training
+Once you have trained some models, you can check the progress of the trained models by launching `mlflow ui --backend-store-uri experiments/mlruns`.
+
 
 ## Background
 ### Why ray tune?
