@@ -223,10 +223,6 @@ def load_data(X_train, y_train, X_val, y_val, config):
     return train_loader, val_loader
 
 
-def _determine_device():
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
 def train_nn(config, train_val, target, host_id, seed_data, seed_model):
     # Set the seed for reproducibility
     seed_everything(seed_model, workers=True)
