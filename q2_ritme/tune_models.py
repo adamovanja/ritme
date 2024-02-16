@@ -71,6 +71,8 @@ def run_trials(
         # ! are evaluated in the same order.
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
 
+    storage_path = os.path.abspath("best_models")
+
     analysis = tune.Tuner(
         # trainable with input parameters passed and set resources
         tune.with_resources(
@@ -88,7 +90,7 @@ def run_trials(
         run_config=air.RunConfig(
             # complete experiment name with subfolders of trials within
             name=exp_name,
-            storage_path="best_models",
+            storage_path=storage_path,
             # ! checkpoint: to store best model - is retrieved in
             # evaluate_models.py
             checkpoint_config=air.CheckpointConfig(

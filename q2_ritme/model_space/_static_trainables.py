@@ -260,6 +260,8 @@ def train_nn(
     # fit model
     for epoch in range(config["epochs"]):
         # Training
+        t_rmse = 0
+        n_t = 0
         for inputs, targets in train_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             # model output: [batch_size, 1] and target [batch_size] hence
@@ -269,6 +271,9 @@ def train_nn(
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
+            t_rmse += torch.sqrt(loss).item()
+            n_t += 1
+        t_rmse /= n_t
 
         # Validation
         with torch.no_grad():
@@ -298,7 +303,7 @@ def train_nn(
 
         # report results to Ray Tune
         # print(epoch, val_loss, val_rmse)
-        tune.report(rmse_val=val_rmse, rmse_train=loss.item())
+        tune.report(rmse_val=val_rmse, rmse_train=t_rmse)
 
 
 def train_xgb(

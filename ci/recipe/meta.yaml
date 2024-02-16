@@ -27,7 +27,8 @@ requirements:
     - pandas
     - pytorch
     - py-xgboost
-    - ray-tune
+    # todo: update to newest ray-tune version
+    - ray-tune==2.6.3
     - scipy
     - scikit-learn
     - scikit-bio
