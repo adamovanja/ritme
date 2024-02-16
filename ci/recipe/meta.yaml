@@ -22,6 +22,7 @@ requirements:
     - importlib-metadata
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
+    - lightning
     - mlflow
     - numpy
     - pandas

@@ -1,5 +1,4 @@
 """Module with tune trainables of all static models"""
-import json
 import os
 import random
 from typing import Any, Dict
@@ -9,8 +8,11 @@ import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
+from pytorch_lightning import LightningModule, Trainer, seed_everything
+from pytorch_lightning.callbacks import ModelCheckpoint
 from ray import tune
 from ray.air import session
+from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor
@@ -163,20 +165,46 @@ def train_rf(
     _report_results_manually(rf, X_train, y_train, X_val, y_val)
 
 
-class NeuralNet(nn.Module):
-    def __init__(self, n_units):
+class NeuralNet(LightningModule):
+    def __init__(self, n_units, learning_rate):
         super(NeuralNet, self).__init__()
+        self.save_hyperparameters()  # This saves all passed arguments to self.hparams
         self.layers = nn.ModuleList()
         n_layers = len(n_units)
         for i in range(n_layers - 1):
             self.layers.append(nn.Linear(n_units[i], n_units[i + 1]))
             if i != len(n_units) - 2:  # No activation after the last layer
                 self.layers.append(nn.ReLU())
+        self.learning_rate = learning_rate
+        self.loss_fn = nn.MSELoss()
 
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
         return x
+
+    def training_step(self, batch, batch_idx):
+        inputs, targets = batch
+        predictions = self(inputs).squeeze()
+        loss = self.loss_fn(predictions, targets)
+        rmse = torch.sqrt(loss)
+        self.log(
+            "train_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        )
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        inputs, targets = batch
+        predictions = self(inputs).squeeze()
+        loss = self.loss_fn(predictions, targets)
+        rmse = torch.sqrt(loss)
+        self.log(
+            "val_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        )
+
+    def configure_optimizers(self):
+        optimizer = Adam(self.parameters(), lr=self.learning_rate)
+        return optimizer
 
 
 def load_data(X_train, y_train, X_val, y_val, config):
@@ -199,47 +227,19 @@ def _determine_device():
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def train_nn(
-    config: Dict[str, Any],
-    train_val: pd.DataFrame,
-    target: str,
-    host_id: str,
-    seed_data: int,
-    seed_model: int,
-) -> None:
-    """
-    Train a neural network model and report the results to Ray Tune.
+def train_nn(config, train_val, target, host_id, seed_data, seed_model):
+    # Set the seed for reproducibility
+    seed_everything(seed_model, workers=True)
 
-    Parameters:
-    config (Dict[str, Any]): The configuration for the training.
-    train_val (DataFrame): The training and validation data.
-    target (str): The target variable.
-    host_id (str): The host ID.
-    seed_data (int): The seed for the data.
-    seed_model (int): The seed for the model.
-
-    Returns:
-    None
-    """
-    # ! process dataset
+    # Process dataset
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, seed_data
     )
 
-    # ! model
-    # set seeds
-    torch.manual_seed(seed_model)
-    np.random.seed(seed_model)
-    random.seed(seed_model)
-
-    # Get cpu or gpu device for training.
-    device = _determine_device()
-    # print(f"Using {device} device")
-
-    # load data
+    # Data loaders
     train_loader, val_loader = load_data(X_train, y_train, X_val, y_val, config)
 
-    # define neural network
+    # Model
     n_layers = config["n_hidden_layers"]
     n_units = (
         # input layer
@@ -250,60 +250,39 @@ def train_nn(
         + [1]
     )
     assert len(n_units) == n_layers + 2
-    model = NeuralNet(n_units).to(device)
-    # print(model)
+    model = NeuralNet(n_units=n_units, learning_rate=config["learning_rate"])
 
-    # define optimizer and training loss
-    train_loss = nn.MSELoss()
-    optimizer = Adam(model.parameters(), lr=config["learning_rate"])
+    # Callbacks
+    checkpoint_dir = (
+        tune.get_trial_dir() if tune.is_session_enabled() else "checkpoints"
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # fit model
-    for epoch in range(config["epochs"]):
-        # Training
-        t_rmse = 0
-        n_t = 0
-        for inputs, targets in train_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
-            # model output: [batch_size, 1] and target [batch_size] hence
-            # using squeeze to match dimensions
-            pred = model(inputs).squeeze()
-            loss = train_loss(pred, targets)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            t_rmse += torch.sqrt(loss).item()
-            n_t += 1
-        t_rmse /= n_t
+    callbacks = [
+        ModelCheckpoint(
+            monitor="val_rmse",
+            mode="min",
+            save_top_k=1,
+            save_weights_only=False,
+            dirpath=checkpoint_dir,  # Automatically set dirpath
+            filename="{epoch}-{val_rmse:.2f}",
+        ),
+        TuneReportCheckpointCallback(
+            metrics={"rmse_val": "val_rmse", "rmse_train": "train_rmse"},
+            filename="checkpoint",
+            on="validation_end",
+        ),
+    ]
 
-        # Validation
-        with torch.no_grad():
-            val_loss = 0
-            val_rmse = 0
-            n = 0
-            for inputs, targets in val_loader:
-                inputs, targets = inputs.to(device), targets.to(device)
-                pred = model(inputs).squeeze()
-                loss = train_loss(pred, targets)
-                val_loss += loss.item()
-                val_rmse += torch.sqrt(loss).item()
-                n += 1
-            val_loss /= n
-            val_rmse /= n
+    # Trainer
+    trainer = Trainer(
+        max_epochs=config["epochs"],
+        callbacks=callbacks,
+        deterministic=True,
+        enable_progress_bar=False,
+    )
 
-        # Save checkpoint at last epoch
-        if epoch == config["epochs"] - 1:
-            with tune.checkpoint_dir(step=epoch) as checkpoint_dir:
-                path = os.path.join(checkpoint_dir, "checkpoint.pth")
-                torch.save(model.state_dict(), path)
-
-                # Serialize and save n_units
-                n_units_path = os.path.join(checkpoint_dir, "n_units.json")
-                with open(n_units_path, "w") as f:
-                    json.dump(n_units, f)
-
-        # report results to Ray Tune
-        # print(epoch, val_loss, val_rmse)
-        tune.report(rmse_val=val_rmse, rmse_train=t_rmse)
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 
 def train_xgb(
