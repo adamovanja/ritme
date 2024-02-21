@@ -145,6 +145,7 @@ class TestProcessData(TestPluginBase):
             self.tmp_ft_path,
             host_id="host_id",
             target="supertarget",
+            train_size=0.8,
             filter_md=["host_id", "supertarget"],
         )
 
