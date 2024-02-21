@@ -114,7 +114,7 @@ class TestProcessData(TestPluginBase):
         pd.testing.assert_frame_equal(obs, exp)
 
     def test_split_data_by_host(self):
-        train_obs, test_obs = split_data_by_host(self.data, "host_id", 0.5)
+        train_obs, test_obs = split_data_by_host(self.data, "host_id", 0.5, 123)
 
         train_exp = self.data.iloc[[0, 2], :].copy()
         test_exp = self.data.iloc[[1, 3], :].copy()
@@ -136,7 +136,7 @@ class TestProcessData(TestPluginBase):
         with self.assertRaisesRegex(
             ValueError, "Only one unique host available in dataset."
         ):
-            split_data_by_host(data, "host_id", 0.5)
+            split_data_by_host(data, "host_id", 0.5, 123)
 
     def test_load_n_split_data(self):
         # Call the function with the test paths
@@ -146,6 +146,7 @@ class TestProcessData(TestPluginBase):
             host_id="host_id",
             target="supertarget",
             train_size=0.8,
+            seed=123,
             filter_md=["host_id", "supertarget"],
         )
 
