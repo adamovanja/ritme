@@ -39,6 +39,7 @@ def run_trials(
     host_id,
     seed_data,
     seed_model,
+    path2exp,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
     num_trials=1,  # todo: increase default num_trials
     scheduler_grace_period=5,
@@ -71,7 +72,7 @@ def run_trials(
         # ! are evaluated in the same order.
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
 
-    storage_path = os.path.abspath("best_models")
+    storage_path = os.path.abspath(path2exp)
 
     analysis = tune.Tuner(
         # trainable with input parameters passed and set resources
@@ -132,12 +133,16 @@ def run_all_trials(
     seed_data: int,
     seed_model: int,
     mlflow_uri: str,
+    experiment_tag: str,
     model_types: list = ["xgb", "nn", "linreg", "rf"],
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}
     for model in model_types:
         # todo: parallelize this for loop
+        path2exp = os.path.join("best_models", experiment_tag)
+        if not os.path.exists(path2exp):
+            os.makedirs(path2exp)
         print(f"Ray tune training of: {model}...")
         result = run_trials(
             mlflow_uri,
@@ -149,6 +154,7 @@ def run_all_trials(
             host_id,
             seed_data,
             seed_model,
+            path2exp,
             fully_reproducible=fully_reproducible,
         )
         results_all[model] = result
