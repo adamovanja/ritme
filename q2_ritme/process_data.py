@@ -3,7 +3,6 @@ import qiime2 as q2
 from sklearn.model_selection import GroupShuffleSplit
 
 # todo: adjust to json file to be read in from user
-from q2_ritme.config import HOST_ID, SEED_DATA, TARGET, TRAIN_SIZE
 from q2_ritme.simulate_data import simulate_data
 
 
@@ -67,16 +66,16 @@ def filter_merge_n_sort(
 
 def split_data_by_host(
     data: pd.DataFrame,
-    host_id: str = HOST_ID,
-    train_size: float = TRAIN_SIZE,
-    seed: int = SEED_DATA,
+    host_id: str,
+    train_size: float,
+    seed: int,
 ) -> (pd.DataFrame, pd.DataFrame):
     """
     Randomly split dataset into train & test split based on host_id.
 
     Args:
         data (pd.DataFrame): Merged dataset to be split.
-        host_id (str): ID of the host, default is HOST_ID from config.
+        host_id (str): ID of the host.
         train_size (float): The proportion of the dataset to include in the train split.
         seed (int): Random seed for reproducibility.
 
@@ -100,13 +99,13 @@ def split_data_by_host(
 
 
 def load_n_split_data(
-    path2md: str = None,
-    path2ft: str = None,
-    host_id: str = HOST_ID,
-    target: str = TARGET,
+    path2md: str,
+    path2ft: str,
+    host_id: str,
+    target: str,
+    train_size: float,
+    seed: int,
     filter_md: list = None,
-    train_size: float = TRAIN_SIZE,
-    seed: int = SEED_DATA,
 ) -> (pd.DataFrame, pd.DataFrame):
     """
     Load, merge and sort data, then split into train-test sets by host_id.

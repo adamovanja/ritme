@@ -1,10 +1,11 @@
 """Testing static trainables"""
 import os
 import tempfile
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pandas as pd
+import torch
 from qiime2.plugin.testing import TestPluginBase
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
@@ -176,3 +177,55 @@ class TestTrainables(TestPluginBase):
         )
         mock_xgb_train.assert_called_once()
         mock_checkpoint.assert_called_once()
+
+    @patch("q2_ritme.model_space._static_trainables.seed_everything")
+    @patch("q2_ritme.model_space._static_trainables.process_train")
+    @patch("q2_ritme.model_space._static_trainables.load_data")
+    @patch("q2_ritme.model_space._static_trainables.NeuralNet")
+    @patch("q2_ritme.model_space._static_trainables.Trainer")
+    def test_train_nn(
+        self,
+        mock_trainer,
+        mock_neural_net,
+        mock_load_data,
+        mock_process_train,
+        mock_seed_everything,
+    ):
+        # Setup mock return values
+        mock_process_train.return_value = (
+            torch.rand(10, 5),
+            torch.rand(10),
+            torch.rand(3, 5),
+            torch.rand(3),
+        )
+        mock_load_data.return_value = (MagicMock(), MagicMock())
+        mock_trainer_instance = mock_trainer.return_value
+
+        # Define dummy config and parameters
+        config = {
+            "n_hidden_layers": 2,
+            "n_units_hl0": 10,
+            "n_units_hl1": 5,
+            "learning_rate": 0.01,
+            "epochs": 5,
+            "checkpoint_dir": "checkpoints",
+        }
+        train_val = MagicMock()
+        target = "target"
+        host_id = "host_id"
+        seed_data = 42
+        seed_model = 42
+
+        # Call the function under test
+        st.train_nn(config, train_val, target, host_id, seed_data, seed_model)
+
+        # Assertions to verify the expected behavior
+        mock_seed_everything.assert_called_once_with(seed_model, workers=True)
+        mock_process_train.assert_called_once_with(
+            config, train_val, target, host_id, seed_data
+        )
+        mock_load_data.assert_called()
+        mock_neural_net.assert_called_once_with(
+            n_units=[5, 10, 5, 1], learning_rate=0.01
+        )
+        mock_trainer_instance.fit.assert_called()
