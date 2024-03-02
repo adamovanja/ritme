@@ -145,6 +145,9 @@ def calculate_rmse(pred_df):
 
 
 def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
+    if not os.path.exists(save_loc):
+        os.makedirs(save_loc)
+
     rmse_dic = {}
     for model_type, pred_df in preds_dic.items():
         rmse_dic[model_type] = calculate_rmse(pred_df)
@@ -153,6 +156,7 @@ def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
     rmse_df = pd.DataFrame(rmse_dic).T
     rmse_df.plot(kind="bar", title="Overall", ylabel="RMSE")
     path_to_save = os.path.join(save_loc, "rmse_over_experiments_train_test.png")
+    plt.tight_layout()
     plt.savefig(path_to_save, dpi=dpi)
     plt.show()
 
