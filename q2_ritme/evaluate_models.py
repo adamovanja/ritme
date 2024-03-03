@@ -13,6 +13,9 @@ from sklearn.metrics import mean_squared_error
 from q2_ritme.feature_space.transform_features import transform_features
 from q2_ritme.model_space._static_trainables import NeuralNet
 
+# 30.437 is avg. number of days per month
+DAYS_PER_MONTH = 30.437
+
 
 def _get_checkpoint_path(result: Result) -> str:
     """
@@ -161,37 +164,41 @@ def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
     plt.show()
 
 
-def plot_rmse_over_time(preds_dic, ls_model_types, DAYS_PER_MONTH, save_loc, dpi=300):
+def plot_rmse_over_time(
+    preds_dic, ls_model_types, save_loc, days_per_month=DAYS_PER_MONTH, dpi=300
+):
     """
     Plot RMSE over true time bins for the first model type in ls_model_types.
 
     Parameters:
     preds_dic (dict): Dictionary containing predictions for each model type.
     ls_model_types (list): List of model types.
-    DAYS_PER_MONTH (float): Average number of days per month to use for binning.
+    days_per_month (float): Average number of days per month to use for binning.
     dpi (int): Resolution of the plot.
     """
-    model_type = ls_model_types[0]
-    pred_df = preds_dic[model_type]
-    split = None
+    for model_type in ls_model_types:
+        pred_df = preds_dic[model_type]
+        split = None
 
-    # Bin true columns by months
-    pred_df["group"] = np.round(pred_df["true"] / DAYS_PER_MONTH, 0).astype(int)
+        # Bin true columns by months
+        pred_df["group"] = np.round(pred_df["true"] / days_per_month, 0).astype(int)
 
-    # Calculate RMSE for each group
-    grouped_ser = pred_df.groupby(["group"]).apply(calculate_rmse)
-    grouped_df = grouped_ser.apply(pd.Series)
-    if split is not None:
-        grouped_df = grouped_df[[split]].copy()
+        # Calculate RMSE for each group
+        grouped_ser = pred_df.groupby(["group"]).apply(calculate_rmse)
+        grouped_df = grouped_ser.apply(pd.Series)
+        if split is not None:
+            grouped_df = grouped_df[[split]].copy()
 
-    # Plot
-    plt.figure(dpi=dpi)
-    grouped_df.plot(
-        kind="bar", title=f"Model: {model_type}", ylabel="RMSE", figsize=(10, 5)
-    )
-    path_to_save = os.path.join(save_loc, "rmse_over_time_train_test.png")
-    plt.savefig(path_to_save, dpi=dpi)
-    plt.show()
+        # Plot
+        plt.figure(dpi=dpi)
+        grouped_df.plot(
+            kind="bar", title=f"Model: {model_type}", ylabel="RMSE", figsize=(10, 5)
+        )
+        path_to_save = os.path.join(
+            save_loc, f"rmse_over_time_train_test_{model_type}.png"
+        )
+        plt.savefig(path_to_save, dpi=dpi)
+        plt.show()
 
 
 def get_best_model_metrics_and_config(
@@ -261,7 +268,7 @@ def plot_best_models_comparison(
     plt.show()
 
 
-def plot_model_training_over_iterations(model_type, result_dic, labels):
+def plot_model_training_over_iterations(model_type, result_dic, labels, save_loc):
     ax = None
     for result in result_dic[model_type]:
         label_str = ""
@@ -278,3 +285,8 @@ def plot_model_training_over_iterations(model_type, result_dic, labels):
     ax.legend(bbox_to_anchor=(1.1, 1.05))
     ax.set_title(f"RMSE_val vs. training iteration for all trials of {model_type}")
     ax.set_ylabel("RMSE_val")
+    plt.tight_layout()
+    path_to_save = os.path.join(
+        save_loc, f"rmse_best_{model_type}_over_training_iteration.png"
+    )
+    plt.savefig(path_to_save, dpi=400)

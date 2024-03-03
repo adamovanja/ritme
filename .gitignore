@@ -143,8 +143,8 @@ dmypy.json
 # MLflow model logs
 **/mlruns/**
 
-# Best model checkpoints
-**/best_models/**
+# Model checkpoints
+**/models/**
 
 # Sequence and metadata
 **/experiments/data/**

@@ -50,9 +50,9 @@ def get_all_exp_analyses(experiment_dir):
     return analyses_ls
 
 
-def read_predictions_for_trial(trial_tag):
+def read_predictions_for_trial(trial_tag, path_to_models):
     # read predictions for this trial
-    base_path = Path("best_models")
+    base_path = Path(path_to_models)
     target_path = [p for p in base_path.rglob(f"{trial_tag}*") if p.is_dir()]
 
     if len(target_path) > 1:
@@ -72,12 +72,12 @@ def verify_indices(models_dict, pred_value):
     return all(index.equals(indices[0]) for index in indices)
 
 
-def compare_trials(dic_trials_to_check, path_to_save):
+def compare_trials(dic_trials_to_check, path_to_models, path_to_save):
     # get predictions for each best trial
     pred_dic = {}
     config_dic = {}
     for v in dic_trials_to_check.values():
-        pred_dic[v] = read_predictions_for_trial(v)
+        pred_dic[v] = read_predictions_for_trial(v, path_to_models)
         config_dic[v] = v.config
 
     # Verify that IDs are identical for both splits
@@ -91,4 +91,4 @@ def compare_trials(dic_trials_to_check, path_to_save):
 
     # display config differences
     config_df = pd.DataFrame(config_dic)
-    config_df.to_csv(os.path.join(path_to_save, "config.csv"), index=True)
+    config_df.to_csv(os.path.join(path_to_save, "best_trial_config.csv"), index=True)

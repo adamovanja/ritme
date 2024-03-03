@@ -1,0 +1,21 @@
+{
+  "experiment_tag": "test_synthetic",
+  "host_id": "host_id",
+  "ls_model_types": [
+    "nn",
+    "xgb",
+    "linreg",
+    "rf"
+  ],
+  "mlflow_tracking_uri": "mlruns",
+  "models_to_evaluate_separately": [
+    "xgb",
+    "nn"
+  ],
+  "path_to_ft": null,
+  "path_to_md": null,
+  "seed_data": 12,
+  "seed_model": 12,
+  "target": "age_days",
+  "train_size": 0.8
+}
