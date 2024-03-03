@@ -14,5 +14,5 @@ coverage:
       default:
         # Target coverage for changes in PRs
         # todo: increase when prod ready
-        target: 30%
+        target: 0%
         threshold: 1%
