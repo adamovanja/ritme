@@ -13,8 +13,17 @@ make dev
 ```
 
 ## Model training
+To train models with a defined configuration in `q2_ritme/config.json` run:
+````
+python q2_ritme/run_n_eval_tune.py --config q2_ritme/run_config.json
+````
+
 Once you have trained some models, you can check the progress of the trained models by launching `mlflow ui --backend-store-uri experiments/mlruns`.
 
+To evaluate the best trial (trial < experiment) of all launched experiments, run:
+````
+python q2_ritme/eval_best_trial_overall.py --model_path "experiments/models"
+````
 
 ## Background
 ### Why ray tune?
