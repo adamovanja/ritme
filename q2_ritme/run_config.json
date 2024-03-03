@@ -12,6 +12,7 @@
     "xgb",
     "nn"
   ],
+  "num_trials": 1,
   "path_to_ft": null,
   "path_to_md": null,
   "seed_data": 12,

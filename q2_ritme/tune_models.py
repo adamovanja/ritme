@@ -40,8 +40,8 @@ def run_trials(
     seed_data,
     seed_model,
     path2exp,
+    num_trials,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
-    num_trials=1,  # todo: increase default num_trials
     scheduler_grace_period=5,
     scheduler_max_t=100,
     resources={"cpu": 1},
@@ -134,6 +134,7 @@ def run_all_trials(
     seed_model: int,
     mlflow_uri: str,
     path_exp: str,
+    num_trials: int,
     model_types: list = ["xgb", "nn", "linreg", "rf"],
     fully_reproducible: bool = False,
 ) -> dict:
@@ -154,6 +155,7 @@ def run_all_trials(
             seed_data,
             seed_model,
             path_exp,
+            num_trials,
             fully_reproducible=fully_reproducible,
         )
         results_all[model] = result

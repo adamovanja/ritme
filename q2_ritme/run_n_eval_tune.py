@@ -66,6 +66,7 @@ def main(config_path):
         config["seed_model"],
         path_mlflow,
         path_exp,
+        config["num_trials"],
         model_types=config["ls_model_types"],
         fully_reproducible=False,
     )
