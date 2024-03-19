@@ -149,5 +149,8 @@ dmypy.json
 # Sequence and metadata
 **/experiments/data/**
 
-# personal scratchpad
+# Any callgraphs
+**.svg
+
+# My personal scratchpad
 x_*
