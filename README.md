@@ -25,6 +25,15 @@ To evaluate the best trial (trial < experiment) of all launched experiments, run
 python q2_ritme/eval_best_trial_overall.py --model_path "experiments/models"
 ````
 
+## Call graphs
+To create a call graph for all functions in the package, run the following commands:
+````
+pip install pyan3==1.1.1
+
+pyan3 q2_ritme/**/*.py --uses --no-defines --colored --grouped --annotated --svg --exclude 'q2_ritme/evaluate_all_experiments.py' --exclude 'q2_ritme/eval_best_trial_overall.py' --exclude 'q2_ritme._version' > call_graph.svg
+````
+(Note: different other options to create call graphs were tested such as code2flow and snakeviz. However, these although properly maintained didn't directly output call graphs such as pyan3 did.)
+
 ## Background
 ### Why ray tune?
 "By using tuning libraries such as Ray Tune we can try out combinations of hyperparameters. Using sophisticated search strategies, these parameters can be selected so that they are likely to lead to good results (avoiding an expensive exhaustive search). Also, trials that do not perform well can be preemptively stopped to reduce waste of computing resources. Lastly, Ray Tune also takes care of training these runs in parallel, greatly increasing search speed." [source](https://docs.ray.io/en/latest/tune/examples/tune-xgboost.html#tune-xgboost-ref)

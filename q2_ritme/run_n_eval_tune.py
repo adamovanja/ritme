@@ -29,7 +29,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main(config_path):
+def run_n_eval_tune(config_path):
     with open(config_path, "r") as f:
         config = json.load(f)
 
@@ -116,4 +116,4 @@ def main(config_path):
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.config)
+    run_n_eval_tune(args.config)
