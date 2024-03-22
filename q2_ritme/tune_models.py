@@ -15,7 +15,9 @@ from q2_ritme.model_space import _static_trainables as st
 model_trainables = {
     # model_type: trainable
     "xgb": st.train_xgb,
-    "nn": st.train_nn,
+    "nn_reg": st.train_nn_reg,
+    "nn_class": st.train_nn_class,
+    "nn_corn": st.train_nn_corn,
     "linreg": st.train_linreg,
     "rf": st.train_rf,
 }
@@ -23,7 +25,9 @@ model_trainables = {
 model_search_space = {
     # model_type: search_space
     "xgb": ss.xgb_space,
-    "nn": ss.nn_space,
+    "nn_reg": ss.nn_space,
+    "nn_class": ss.nn_space,
+    "nn_corn": ss.nn_space,
     "linreg": ss.linreg_space,
     "rf": ss.rf_space,
 }
@@ -119,6 +123,7 @@ def run_trials(
             # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
             # ! set seed
+            # todo: set advanced search algo -> here default random
             search_alg=tune.search.BasicVariantGenerator(),
         ),
     )
@@ -135,7 +140,7 @@ def run_all_trials(
     mlflow_uri: str,
     path_exp: str,
     num_trials: int,
-    model_types: list = ["xgb", "nn", "linreg", "rf"],
+    model_types: list = ["xgb", "nn_reg", "nn_class", "nn_corn", "linreg", "rf"],
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}

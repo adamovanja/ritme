@@ -60,8 +60,8 @@ class TestProcessData(TestPluginBase):
 
     def test_load_data_simulated(self):
         ft, md = load_data()
-        assert ft.shape[0] == 100
-        assert md.shape[0] == 100
+        assert ft.shape[0] == 1000
+        assert md.shape[0] == 1000
 
     def test_load_data_no_feature_prefix(self):
         tmp_ft_path_noprefix = self.tmp_ft_path.replace(".tsv", "_noprefix.tsv")

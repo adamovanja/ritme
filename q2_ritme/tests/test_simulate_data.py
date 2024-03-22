@@ -1,4 +1,5 @@
 """Testing data simulator"""
+
 import pandas as pd
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
@@ -51,7 +52,7 @@ class TestMetadataSimulation(TestPluginBase):
 
     def test_default_metadata(self):
         """Test default functionality"""
-        act_md = simulate_metadata(self.feat_df, 3)
+        act_md = simulate_metadata(self.feat_df, 3, "target")
         # verify index
         self.assertEqual(self.ls_index, act_md.index.tolist())
 
@@ -63,13 +64,13 @@ class TestMetadataSimulation(TestPluginBase):
     def test_too_many_hosts(self):
         """Test error raising with too many hosts"""
         with self.assertRaises(ValueError):
-            simulate_metadata(self.feat_df, 100)
+            simulate_metadata(self.feat_df, 100, "target")
 
     def test_randomness(self):
         """Test seed functionality"""
-        df_1 = simulate_metadata(self.feat_df, 3, 12)
-        df_2 = simulate_metadata(self.feat_df, 3, 12)
-        df_other = simulate_metadata(self.feat_df, 3, 99)
+        df_1 = simulate_metadata(self.feat_df, 3, "target", 12)
+        df_2 = simulate_metadata(self.feat_df, 3, "target", 12)
+        df_other = simulate_metadata(self.feat_df, 3, "target", 99)
 
         # same
         assert_frame_equal(df_1, df_2)
