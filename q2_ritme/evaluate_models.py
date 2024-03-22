@@ -13,9 +13,6 @@ from sklearn.metrics import mean_squared_error
 from q2_ritme.feature_space.transform_features import transform_features
 from q2_ritme.model_space._static_trainables import NeuralNet
 
-# 30.437 is avg. number of days per month
-DAYS_PER_MONTH = 30.437
-
 
 def _get_checkpoint_path(result: Result) -> str:
     """
@@ -176,24 +173,21 @@ def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
     plt.show()
 
 
-def plot_rmse_over_time(
-    preds_dic, ls_model_types, save_loc, days_per_month=DAYS_PER_MONTH, dpi=300
-):
+def plot_rmse_over_time(preds_dic, ls_model_types, save_loc, dpi=300):
     """
     Plot RMSE over true time bins for the first model type in ls_model_types.
 
     Parameters:
     preds_dic (dict): Dictionary containing predictions for each model type.
     ls_model_types (list): List of model types.
-    days_per_month (float): Average number of days per month to use for binning.
     dpi (int): Resolution of the plot.
     """
     for model_type in ls_model_types:
         pred_df = preds_dic[model_type]
         split = None
 
-        # Bin true columns by months
-        pred_df["group"] = np.round(pred_df["true"] / days_per_month, 0).astype(int)
+        # Bin true columns
+        pred_df["group"] = np.round(pred_df["true"], 0).astype(int)
 
         # Calculate RMSE for each group
         grouped_ser = pred_df.groupby(["group"]).apply(calculate_rmse)

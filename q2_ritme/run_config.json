@@ -1,11 +1,17 @@
 {
-  "experiment_tag": "test_synthetic_nn",
+  "experiment_tag": "test_synthetic",
   "host_id": "host_id",
   "ls_model_types": [
+    "linreg",
+    "xgb",
+    "rf",
+    "nn_reg",
     "nn_class"
   ],
   "mlflow_tracking_uri": "mlruns",
   "models_to_evaluate_separately": [
+    "xgb",
+    "nn_reg",
     "nn_class"
   ],
   "num_trials": 1,

@@ -192,28 +192,45 @@ class NeuralNet(LightningModule):
             x = layer(x)
         return x
 
+    def _prepare_predictions(self, predictions):
+        # todo: add ordinal regression option
+        if self.nn_type == "regression":
+            return predictions
+        elif self.nn_type == "classification":
+            return torch.argmax(predictions, dim=1).float()
+
     def training_step(self, batch, batch_idx):
         inputs, targets = batch
         predictions = self(inputs).squeeze()
+
+        # loss: cross-entropy or mse
         loss = self.loss_fn(predictions, targets)
-        rmse = torch.sqrt(loss)
         self.log(
             "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
+
+        # rmse
+        pred_rmse = self._prepare_predictions(predictions)
+        rmse = torch.sqrt(nn.functional.mse_loss(pred_rmse, targets))
         self.log(
             "train_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
+
         return loss
 
     def validation_step(self, batch, batch_idx):
         inputs, targets = batch
-        # ! squeeze could be causing problems
         predictions = self(inputs).squeeze()
+
+        # loss: cross-entropy or mse
         loss = self.loss_fn(predictions, targets)
-        rmse = torch.sqrt(loss)
         self.log(
             "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
+
+        # rmse
+        pred_rmse = self._prepare_predictions(predictions)
+        rmse = torch.sqrt(nn.functional.mse_loss(pred_rmse, targets))
         self.log(
             "val_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
