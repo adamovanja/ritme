@@ -1,4 +1,5 @@
 """Module with tune trainables of all static models"""
+
 import os
 import random
 from typing import Any, Dict
@@ -8,6 +9,8 @@ import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
+from coral_pytorch.dataset import corn_label_from_logits
+from coral_pytorch.losses import corn_loss
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from ray import tune
@@ -166,7 +169,8 @@ def train_rf(
 
 
 class NeuralNet(LightningModule):
-    def __init__(self, n_units, learning_rate):
+    # TODO: adjust to have option of NNcorn also within
+    def __init__(self, n_units, learning_rate, nn_type="regression"):
         super(NeuralNet, self).__init__()
         self.save_hyperparameters()  # This saves all passed arguments to self.hparams
         self.layers = nn.ModuleList()
@@ -176,28 +180,70 @@ class NeuralNet(LightningModule):
             if i != len(n_units) - 2:  # No activation after the last layer
                 self.layers.append(nn.ReLU())
         self.learning_rate = learning_rate
-        self.loss_fn = nn.MSELoss()
+        self.nn_type = nn_type
+        self.num_classes = n_units[-1]
+        if self.nn_type == "regression":
+            self.loss_fn = nn.MSELoss()
+        elif self.nn_type == "classification":
+            self.loss_fn = nn.CrossEntropyLoss()
+        elif self.nn_type == "ordinal_regression":
+            self.loss_fn = None
 
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
         return x
 
+    def _prepare_predictions(self, predictions):
+        # todo: add ordinal regression option
+        if self.nn_type == "regression":
+            return predictions
+        elif self.nn_type == "classification":
+            return torch.argmax(predictions, dim=1).float()
+        elif self.nn_type == "ordinal_regression":
+            return corn_label_from_logits(predictions).float()
+
     def training_step(self, batch, batch_idx):
         inputs, targets = batch
         predictions = self(inputs).squeeze()
-        loss = self.loss_fn(predictions, targets)
-        rmse = torch.sqrt(loss)
+
+        # loss: corn_loss, cross-entropy or mse
+        # todo: clean up and remove redundancy with val step
+        if self.nn_type == "ordinal_regression":
+            loss = corn_loss(predictions, targets, self.num_classes)
+            # loss = self.loss_fn(predictions, targets, self.num_classes)
+        else:
+            loss = self.loss_fn(predictions, targets)
+        self.log(
+            "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        )
+
+        # rmse
+        pred_rmse = self._prepare_predictions(predictions)
+        rmse = torch.sqrt(nn.functional.mse_loss(pred_rmse, targets))
         self.log(
             "train_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
+
         return loss
 
     def validation_step(self, batch, batch_idx):
         inputs, targets = batch
         predictions = self(inputs).squeeze()
-        loss = self.loss_fn(predictions, targets)
-        rmse = torch.sqrt(loss)
+
+        # loss: corn_loss, cross-entropy or mse
+        if self.nn_type == "ordinal_regression":
+            loss = corn_loss(predictions, targets, self.num_classes)
+            # loss = self.loss_fn(predictions, targets, self.num_classes)
+        else:
+            loss = self.loss_fn(predictions, targets)
+        self.log(
+            "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        )
+
+        # rmse
+        pred_rmse = self._prepare_predictions(predictions)
+        rmse = torch.sqrt(nn.functional.mse_loss(pred_rmse, targets))
         self.log(
             "val_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
@@ -207,14 +253,14 @@ class NeuralNet(LightningModule):
         return optimizer
 
 
-def load_data(X_train, y_train, X_val, y_val, config):
+def load_data(X_train, y_train, X_val, y_val, y_type, config):
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.float32),
-        torch.tensor(y_train, dtype=torch.float32),
+        torch.tensor(y_train, dtype=y_type),
     )
     val_dataset = TensorDataset(
         torch.tensor(X_val, dtype=torch.float32),
-        torch.tensor(y_val, dtype=torch.float32),
+        torch.tensor(y_val, dtype=y_type),
     )
     train_loader = DataLoader(
         train_dataset, batch_size=config["batch_size"], shuffle=True
@@ -223,7 +269,9 @@ def load_data(X_train, y_train, X_val, y_val, config):
     return train_loader, val_loader
 
 
-def train_nn(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn(
+    config, train_val, target, host_id, seed_data, seed_model, nn_type="regression"
+):
     # Set the seed for reproducibility
     seed_everything(seed_model, workers=True)
 
@@ -232,21 +280,44 @@ def train_nn(config, train_val, target, host_id, seed_data, seed_model):
         config, train_val, target, host_id, seed_data
     )
 
-    # Data loaders
-    train_loader, val_loader = load_data(X_train, y_train, X_val, y_val, config)
+    # round target to monthly classes in case of ordinal regression and load
+    # data with data loaders
+    if nn_type in ["ordinal_regression", "classification"]:
+        y_train = np.round(y_train)
+        y_val = np.round(y_val)
+        train_loader, val_loader = load_data(
+            X_train, y_train, X_val, y_val, torch.long, config
+        )
+
+    else:
+        train_loader, val_loader = load_data(
+            X_train, y_train, X_val, y_val, torch.float32, config
+        )
 
     # Model
     n_layers = config["n_hidden_layers"]
+    # output layer defined by target
+    n_target_classes = len(np.unique(y_train))
+    if nn_type == "regression":
+        output_layer = [1]
+    elif nn_type == "classification":
+        output_layer = [n_target_classes]
+    elif nn_type == "ordinal_regression":
+        # CORN reduces number of classes by 1
+        output_layer = [n_target_classes - 1]
+
     n_units = (
         # input layer
         [X_train.shape[1]]
         # hidden layers
         + [config[f"n_units_hl{i}"] for i in range(0, n_layers)]
-        # output layer defined by target: cont. regression
-        + [1]
+        # output layer defined by nn_type
+        + output_layer
     )
     assert len(n_units) == n_layers + 2
-    model = NeuralNet(n_units=n_units, learning_rate=config["learning_rate"])
+    model = NeuralNet(
+        n_units=n_units, learning_rate=config["learning_rate"], nn_type=nn_type
+    )
 
     # Callbacks
     checkpoint_dir = (
@@ -264,7 +335,12 @@ def train_nn(config, train_val, target, host_id, seed_data, seed_model):
             filename="{epoch}-{val_rmse:.2f}",
         ),
         TuneReportCheckpointCallback(
-            metrics={"rmse_val": "val_rmse", "rmse_train": "train_rmse"},
+            metrics={
+                "rmse_val": "val_rmse",
+                "rmse_train": "train_rmse",
+                "loss_val": "val_loss",
+                "loss_train": "train_loss",
+            },
             filename="checkpoint",
             on="validation_end",
         ),
@@ -279,6 +355,37 @@ def train_nn(config, train_val, target, host_id, seed_data, seed_model):
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+
+def train_nn_reg(config, train_val, target, host_id, seed_data, seed_model):
+    train_nn(
+        config, train_val, target, host_id, seed_data, seed_model, nn_type="regression"
+    )
+
+
+def train_nn_class(config, train_val, target, host_id, seed_data, seed_model):
+    train_nn(
+        config,
+        train_val,
+        target,
+        host_id,
+        seed_data,
+        seed_model,
+        nn_type="classification",
+    )
+
+
+def train_nn_corn(config, train_val, target, host_id, seed_data, seed_model):
+    # corn model from https://github.com/Raschka-research-group/coral-pytorch
+    train_nn(
+        config,
+        train_val,
+        target,
+        host_id,
+        seed_data,
+        seed_model,
+        nn_type="ordinal_regression",
+    )
 
 
 def train_xgb(

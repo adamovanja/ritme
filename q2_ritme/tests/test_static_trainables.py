@@ -1,4 +1,5 @@
 """Testing static trainables"""
+
 import os
 import tempfile
 from unittest.mock import MagicMock, call, patch
@@ -226,6 +227,6 @@ class TestTrainables(TestPluginBase):
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(
-            n_units=[5, 10, 5, 1], learning_rate=0.01
+            n_units=[5, 10, 5, 1], learning_rate=0.01, nn_type="regression"
         )
         mock_trainer_instance.fit.assert_called()

@@ -26,8 +26,8 @@ install-req:
 	pip install PyYAML jinja2
 
 dev: all
-	pip install pre-commit parameterized ruff black pytest pytest-cov flake8 versioneer mypy types-PyYAML ipykernel
-	pip install -e .
+	$(CONDA_PREFIX)/bin/pip install pre-commit parameterized ruff black pytest pytest-cov flake8 versioneer mypy types-PyYAML ipykernel $(shell python get_requirements.py ci/recipe/meta.yaml pip)
+	$(CONDA_PREFIX)/bin/pip install -e .
 	pre-commit install
 
 prep-dev-container: all

@@ -41,7 +41,7 @@ def simulate_feature_table(
 
 
 def simulate_metadata(
-    feat_df: pd.DataFrame, n_hosts: int, seed: int = SEED_SIM
+    feat_df: pd.DataFrame, n_hosts: int, target: str, seed: int = SEED_SIM
 ) -> pd.DataFrame:
     """
     Create simulated metadata table matching provided feature table with given
@@ -64,7 +64,14 @@ def simulate_metadata(
         raise ValueError("More hosts than samples. Reset n_hosts to match the samples")
     # define temporal dimension: age
     np.random.seed(seed)
-    age = np.random.uniform(low=0.0, high=2 * 365, size=n_samples).astype(int)
+    # range of target depending on target in config
+    # todo: make this more target agnostic
+    if target == "age_days":
+        age = np.random.uniform(low=0.0, high=2 * 365, size=n_samples).astype(int)
+    elif target == "age_months":
+        age = np.random.uniform(low=0.0, high=2 * 12, size=n_samples).astype(int)
+    else:
+        age = np.random.uniform(low=0.0, high=100, size=n_samples).astype(int)
 
     # set hosts
     host_id_options = list(string.ascii_uppercase)[:n_hosts]
@@ -73,7 +80,7 @@ def simulate_metadata(
 
     # combine
     md_df = pd.DataFrame(
-        {"host_id": host_id, "age_days": age}, index=feat_df.index.tolist()
+        {"host_id": host_id, target: age}, index=feat_df.index.tolist()
     )
     md_df.index.name = "id"
 
@@ -81,7 +88,8 @@ def simulate_metadata(
 
 
 def simulate_data(
-    n_samples: int = 10,
+    n_samples: int = 100,
+    target: str = "age_days",
     n_feat: int = 20,
     n_hosts: int = 4,
     density: float = DENSITY,
@@ -102,6 +110,6 @@ def simulate_data(
     tuple: A tuple containing the feature table and metadata as two DataFrames.
     """
     ft = simulate_feature_table(n_samples, n_feat, density, seed)
-    md = simulate_metadata(ft, n_hosts, seed)
+    md = simulate_metadata(ft, n_hosts, target, seed)
 
     return ft, md

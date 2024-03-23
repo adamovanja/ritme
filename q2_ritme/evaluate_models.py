@@ -6,15 +6,13 @@ import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
+from coral_pytorch.dataset import corn_label_from_logits
 from joblib import load
 from ray.air.result import Result
 from sklearn.metrics import mean_squared_error
 
 from q2_ritme.feature_space.transform_features import transform_features
 from q2_ritme.model_space._static_trainables import NeuralNet
-
-# 30.437 is avg. number of days per month
-DAYS_PER_MONTH = 30.437
 
 
 def _get_checkpoint_path(result: Result) -> str:
@@ -70,7 +68,9 @@ def get_model(model_type: str, result) -> Any:
         "linreg": load_sklearn_model,
         "rf": load_sklearn_model,
         "xgb": load_xgb_model,
-        "nn": load_nn_model,
+        "nn_reg": load_nn_model,
+        "nn_class": load_nn_model,
+        "nn_corn": load_nn_model,
     }
 
     model = model_loaders[model_type](result)
@@ -106,10 +106,20 @@ class TunedModel:
         transformed = self.transform(data)
         if isinstance(self.model, NeuralNet):
             with torch.no_grad():
-                predicted = self.model(transformed).numpy()
+                if self.model.nn_type == "regression":
+                    predicted = self.model(transformed).numpy().flatten()
+
+                # if classification predicted class needs to be transformed from
+                # logit
+                elif self.model.nn_type == "classification":
+                    logits = self.model(transformed)
+                    predicted = torch.argmax(logits, dim=1).numpy()
+                elif self.model.nn_type == "ordinal_regression":
+                    logits = self.model(transformed)
+                    predicted = corn_label_from_logits(logits).numpy()
         else:
-            predicted = self.model.predict(transformed)
-        return predicted.flatten()
+            predicted = self.model.predict(transformed).flatten()
+        return predicted
 
 
 def retrieve_best_models(result_dic):
@@ -132,7 +142,6 @@ def get_predictions(data, tmodel, target, features, split=None):
     # pred, split
     saved_pred["pred"] = tmodel.predict(data[features])
     saved_pred["split"] = split
-    # todo: actually save the performed predictions into best_models folder
     return saved_pred
 
 
@@ -164,24 +173,21 @@ def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
     plt.show()
 
 
-def plot_rmse_over_time(
-    preds_dic, ls_model_types, save_loc, days_per_month=DAYS_PER_MONTH, dpi=300
-):
+def plot_rmse_over_time(preds_dic, ls_model_types, save_loc, dpi=300):
     """
     Plot RMSE over true time bins for the first model type in ls_model_types.
 
     Parameters:
     preds_dic (dict): Dictionary containing predictions for each model type.
     ls_model_types (list): List of model types.
-    days_per_month (float): Average number of days per month to use for binning.
     dpi (int): Resolution of the plot.
     """
     for model_type in ls_model_types:
         pred_df = preds_dic[model_type]
         split = None
 
-        # Bin true columns by months
-        pred_df["group"] = np.round(pred_df["true"] / days_per_month, 0).astype(int)
+        # Bin true columns
+        pred_df["group"] = np.round(pred_df["true"], 0).astype(int)
 
         # Calculate RMSE for each group
         grouped_ser = pred_df.groupby(["group"]).apply(calculate_rmse)

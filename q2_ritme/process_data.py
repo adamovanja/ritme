@@ -6,7 +6,9 @@ from sklearn.model_selection import GroupShuffleSplit
 from q2_ritme.simulate_data import simulate_data
 
 
-def load_data(path2md: str = None, path2ft: str = None) -> (pd.DataFrame, pd.DataFrame):
+def load_data(
+    path2md: str = None, path2ft: str = None, target: str = None
+) -> (pd.DataFrame, pd.DataFrame):
     """
     Load data from the provided paths or generate simulated data.
 
@@ -31,7 +33,7 @@ def load_data(path2md: str = None, path2ft: str = None) -> (pd.DataFrame, pd.Dat
         if first_letter != {"F"}:
             ft.columns = [f"F{i}" for i in ft.columns.tolist()]
     else:
-        ft, md = simulate_data(100)
+        ft, md = simulate_data(1000, target)
 
     return ft, md
 
@@ -128,7 +130,7 @@ def load_n_split_data(
     Returns:
         tuple: A tuple containing train and test dataframes.
     """
-    ft, md = load_data(path2md, path2ft)
+    ft, md = load_data(path2md, path2ft, target)
 
     data = filter_merge_n_sort(md, ft, host_id, target, filter_md)
 
