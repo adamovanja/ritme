@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
+from coral_pytorch.dataset import corn_label_from_logits
 from joblib import load
 from ray.air.result import Result
 from sklearn.metrics import mean_squared_error
@@ -113,10 +114,9 @@ class TunedModel:
                 elif self.model.nn_type == "classification":
                     logits = self.model(transformed)
                     predicted = torch.argmax(logits, dim=1).numpy()
-                # todo: add below for CORN option
-                # elif self.model.nn_type == "ordinal_regression":
-                #     logits = self.model(transformed)
-                #     predicted = corn_label_from_logits(logits).numpy()
+                elif self.model.nn_type == "ordinal_regression":
+                    logits = self.model(transformed)
+                    predicted = corn_label_from_logits(logits).numpy()
         else:
             predicted = self.model.predict(transformed).flatten()
         return predicted

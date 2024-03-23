@@ -26,6 +26,7 @@ requirements:
     - mlflow
     - numpy
     - pandas
+    - pip
     - pytorch
     - py-xgboost
     # todo: update to newest ray-tune version
@@ -35,6 +36,11 @@ requirements:
     - scikit-bio
     - torchvision
     - zipp
+  # TODO: build package from GH or pypip
+  run_constrained:
+    - pip:
+      - coral_pytorch
+
 
 test:
   requires:

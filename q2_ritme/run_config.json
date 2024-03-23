@@ -6,13 +6,15 @@
     "xgb",
     "rf",
     "nn_reg",
-    "nn_class"
+    "nn_class",
+    "nn_corn"
   ],
   "mlflow_tracking_uri": "mlruns",
   "models_to_evaluate_separately": [
     "xgb",
     "nn_reg",
-    "nn_class"
+    "nn_class",
+    "nn_corn"
   ],
   "num_trials": 1,
   "path_to_ft": null,

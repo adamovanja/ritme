@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
+from coral_pytorch.dataset import corn_label_from_logits
+from coral_pytorch.losses import corn_loss
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from ray import tune
@@ -179,13 +181,13 @@ class NeuralNet(LightningModule):
                 self.layers.append(nn.ReLU())
         self.learning_rate = learning_rate
         self.nn_type = nn_type
+        self.num_classes = n_units[-1]
         if self.nn_type == "regression":
             self.loss_fn = nn.MSELoss()
         elif self.nn_type == "classification":
             self.loss_fn = nn.CrossEntropyLoss()
         elif self.nn_type == "ordinal_regression":
-            # todo: adjust correctly
-            self.loss_fn = nn.CrossEntropyLoss()
+            self.loss_fn = None
 
     def forward(self, x):
         for layer in self.layers:
@@ -198,13 +200,20 @@ class NeuralNet(LightningModule):
             return predictions
         elif self.nn_type == "classification":
             return torch.argmax(predictions, dim=1).float()
+        elif self.nn_type == "ordinal_regression":
+            return corn_label_from_logits(predictions).float()
 
     def training_step(self, batch, batch_idx):
         inputs, targets = batch
         predictions = self(inputs).squeeze()
 
-        # loss: cross-entropy or mse
-        loss = self.loss_fn(predictions, targets)
+        # loss: corn_loss, cross-entropy or mse
+        # todo: clean up and remove redundancy with val step
+        if self.nn_type == "ordinal_regression":
+            loss = corn_loss(predictions, targets, self.num_classes)
+            # loss = self.loss_fn(predictions, targets, self.num_classes)
+        else:
+            loss = self.loss_fn(predictions, targets)
         self.log(
             "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
@@ -222,8 +231,12 @@ class NeuralNet(LightningModule):
         inputs, targets = batch
         predictions = self(inputs).squeeze()
 
-        # loss: cross-entropy or mse
-        loss = self.loss_fn(predictions, targets)
+        # loss: corn_loss, cross-entropy or mse
+        if self.nn_type == "ordinal_regression":
+            loss = corn_loss(predictions, targets, self.num_classes)
+            # loss = self.loss_fn(predictions, targets, self.num_classes)
+        else:
+            loss = self.loss_fn(predictions, targets)
         self.log(
             "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
@@ -284,12 +297,14 @@ def train_nn(
     # Model
     n_layers = config["n_hidden_layers"]
     # output layer defined by target
+    n_target_classes = len(np.unique(y_train))
     if nn_type == "regression":
         output_layer = [1]
-    elif nn_type in ["ordinal_regression", "classification"]:
-        n_target_classes = len(np.unique(y_train))
-        print(f"train target :{n_target_classes}")
+    elif nn_type == "classification":
         output_layer = [n_target_classes]
+    elif nn_type == "ordinal_regression":
+        # CORN reduces number of classes by 1
+        output_layer = [n_target_classes - 1]
 
     n_units = (
         # input layer

@@ -5,7 +5,7 @@
 Longitudinal modeling approaches accounting for high-dimensional, sparse and compositional nature of microbial time-series.
 
 ## Setup
-To install the required dependencies for this package run:
+To install the required dependencies for this package run (note: running `conda activate` before `make dev` is a mandatory step to ensure also coral_pytorch is installed):
 ```shell
 make create-env
 conda activate ritme

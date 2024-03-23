@@ -29,7 +29,7 @@ def parse_args():
         "--ls_model_types",
         type=str,
         nargs="+",
-        default=["nn_reg", "nn_class", "xgb", "linreg", "rf"],
+        default=["nn_reg", "nn_class", "nn_corn", "xgb", "linreg", "rf"],
         help="List of model types to evaluate. Separate each model type with a space.",
     )
     return parser.parse_args()
