@@ -63,7 +63,6 @@ def run_trials(
             "cpu": get_slurm_resource("SLURM_CPUS_PER_TASK", 1),
             "gpu": get_slurm_resource("SLURM_GPUS_PER_TASK", 0),
         }
-        print(f"CPUs in Python: {resources['cpu']}")
 
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)

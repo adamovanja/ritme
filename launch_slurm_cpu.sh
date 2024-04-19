@@ -1,24 +1,23 @@
 #!/bin/bash
 
+#SBATCH --job-name="r_5c_cpu_t10"
 #SBATCH -A es_bokulich
-
 #SBATCH --nodes=1
-#SBATCH --exclusive
-#SBATCH --tasks-per-node=2
-
-#SBATCH --cpus-per-task=12
-#SBATCH --time=2:00:00
-#SBATCH --job-name="syn_cpu"
+#SBATCH --cpus-per-task=20
+#SBATCH --time=1:00:00
 #SBATCH --mem-per-cpu=1024
-#SBATCH --output="syn_cpu_out.txt"
-#SBATCH --error="syn_cpu_err.txt"
+#SBATCH --output="%x_out.txt"
 #SBATCH --open-mode=append
 
 set -x
 
-echo "SLURM_CPUS_PER_TASK: $SLURM_CPUS_PER_TASK"
-echo "SLURM_GPUS_PER_TASK: $SLURM_GPUS_PER_TASK"
+# echo "SLURM_CPUS_PER_TASK: $SLURM_CPUS_PER_TASK"
+# echo "SLURM_GPUS_PER_TASK: $SLURM_GPUS_PER_TASK"
 
+# ! USER SETTINGS HERE
+# -> config file to use
+CONFIG="q2_ritme/r_5c_cpu_t10.json"
+# ! USER END __________
 
 # __doc_head_address_start__
 # script was edited from:
@@ -75,5 +74,9 @@ done
 
 
 # __doc_script_start__
-python -u q2_ritme/run_n_eval_tune.py --config q2_ritme/run_config.json
+python -u q2_ritme/run_n_eval_tune.py --config $CONFIG
 sstat -j $SLURM_JOB_ID
+
+# get elapsed time of job
+echo "TIME COUNTER:"
+sacct -j $SLURM_JOB_ID --format=elapsed --allocations
