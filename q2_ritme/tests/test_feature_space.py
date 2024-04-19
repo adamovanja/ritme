@@ -165,7 +165,7 @@ class TestProcessTrain(TestPluginBase):
         self._assert_called_with_df(mock_transform_features, ft, None, False)
         self._assert_called_with_df(
             mock_split_data_by_host,
-            self.train_val[[self.target, self.host_id] + ls_ft],
+            self.train_val[[self.host_id, self.target] + ls_ft],
             "host_id",
             0.8,
             0,
