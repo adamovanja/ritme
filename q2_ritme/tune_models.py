@@ -74,6 +74,7 @@ def run_trials(
 
     # Initialize Ray with the runtime environment
     shutdown()
+    # todo: could configure dashboard here - see "ray dashboard set up" online
     init(include_dashboard=False, ignore_reinit_error=True)
 
     # note: both schedulers might decide to run more trials than allocated

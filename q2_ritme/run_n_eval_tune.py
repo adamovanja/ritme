@@ -78,8 +78,8 @@ def run_n_eval_tune(config_path):
     # ! Evaluate best models of this experiment
     # Eval1: train_val vs. test -> performance
     best_model_dic = retrieve_best_models(result_dic)
-    non_features = [config["target"], config["host_id"]]
-    features = [x for x in train_val if x not in non_features]
+    # todo: allow for more flexibility -> see _process_train.py
+    features = [x for x in train_val if x.startswith("F")]
 
     preds_dic = {}
     for model_type, tmodel in best_model_dic.items():
