@@ -31,6 +31,7 @@ requirements:
     - py-xgboost
     # todo: update to newest ray-tune version
     - ray-tune==2.6.3
+    - ray-default
     - scipy
     - scikit-learn
     - scikit-bio
