@@ -96,7 +96,7 @@ def run_trials(
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
 
     storage_path = os.path.abspath(path2exp)
-
+    experiment_tag = os.path.basename(path2exp)
     analysis = tune.Tuner(
         # trainable with input parameters passed and set resources
         tune.with_resources(
@@ -129,6 +129,7 @@ def run_trials(
                     experiment_name=exp_name,
                     # below would be double saving: local_dir as artifact here
                     # save_artifact=True,
+                    tags={"experiment_tag": experiment_tag},
                 ),
             ],
         ),
