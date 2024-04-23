@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#SBATCH --job-name="r_5c_cpu_t10"
+#SBATCH --job-name="ra_5c_cpu_t10_long_rf"
 #SBATCH -A es_bokulich
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=20
-#SBATCH --time=1:00:00
+#SBATCH --cpus-per-task=30
+#SBATCH --time=03:59:59
 #SBATCH --mem-per-cpu=1024
 #SBATCH --output="%x_out.txt"
 #SBATCH --open-mode=append
@@ -16,7 +16,7 @@ set -x
 
 # ! USER SETTINGS HERE
 # -> config file to use
-CONFIG="q2_ritme/r_5c_cpu_t10.json"
+CONFIG="q2_ritme/ra_5c_cpu_t10_long_rf.json"
 # ! USER END __________
 
 # __doc_head_address_start__
