@@ -3,8 +3,10 @@ from q2_ritme.process_data import split_data_by_host
 
 
 def process_train(config, train_val, target, host_id, seed_data):
-    non_features = [target, host_id]
-    features = [x for x in train_val if x not in non_features]
+    # todo: adjust feature selection in future to include md
+    # todo: note -> must also be adjusted in run_n_eval_tune.py
+    features = [x for x in train_val if x.startswith("F")]
+    non_features = [x for x in train_val if x not in features]
 
     # feature engineering method -> config
     ft_transformed = transform_features(

@@ -12,7 +12,7 @@ conda activate ritme
 make dev
 ```
 
-## Model training
+## Model training locally
 To train models with a defined configuration in `q2_ritme/config.json` run:
 ````
 python q2_ritme/run_n_eval_tune.py --config q2_ritme/run_config.json
@@ -23,6 +23,12 @@ Once you have trained some models, you can check the progress of the trained mod
 To evaluate the best trial (trial < experiment) of all launched experiments, run:
 ````
 python q2_ritme/eval_best_trial_overall.py --model_path "experiments/models"
+````
+
+## Model training on HPC with slurm:
+Edit file `launch_slurm_syn_cpu.sh` and then run
+````
+sbatch launch_slurm_syn_cpu.sh
 ````
 
 ## Call graphs

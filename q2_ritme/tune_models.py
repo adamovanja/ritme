@@ -4,7 +4,7 @@ import random
 import numpy as np
 import pandas as pd
 import torch
-from ray import air, tune
+from ray import air, init, shutdown, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
@@ -33,6 +33,13 @@ model_search_space = {
 }
 
 
+def get_slurm_resource(resource_name, default_value=0):
+    try:
+        return int(os.environ[resource_name])
+    except (KeyError, ValueError):
+        return default_value
+
+
 def run_trials(
     mlflow_tracking_uri,  # MLflow with MLflowLoggerCallback
     exp_name,
@@ -48,8 +55,15 @@ def run_trials(
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
     scheduler_grace_period=5,
     scheduler_max_t=100,
-    resources={"cpu": 1},
+    resources=None,
 ):
+    if resources is None:
+        # if not a slurm process: default values are used
+        resources = {
+            "cpu": get_slurm_resource("SLURM_CPUS_PER_TASK", 1),
+            "gpu": get_slurm_resource("SLURM_GPUS_PER_TASK", 0),
+        }
+
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)
 
@@ -57,6 +71,11 @@ def run_trials(
     random.seed(seed_model)
     np.random.seed(seed_model)
     torch.manual_seed(seed_model)
+
+    # Initialize Ray with the runtime environment
+    shutdown()
+    # todo: could configure dashboard here - see "ray dashboard set up" online
+    init(include_dashboard=False, ignore_reinit_error=True)
 
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
@@ -77,7 +96,7 @@ def run_trials(
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
 
     storage_path = os.path.abspath(path2exp)
-
+    experiment_tag = os.path.basename(path2exp)
     analysis = tune.Tuner(
         # trainable with input parameters passed and set resources
         tune.with_resources(
@@ -110,6 +129,7 @@ def run_trials(
                     experiment_name=exp_name,
                     # below would be double saving: local_dir as artifact here
                     # save_artifact=True,
+                    tags={"experiment_tag": experiment_tag},
                 ),
             ],
         ),

@@ -20,10 +20,10 @@ linreg_space = {
 # scikit random forest
 rf_space = {
     **data_eng_space,
-    "n_estimators": tune.randint(100, 1000),
+    "n_estimators": tune.randint(100, 500),
     "max_depth": tune.randint(2, 32),
-    "min_samples_split": tune.choice([0.0001, 0.001, 0.01, 0.1]),
-    "min_samples_leaf": tune.choice([0.00001, 0.0001, 0.001]),
+    "min_samples_split": tune.choice([0.001, 0.01, 0.1]),
+    "min_samples_leaf": tune.choice([0.0001, 0.001]),
     "max_features": tune.choice([None, "sqrt", "log2", 0.1, 0.2, 0.5, 0.8]),
     "min_impurity_decrease": tune.choice([0.0001, 0.001, 0.01]),
     "bootstrap": tune.choice([True, False]),

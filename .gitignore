@@ -154,3 +154,11 @@ dmypy.json
 
 # My personal scratchpad
 x_*
+
+# logs from slurm launches
+*_err.txt
+*_out.txt
+
+# all but one json config file
+*.json
+!run_config.json

@@ -29,7 +29,9 @@ requirements:
     - pip
     - pytorch
     - py-xgboost
-    # todo: update to newest ray-tune version
+    # todo: update to newest ray-tune version (then dashboard also works as it
+    # should)
+    - ray-default==2.6.3
     - ray-tune==2.6.3
     - scipy
     - scikit-learn
