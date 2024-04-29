@@ -61,7 +61,8 @@ def filter_merge_n_sort(
     # filter on metadata fields to include
     if filter_md_cols:
         md = md[filter_md_cols].copy()
-    data = md.join(ft, how="left")
+    data = md.join(ft, how="inner")
+    # print(f"Data shape: {data.shape}")
     data.sort_values([host_id, target], inplace=True)
     return data
 
