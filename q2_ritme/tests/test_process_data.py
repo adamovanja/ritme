@@ -77,7 +77,7 @@ class TestProcessData(TestPluginBase):
             self.ft,
             host_id="host_id",
             target="supertarget",
-            filter_md=["host_id", "supertarget"],
+            filter_md_cols=["host_id", "supertarget"],
         )
 
         exp = pd.DataFrame(
@@ -147,7 +147,7 @@ class TestProcessData(TestPluginBase):
             target="supertarget",
             train_size=0.8,
             seed=123,
-            filter_md=["host_id", "supertarget"],
+            filter_md_cols=["host_id", "supertarget"],
         )
 
         # Check that the dataframes are not empty

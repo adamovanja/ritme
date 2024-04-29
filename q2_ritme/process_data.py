@@ -43,7 +43,7 @@ def filter_merge_n_sort(
     ft: pd.DataFrame,
     host_id: str,
     target: str,
-    filter_md: list = None,
+    filter_md_cols: list = None,
 ) -> pd.DataFrame:
     """
     Merge filtered metadata and features and sort by host_id and target.
@@ -53,14 +53,14 @@ def filter_merge_n_sort(
         ft (pd.DataFrame): Dataframe containing features.
         host_id (str): ID name of the host.
         target (str): Name of target variable.
-        filter_md (list): List of metadata fields to include.
+        filter_md_cols (list): List of metadata fields to include.
 
     Returns:
         pd.DataFrame: Merged and sorted data.
     """
     # filter on metadata fields to include
-    if filter_md:
-        md = md[filter_md].copy()
+    if filter_md_cols:
+        md = md[filter_md_cols].copy()
     data = md.join(ft, how="left")
     data.sort_values([host_id, target], inplace=True)
     return data
@@ -107,7 +107,7 @@ def load_n_split_data(
     target: str,
     train_size: float,
     seed: int,
-    filter_md: list = None,
+    filter_md_cols: list = None,
 ) -> (pd.DataFrame, pd.DataFrame):
     """
     Load, merge and sort data, then split into train-test sets by host_id.
@@ -120,7 +120,7 @@ def load_n_split_data(
         host_id (str, optional): ID of the host. Default is HOST_ID from config.
         target (str, optional): Name of target variable. Default is TARGET from
         config.
-        filter_md (list, optional): List of metadata fields to include. If None,
+        filter_md_cols (list, optional): List of metadata fields to include. If None,
         all fields are included.
         train_size (float, optional): The proportion of the dataset to include
         in the train split. Default is TRAIN_SIZE from config.
@@ -132,7 +132,7 @@ def load_n_split_data(
     """
     ft, md = load_data(path2md, path2ft, target)
 
-    data = filter_merge_n_sort(md, ft, host_id, target, filter_md)
+    data = filter_merge_n_sort(md, ft, host_id, target, filter_md_cols)
 
     # todo: add split also by study_id
     train_val, test = split_data_by_host(data, host_id, train_size, seed)

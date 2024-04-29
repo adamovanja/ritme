@@ -56,7 +56,7 @@ if __name__ == "__main__":
     parser.add_argument("meta_yaml_path", help="Path to meta.yaml file")
     parser.add_argument("req_type", help="Conda or pip requirements", default="conda")
     parser.add_argument(
-        "--qiime2_epoch", help="Set version for qiime2_epoch", default="2023.2"
+        "--qiime2_epoch", help="Set version for qiime2_epoch", default="2023.7"
     )
     # todo: maybe remove Q2 to access newest Python version
     parser.add_argument("--python", help="Default Python version", default="3.8")
