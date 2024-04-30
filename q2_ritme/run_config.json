@@ -4,10 +4,10 @@
   "ls_model_types": [
     "linreg",
     "xgb",
-    "rf",
     "nn_reg",
     "nn_class",
-    "nn_corn"
+    "nn_corn",
+    "rf"
   ],
   "mlflow_tracking_uri": "mlruns",
   "models_to_evaluate_separately": [

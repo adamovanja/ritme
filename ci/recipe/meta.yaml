@@ -23,16 +23,17 @@ requirements:
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
     - lightning
-    - mlflow
+    # todo: once newest version is passing all tests: upgrade mlflow
+    - mlflow==2.11.3
     - numpy
     - pandas
     - pip
     - pytorch
     - py-xgboost
-    # todo: update to newest ray-tune version (then dashboard also works as it
-    # should)
-    - ray-default==2.6.3
-    - ray-tune==2.6.3
+    # todo: update ray to newest once Q2 has migrated to Python 3.10
+    # note: currently ray is in v2.8.1
+    - ray-default
+    - ray-tune
     - scipy
     - scikit-learn
     - scikit-bio

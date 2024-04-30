@@ -74,9 +74,10 @@ def run_trials(
 
     # Initialize Ray with the runtime environment
     shutdown()
-    # todo: could configure dashboard here - see "ray dashboard set up" online
-    init(include_dashboard=False, ignore_reinit_error=True)
-
+    # todo: configure dashboard here - see "ray dashboard set up" online once
+    # todo: ray (Q2>Py) is updated
+    context = init(include_dashboard=False, ignore_reinit_error=True)
+    print(context.dashboard_url)
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
         # AsyncHyperBand enables aggressive early stopping of bad trials.
@@ -114,7 +115,7 @@ def run_trials(
         run_config=air.RunConfig(
             # complete experiment name with subfolders of trials within
             name=exp_name,
-            storage_path=storage_path,
+            local_dir=storage_path,
             # ! checkpoint: to store best model - is retrieved in
             # evaluate_models.py
             checkpoint_config=air.CheckpointConfig(

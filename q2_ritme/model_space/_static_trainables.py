@@ -7,6 +7,7 @@ from typing import Any, Dict
 import joblib
 import numpy as np
 import pandas as pd
+import ray
 import torch
 import xgboost as xgb
 from coral_pytorch.dataset import corn_label_from_logits
@@ -54,7 +55,7 @@ def _save_sklearn_model(model: BaseEstimator) -> str:
     Returns:
     str: The path to the saved model file.
     """
-    model_path = os.path.join(tune.get_trial_dir(), "model.pkl")
+    model_path = os.path.join(ray.train.get_context().get_trial_dir(), "model.pkl")
     joblib.dump(model, model_path)
     return model_path
 

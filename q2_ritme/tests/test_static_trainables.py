@@ -30,19 +30,26 @@ class TestHelperFunctions(TestPluginBase):
         result = st._predict_rmse(self.model, self.X, self.y)
         self.assertEqual(result, expected)
 
-    @patch("ray.tune.get_trial_dir")
-    def test_save_sklearn_model(self, mock_get_trial_dir):
+    @patch("ray.train.get_context")
+    def test_save_sklearn_model(self, mock_get_context):
+        mock_trial_context = MagicMock()
+        mock_trial_context.get_trial_id.return_value = "mock_trial_id"
+        mock_get_context.return_value = mock_trial_context
         with tempfile.TemporaryDirectory() as tmpdir:
-            mock_get_trial_dir.return_value = tmpdir
+            mock_trial_context.get_trial_dir.return_value = tmpdir
 
             result = st._save_sklearn_model(self.model)
             self.assertTrue(os.path.exists(result))
 
     @patch("ray.air.session.report")
-    @patch("ray.tune.get_trial_dir")
-    def test_report_results_manually(self, mock_get_trial_dir, mock_report):
+    @patch("ray.train.get_context")
+    def test_report_results_manually(self, mock_get_context, mock_report):
+        mock_trial_context = MagicMock()
+        mock_trial_context.get_trial_id.return_value = "mock_trial_id"
+        mock_get_context.return_value = mock_trial_context
         with tempfile.TemporaryDirectory() as tmpdir:
-            mock_get_trial_dir.return_value = tmpdir
+            mock_trial_context.get_trial_dir.return_value = tmpdir
+
             st._report_results_manually(self.model, self.X, self.y, self.X, self.y)
             mock_report.assert_called_once()
 
