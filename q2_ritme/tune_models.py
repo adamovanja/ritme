@@ -115,7 +115,7 @@ def run_trials(
         run_config=air.RunConfig(
             # complete experiment name with subfolders of trials within
             name=exp_name,
-            storage_path=storage_path,
+            local_dir=storage_path,
             # ! checkpoint: to store best model - is retrieved in
             # evaluate_models.py
             checkpoint_config=air.CheckpointConfig(

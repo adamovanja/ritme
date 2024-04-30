@@ -46,7 +46,8 @@ def get_all_exp_analyses(experiment_dir):
     state_files = glob.glob(os.path.join(experiment_dir, "experiment_state-*.json"))
     analyses_ls = []
     for f in state_files:
-        analyses_ls.append(ExperimentAnalysis(experiment_checkpoint_path=f))
+        absolute_path = os.path.abspath(f)
+        analyses_ls.append(ExperimentAnalysis(experiment_checkpoint_path=absolute_path))
     return analyses_ls
 
 
