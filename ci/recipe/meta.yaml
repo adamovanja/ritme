@@ -43,6 +43,7 @@ requirements:
   run_constrained:
     - pip:
       - coral_pytorch
+      - c-lasso
 
 
 test:
