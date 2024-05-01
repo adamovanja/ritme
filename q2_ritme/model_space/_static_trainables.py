@@ -20,7 +20,7 @@ from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import ElasticNet
 from sklearn.metrics import mean_squared_error
 from torch import nn
 from torch.optim import Adam
@@ -125,7 +125,11 @@ def train_linreg(
 
     # ! model
     np.random.seed(seed_model)
-    linreg = LinearRegression(fit_intercept=config["fit_intercept"])
+    linreg = ElasticNet(
+        alpha=config["alpha"],
+        l1_ratio=config["l1_ratio"],
+        fit_intercept=config["fit_intercept"],
+    )
     linreg.fit(X_train, y_train)
 
     _report_results_manually(linreg, X_train, y_train, X_val, y_val)

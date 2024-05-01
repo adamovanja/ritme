@@ -1,10 +1,11 @@
 """define hyperparameter search spaces"""
+
 from ray import tune
 
 # ! data engineering
 data_eng_space = {
-    # adjust to tune.grid_search checks all options:
-    # new nb_trials= num_trials * nb of options in data_transform
+    # tune.grid_search specified here checks all options: so new nb_trials=
+    # num_trials * nb of options in data_transform * nb of model types
     "data_transform": tune.grid_search([None, "clr", "ilr", "alr"]),
     # todo: remove manual setting of max number of features (19 now)
     "data_alr_denom_idx": tune.randint(0, 19),
@@ -15,6 +16,11 @@ data_eng_space = {
 linreg_space = {
     **data_eng_space,
     "fit_intercept": tune.choice([True]),
+    # alpha controls overall regularization strength, alpha = 0 is equivalent to
+    # an ordinary least square. large alpha -> more regularization
+    "alpha": tune.loguniform(1e-5, 1.0),
+    # balance between L1 and L2 reg., when =0 -> L2, when =1 -> L1
+    "l1_ratio": tune.uniform(0, 1),
 }
 
 # scikit random forest

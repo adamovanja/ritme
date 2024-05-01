@@ -8,7 +8,6 @@ from ray import air, init, shutdown, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
-# todo: adjust to json file to be read in from user
 from q2_ritme.model_space import _static_searchspace as ss
 from q2_ritme.model_space import _static_trainables as st
 
@@ -134,7 +133,7 @@ def run_trials(
                 ),
             ],
         ),
-        # hyperparameter space
+        # hyperparameter space: passes config used in trainables
         param_space=search_space,
         tune_config=tune.TuneConfig(
             metric="rmse_val",
