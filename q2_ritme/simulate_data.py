@@ -12,7 +12,8 @@ def simulate_feature_table(
     n_samples: int, n_feat: int, density: float = DENSITY, seed: int = SEED_SIM
 ) -> pd.DataFrame:
     """
-    Creates a random sparse matrix of integers and transforms it into a DataFrame.
+    Creates a random sparse matrix of relative abundances, ensuring at least one
+    column has a non-zero feature in all samples.
 
     Parameters:
     n_samples (int): Number of samples.
@@ -21,7 +22,7 @@ def simulate_feature_table(
     seed (int): Seed for the random number generator. Default value is SEED_SIM.
 
     Returns:
-    pd.DataFrame: Transformed dense matrix as a DataFrame.
+    pd.DataFrame: Relative abundance matrix as a DataFrame.
     """
     # sparse matrix
     rvs = scipy.stats.binom(200, 0.1).rvs
@@ -32,10 +33,21 @@ def simulate_feature_table(
         n_samples, n_feat, density=density, random_state=seed, data_rvs=rvs
     )
 
+    # convert sparse matrix to dense matrix
+    dense_matrix = matrix.A
+
+    # ensure at least one column has a non-zero feature in all samples
+    non_zero_col = np.random.randint(0, n_feat)
+    dense_matrix[:, non_zero_col] = scipy.stats.binom(200, 0.1).rvs(size=n_samples)
+
+    # normalize the dense matrix so that features sum to 1.0 per sample
+    row_sums = dense_matrix.sum(axis=1, keepdims=True)
+    normalized_matrix = dense_matrix / row_sums
+
     # transform to df
     feat_ls = [f"F{i}" for i in range(n_feat)]
     sample_ls = [f"SRR{i}" for i in range(n_samples)]
-    feat_df = pd.DataFrame(matrix.A, columns=feat_ls, index=sample_ls)
+    feat_df = pd.DataFrame(normalized_matrix, columns=feat_ls, index=sample_ls)
     feat_df.index.name = "id"
     return feat_df
 

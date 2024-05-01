@@ -27,7 +27,7 @@ def load_data(
             ft = pd.read_csv(path2ft, sep="\t", index_col=0)
         elif path2ft.endswith(".qza"):
             ft = q2.Artifact.load(path2ft).view(pd.DataFrame)
-
+        # todo: assert that loaded ft has relative abundances
         # flag microbial features with prefix "F"
         first_letter = set([i[0] for i in ft.columns.tolist()])
         if first_letter != {"F"}:

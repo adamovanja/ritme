@@ -21,16 +21,6 @@ model_trainables = {
     "rf": st.train_rf,
 }
 
-model_search_space = {
-    # model_type: search_space
-    "xgb": ss.xgb_space,
-    "nn_reg": ss.nn_space,
-    "nn_class": ss.nn_space,
-    "nn_corn": ss.nn_space,
-    "linreg": ss.linreg_space,
-    "rf": ss.rf_space,
-}
-
 
 def get_slurm_resource(resource_name, default_value=0):
     try:
@@ -164,6 +154,7 @@ def run_all_trials(
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}
+    model_search_space = ss.get_search_space(train_val)
     for model in model_types:
         # todo: parallelize this for loop
         if not os.path.exists(path_exp):
