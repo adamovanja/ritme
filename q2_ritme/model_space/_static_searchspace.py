@@ -1,27 +1,27 @@
 from ray import tune
 
 
-def find_first_nonzero_feature_idx(data):
+def find_most_nonzero_feature_idx(data):
     """
-    Find the first index of the feature that is non-zero in all samples.
+    Find the index of the first feature with the most non-zero values.
 
     Args:
         data (pd.DataFrame): DataFrame containing features.
 
     Returns:
-        int: Index of the first feature that is non-zero in all samples.
+        int: Index of the feature with the most non-zero values.
     """
-    nonzero_cols = (data != 0).all()
-    nonzero_features = data.columns[nonzero_cols]
-    if len(nonzero_features) > 0:
-        return data.columns.get_loc(nonzero_features[0])
+    nonzero_counts = (data != 0).sum()
+    if nonzero_counts.max() > 0:
+        feature_name = nonzero_counts.idxmax()
+        return data.columns.get_loc(feature_name)
     else:
-        raise ValueError("No feature is non-zero in all samples.")
+        raise ValueError("All features are zero in all samples.")
 
 
 def get_alr_denom_idx_space(train_val):
     features = [x for x in train_val if x.startswith("F")]
-    nonzero_feature_idx = find_first_nonzero_feature_idx(train_val[features])
+    nonzero_feature_idx = find_most_nonzero_feature_idx(train_val[features])
     return nonzero_feature_idx
 
 

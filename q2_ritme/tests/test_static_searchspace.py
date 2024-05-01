@@ -10,20 +10,22 @@ class TestFindNonzeroFeatureIdx(TestPluginBase):
     def setUp(self):
         super().setUp()
 
-    def test_find_first_nonzero_feature_idx_with_nonzero_feature(self):
-        data = pd.DataFrame({"F1": [1, 2, 3], "F2": [0, 0, 0], "F3": [4, 5, 6]})
+    def test_find_most_nonzero_feature_idx_with_nonzero_feature(self):
+        data = pd.DataFrame(
+            {"F1": [0.1, 0.2, 0.7], "F2": [0, 0, 0], "F3": [0.9, 0.8, 0.3]}
+        )
         expected_idx = 0
-        self.assertEqual(ss.find_first_nonzero_feature_idx(data), expected_idx)
+        self.assertEqual(ss.find_most_nonzero_feature_idx(data), expected_idx)
 
-    def test_find_first_nonzero_feature_idx_with_all_zero_features(self):
+    def test_find_most_nonzero_feature_idx_with_all_zero_features(self):
         data = pd.DataFrame({"F1": [0, 0, 0], "F2": [0, 0, 0], "F3": [0, 0, 0]})
         with self.assertRaises(ValueError):
-            ss.find_first_nonzero_feature_idx(data)
+            ss.find_most_nonzero_feature_idx(data)
 
-    def test_find_first_nonzero_feature_idx_with_empty_dataframe(self):
+    def test_find_most_nonzero_feature_idx_with_empty_dataframe(self):
         data = pd.DataFrame()
         with self.assertRaises(ValueError):
-            ss.find_first_nonzero_feature_idx(data)
+            ss.find_most_nonzero_feature_idx(data)
 
 
 class TestStaticSearchSpace(TestPluginBase):
