@@ -65,6 +65,7 @@ class TestStaticSearchSpace(TestPluginBase):
         linreg_space = ss.get_linreg_space(self.train_val)
 
         self.assertIsInstance(linreg_space, dict)
+        self.assertEqual(linreg_space["model"], "linreg")
         self.assertIn("data_transform", linreg_space)
         self.assertIn("data_alr_denom_idx", linreg_space)
         self.assertIn("fit_intercept", linreg_space)
@@ -75,6 +76,7 @@ class TestStaticSearchSpace(TestPluginBase):
         rf_space = ss.get_rf_space(self.train_val)
 
         self.assertIsInstance(rf_space, dict)
+        self.assertEqual(rf_space["model"], "rf")
         self.assertIn("data_transform", rf_space)
         self.assertIn("data_alr_denom_idx", rf_space)
         self.assertIn("n_estimators", rf_space)
@@ -89,6 +91,7 @@ class TestStaticSearchSpace(TestPluginBase):
         xgb_space = ss.get_xgb_space(self.train_val)
 
         self.assertIsInstance(xgb_space, dict)
+        self.assertEqual(xgb_space["model"], "xgb")
         self.assertIn("data_transform", xgb_space)
         self.assertIn("data_alr_denom_idx", xgb_space)
         self.assertIn("objective", xgb_space)
@@ -98,9 +101,10 @@ class TestStaticSearchSpace(TestPluginBase):
         self.assertIn("eta", xgb_space)
 
     def test_get_nn_space(self):
-        nn_space = ss.get_nn_space(self.train_val)
+        nn_space = ss.get_nn_space(self.train_val, "nn_reg")
 
         self.assertIsInstance(nn_space, dict)
+        self.assertEqual(nn_space["model"], "nn_reg")
         self.assertIn("data_transform", nn_space)
         self.assertIn("data_alr_denom_idx", nn_space)
         self.assertIn("n_hidden_layers", nn_space)
