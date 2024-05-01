@@ -74,11 +74,11 @@ class TestTrainables(TestPluginBase):
         self.seed_model = 0
 
     @patch("q2_ritme.model_space._static_trainables.process_train")
-    @patch("q2_ritme.model_space._static_trainables.LinearRegression")
+    @patch("q2_ritme.model_space._static_trainables.ElasticNet")
     @patch("q2_ritme.model_space._static_trainables._report_results_manually")
     def test_train_linreg(self, mock_report, mock_linreg, mock_process_train):
         # define input parameters
-        config = {"fit_intercept": True}
+        config = {"fit_intercept": True, "alpha": 0.1, "l1_ratio": 0.5}
 
         mock_process_train.return_value = (None, None, None, None)
         mock_linreg_instance = mock_linreg.return_value
@@ -97,7 +97,11 @@ class TestTrainables(TestPluginBase):
         mock_process_train.assert_called_once_with(
             config, self.train_val, self.target, self.host_id, self.seed_data
         )
-        mock_linreg.assert_called_once_with(fit_intercept=config["fit_intercept"])
+        mock_linreg.assert_called_once_with(
+            alpha=config["alpha"],
+            l1_ratio=config["l1_ratio"],
+            fit_intercept=config["fit_intercept"],
+        )
         mock_linreg_instance.fit.assert_called_once()
         mock_report.assert_called_once()
 

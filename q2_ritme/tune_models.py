@@ -8,7 +8,6 @@ from ray import air, init, shutdown, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
-# todo: adjust to json file to be read in from user
 from q2_ritme.model_space import _static_searchspace as ss
 from q2_ritme.model_space import _static_trainables as st
 
@@ -20,16 +19,6 @@ model_trainables = {
     "nn_corn": st.train_nn_corn,
     "linreg": st.train_linreg,
     "rf": st.train_rf,
-}
-
-model_search_space = {
-    # model_type: search_space
-    "xgb": ss.xgb_space,
-    "nn_reg": ss.nn_space,
-    "nn_class": ss.nn_space,
-    "nn_corn": ss.nn_space,
-    "linreg": ss.linreg_space,
-    "rf": ss.rf_space,
 }
 
 
@@ -134,7 +123,7 @@ def run_trials(
                 ),
             ],
         ),
-        # hyperparameter space
+        # hyperparameter space: passes config used in trainables
         param_space=search_space,
         tune_config=tune.TuneConfig(
             metric="rmse_val",
@@ -165,6 +154,7 @@ def run_all_trials(
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}
+    model_search_space = ss.get_search_space(train_val)
     for model in model_types:
         # todo: parallelize this for loop
         if not os.path.exists(path_exp):

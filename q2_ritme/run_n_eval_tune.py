@@ -66,6 +66,8 @@ def run_n_eval_tune(config_path):
         config["seed_model"],
         path_mlflow,
         path_exp,
+        # number of trials to run per model type * grid_search parameters in
+        # @_static_searchspace
         config["num_trials"],
         model_types=config["ls_model_types"],
         fully_reproducible=False,
