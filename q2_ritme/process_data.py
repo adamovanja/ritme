@@ -37,7 +37,6 @@ def get_relative_abundance(
         columns=ft_rel_biom.ids(axis="observation"),
     )
 
-    print(ft_rel.head())
     # round needed as certain 1.0 are represented in different digits 2e-16
     assert ft_rel[ft_cols].sum(axis=1).round(5).eq(1.0).all()
 
