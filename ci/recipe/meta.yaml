@@ -22,6 +22,10 @@ requirements:
     - importlib-metadata
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
+    - q2-feature-classifier {{ qiime2_epoch }}.*
+    - q2-phylogeny {{ qiime2_epoch }}.*
+    # todo: check if q2-types is really needed - if not remove
+    - q2-types {{ qiime2_epoch }}.*
     - lightning
     # todo: once newest version is passing all tests: upgrade mlflow
     - mlflow==2.11.3
