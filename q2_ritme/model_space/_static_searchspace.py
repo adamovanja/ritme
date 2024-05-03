@@ -103,6 +103,29 @@ def get_xgb_space(train_val):
     )
 
 
+def get_trac_space(train_val):
+    # no feature_transformation to be used for trac
+    data_eng_space = {"data_transform": None, "data_alr_denom_idx": None}
+    return dict(
+        model="trac",
+        **data_eng_space,
+        **{
+            # 'one-cv_one_stddev-error' = select simplest model (largest lambda
+            # value) in CV whose CV score is within 1 stddev of best score
+            # todo: revert back to full choice
+            "cv_one_stddev": tune.choice([True]),
+            # "cv_one_stddev": tune.choice([True, False]),
+            "lambdas_num_searched": tune.choice([10]),
+            # "lambdas_num_searched": tune.choice([80, 100, 120]),
+            "lambda_min": tune.choice([0.01]),
+            # "lambda_min": tune.choice([0.00001, 0.0001, 0.001, 0.01]),
+            # logscale when going from lambda_min to 1
+            "lambda_logscale_search": tune.choice([True]),
+            # "lambda_logscale_search": tune.choice([True, False]),
+        },
+    )
+
+
 def get_search_space(train_val):
     return {
         "xgb": get_xgb_space(train_val),
@@ -111,4 +134,5 @@ def get_search_space(train_val):
         "nn_corn": get_nn_space(train_val, "nn_corn"),
         "linreg": get_linreg_space(train_val),
         "rf": get_rf_space(train_val),
+        "trac": get_trac_space(train_val),
     }

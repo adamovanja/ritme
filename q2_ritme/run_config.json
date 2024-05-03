@@ -1,8 +1,8 @@
 {
-  "experiment_tag": "test_5c_trac",
+  "experiment_tag": "ttrac_5c_trac",
   "host_id": "host_id",
   "ls_model_types": [
-    "linreg"
+    "trac"
   ],
   "mlflow_tracking_uri": "mlruns",
   "models_to_evaluate_separately": [],

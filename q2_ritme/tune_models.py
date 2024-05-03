@@ -20,6 +20,7 @@ model_trainables = {
     "nn_corn": st.train_nn_corn,
     "linreg": st.train_linreg,
     "rf": st.train_rf,
+    "trac": st.train_trac,
 }
 
 
@@ -101,7 +102,7 @@ def run_trials(
                 seed_data=seed_data,
                 seed_model=seed_model,
                 tax=tax,
-                phylo=tree_phylo,
+                tree_phylo=tree_phylo,
             ),
             resources,
         ),
@@ -157,7 +158,15 @@ def run_all_trials(
     mlflow_uri: str,
     path_exp: str,
     num_trials: int,
-    model_types: list = ["xgb", "nn_reg", "nn_class", "nn_corn", "linreg", "rf"],
+    model_types: list = [
+        "xgb",
+        "nn_reg",
+        "nn_class",
+        "nn_corn",
+        "linreg",
+        "rf",
+        "trac",
+    ],
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}

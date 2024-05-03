@@ -1,6 +1,7 @@
 """Module with tune trainables of all static models"""
 
 import os
+import pickle
 import random
 from typing import Any, Dict
 
@@ -11,6 +12,7 @@ import ray
 import skbio
 import torch
 import xgboost as xgb
+from classo import classo_problem
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from pytorch_lightning import LightningModule, Trainer, seed_everything
@@ -27,7 +29,7 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
 
-from q2_ritme.feature_space._process_train import process_train
+from q2_ritme.feature_space._process_train import process_train, process_train_trac
 
 
 def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:
@@ -136,6 +138,108 @@ def train_linreg(
     linreg.fit(X_train, y_train)
 
     _report_results_manually(linreg, X_train, y_train, X_val, y_val)
+
+
+def _report_results_manually_trac(alpha, A_df, log_geom_trainval, y_train_val):
+    # save coefficients w labels & matrix A with labels -> model_path
+    idx_alpha = ["intercept"] + A_df.columns.tolist()
+    df_alpha_with_labels = pd.DataFrame(alpha, columns=["alpha"], index=idx_alpha)
+
+    model = {"model": df_alpha_with_labels, "matrix_a": A_df}
+
+    # save model
+    path_to_save = ray.train.get_context().get_trial_dir()
+    model_path = os.path.join(path_to_save, "model.pkl")
+    with open(model_path, "wb") as file:
+        pickle.dump(model, file)
+    # with pd.HDFStore(model_path, mode="w") as store:
+    #     store["model"] = df_alpha_with_labels
+    #     store["matrix_a"] = A_df
+
+    # calculate RMSE
+    y_pred = log_geom_trainval.dot(alpha[1:]) + alpha[0]
+    score_train_val = mean_squared_error(y_train_val, y_pred, squared=False)
+
+    session.report(
+        metrics={
+            # todo: check is this a problem that both are given?
+            "rmse_val": score_train_val,
+            "rmse_train": score_train_val,
+            "model_path": model_path,
+        }
+    )
+    return None
+
+
+def train_trac(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
+) -> None:
+    """
+    Train a trac model and report the results to Ray Tune.
+
+    Parameters:
+    config (Dict[str, Any]): The configuration for the training.
+    train_val (DataFrame): The training and validation data.
+    target (str): The target variable.
+    host_id (str): The host ID.
+    seed_data (int): The seed for the data.
+    seed_model (int): The seed for the model.
+
+    Returns:
+    None
+    """
+    # ! process dataset: X with features & y with host_id
+    log_geom_trainval, y_train_val, nleaves, A_df = process_train_trac(
+        config, train_val, target, host_id, seed_data, tax, tree_phylo
+    )
+
+    # ! model
+    np.random.seed(seed_model)
+
+    # perform CV classo: trac
+    label_short = np.array([la.split(";")[-1].strip() for la in A_df.columns])
+    problem = classo_problem(log_geom_trainval, y_train_val.values, label=label_short)
+
+    problem.formulation.w = 1 / nleaves
+    problem.formulation.intercept = True
+    problem.formulation.concomitant = False  # not relevant for here
+
+    # ! one form of model selection needs to be chosen
+    # stability selection: for pre-selected range of lambda find beta paths
+    problem.model_selection.StabSel = False
+    # calculate coefficients for a grid of lambdas
+    problem.model_selection.PATH = False
+    # lambda values checked with CV are `Nlam` points between 1 and `lamin`, with
+    # logarithm scale or not depending on `logscale`.
+    problem.model_selection.CV = True
+    problem.model_selection.CVparameters.seed = (
+        seed_model  # one could change logscale, Nsubset, oneSE
+    )
+    # 'one-standard-error' = select simplest model (largest lambda value) in CV
+    # whose CV score is within 1 stddev of best score
+    problem.model_selection.CVparameters.oneSE = config["cv_one_stddev"]
+    problem.model_selection.CVparameters.Nlam = config["lambdas_num_searched"]
+    problem.model_selection.CVparameters.lamin = config["lambda_min"]
+    problem.model_selection.CVparameters.logscale = config["lambda_logscale_search"]
+
+    problem.solve()
+    # todo: try to save output to file
+    # print(problem.solution)
+
+    # extract coefficients
+    # if oneSE=True -> uses lambda_1SE else lambda_min
+    # CV.refit -> solves unconstrained least squares problem with selected
+    # lambda and variables
+    alpha = problem.solution.CV.refit
+
+    _report_results_manually_trac(alpha, A_df, log_geom_trainval, y_train_val)
 
 
 def train_rf(

@@ -112,10 +112,11 @@ def load_tax_phylo(
         # filter tree by feature table: this prunes a phylogenetic tree to match
         # the input ids
         # Remove the first letter of each column name: "F" to match phylotree
-        ft.columns = [col[1:] for col in ft.columns]
-        art_ft = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft)
+        ft_i = ft.copy()
+        ft_i.columns = [col[1:] for col in ft_i.columns]
+        art_ft_i = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft_i)
 
-        (art_phylo_f,) = phylogeny.actions.filter_tree(tree=art_phylo, table=art_ft)
+        (art_phylo_f,) = phylogeny.actions.filter_tree(tree=art_phylo, table=art_ft_i)
         tree_phylo_f = art_phylo_f.view(skbio.TreeNode)
 
         # add prefix "F" to leaf names in tree to remain consistent with ft
