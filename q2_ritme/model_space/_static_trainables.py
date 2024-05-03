@@ -8,6 +8,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import ray
+import skbio
 import torch
 import xgboost as xgb
 from coral_pytorch.dataset import corn_label_from_logits
@@ -103,6 +104,8 @@ def train_linreg(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -142,6 +145,8 @@ def train_rf(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -275,7 +280,13 @@ def load_data(X_train, y_train, X_val, y_val, y_type, config):
 
 
 def train_nn(
-    config, train_val, target, host_id, seed_data, seed_model, nn_type="regression"
+    config,
+    train_val,
+    target,
+    host_id,
+    seed_data,
+    seed_model,
+    nn_type="regression",
 ):
     # Set the seed for reproducibility
     seed_everything(seed_model, workers=True)
@@ -362,13 +373,17 @@ def train_nn(
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 
-def train_nn_reg(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn_reg(
+    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+):
     train_nn(
         config, train_val, target, host_id, seed_data, seed_model, nn_type="regression"
     )
 
 
-def train_nn_class(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn_class(
+    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+):
     train_nn(
         config,
         train_val,
@@ -380,7 +395,9 @@ def train_nn_class(config, train_val, target, host_id, seed_data, seed_model):
     )
 
 
-def train_nn_corn(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn_corn(
+    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+):
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
         config,
@@ -400,6 +417,8 @@ def train_xgb(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
 ) -> None:
     """
     Train an XGBoost model and report the results to Ray Tune.

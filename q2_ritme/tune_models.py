@@ -3,6 +3,7 @@ import random
 
 import numpy as np
 import pandas as pd
+import skbio
 import torch
 from ray import air, init, shutdown, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
@@ -39,6 +40,8 @@ def run_trials(
     host_id,
     seed_data,
     seed_model,
+    tax,
+    tree_phylo,
     path2exp,
     num_trials,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
@@ -97,6 +100,8 @@ def run_trials(
                 host_id=host_id,
                 seed_data=seed_data,
                 seed_model=seed_model,
+                tax=tax,
+                phylo=tree_phylo,
             ),
             resources,
         ),
@@ -147,6 +152,8 @@ def run_all_trials(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
     mlflow_uri: str,
     path_exp: str,
     num_trials: int,
@@ -170,6 +177,8 @@ def run_all_trials(
             host_id,
             seed_data,
             seed_model,
+            tax,
+            tree_phylo,
             path_exp,
             num_trials,
             fully_reproducible=fully_reproducible,
