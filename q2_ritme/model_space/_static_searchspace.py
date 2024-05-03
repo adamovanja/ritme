@@ -112,16 +112,11 @@ def get_trac_space(train_val):
         **{
             # 'one-cv_one_stddev-error' = select simplest model (largest lambda
             # value) in CV whose CV score is within 1 stddev of best score
-            # todo: revert back to full choice
-            "cv_one_stddev": tune.choice([True]),
-            # "cv_one_stddev": tune.choice([True, False]),
-            "lambdas_num_searched": tune.choice([10]),
-            # "lambdas_num_searched": tune.choice([80, 100, 120]),
-            "lambda_min": tune.choice([0.01]),
-            # "lambda_min": tune.choice([0.00001, 0.0001, 0.001, 0.01]),
+            "cv_one_stddev": tune.choice([True, False]),
+            "lambdas_num_searched": tune.choice([80, 100, 120]),
+            "lambda_min": tune.choice([0.00001, 0.0001, 0.001, 0.01]),
             # logscale when going from lambda_min to 1
-            "lambda_logscale_search": tune.choice([True]),
-            # "lambda_logscale_search": tune.choice([True, False]),
+            "lambda_logscale_search": tune.choice([True, False]),
         },
     )
 
