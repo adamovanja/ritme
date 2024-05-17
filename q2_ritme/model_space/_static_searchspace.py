@@ -56,7 +56,7 @@ def get_rf_space(train_val):
         model="rf",
         **data_eng_space,
         **{
-            "n_estimators": tune.randint(100, 500),
+            "n_estimators": tune.randint(50, 300),
             "max_depth": tune.randint(2, 32),
             "min_samples_split": tune.choice([0.001, 0.01, 0.1]),
             "min_samples_leaf": tune.choice([0.0001, 0.001]),
@@ -113,8 +113,8 @@ def get_trac_space(train_val):
             # 'one-cv_one_stddev-error' = select simplest model (largest lambda
             # value) in CV whose CV score is within 1 stddev of best score
             "cv_one_stddev": tune.choice([True, False]),
-            "lambdas_num_searched": tune.choice([80, 100, 120]),
-            "lambda_min": tune.choice([0.00001, 0.0001, 0.001, 0.01]),
+            "lambdas_num_searched": tune.choice([60, 80, 100]),
+            "lambda_min": tune.choice([0.0001, 0.001, 0.01]),
             # logscale when going from lambda_min to 1
             "lambda_logscale_search": tune.choice([True, False]),
         },
