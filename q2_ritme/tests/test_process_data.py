@@ -169,9 +169,11 @@ class TestProcessData(TestPluginBase):
 
     def test_load_n_split_data(self):
         # Call the function with the test paths
-        train_val, test = load_n_split_data(
+        train_val, test, tax, tree_phylo = load_n_split_data(
             self.tmp_md_path,
             self.tmp_ft_rel_path,
+            None,
+            None,
             host_id="host_id",
             target="supertarget",
             train_size=0.8,
@@ -179,10 +181,14 @@ class TestProcessData(TestPluginBase):
             filter_md_cols=["host_id", "supertarget"],
         )
 
-        # Check that the dataframes are not empty
+        # Check that the train + test dataframes are not empty
         self.assertFalse(train_val.empty)
         self.assertFalse(test.empty)
 
         # Check that the dataframes do not overlap
         overlap = pd.merge(train_val, test, how="inner")
         self.assertEqual(len(overlap), 0)
+
+        # tax and phylo should be empty in this case
+        self.assertTrue(tax.empty)
+        self.assertTrue(tree_phylo.children == [])

@@ -106,8 +106,8 @@ def train_linreg(
     host_id: str,
     seed_data: int,
     seed_model: int,
-    tax: pd.DataFrame,
-    tree_phylo: skbio.TreeNode,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -249,8 +249,8 @@ def train_rf(
     host_id: str,
     seed_data: int,
     seed_model: int,
-    tax: pd.DataFrame,
-    tree_phylo: skbio.TreeNode,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -521,8 +521,8 @@ def train_xgb(
     host_id: str,
     seed_data: int,
     seed_model: int,
-    tax: pd.DataFrame,
-    tree_phylo: skbio.TreeNode,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
 ) -> None:
     """
     Train an XGBoost model and report the results to Ray Tune.

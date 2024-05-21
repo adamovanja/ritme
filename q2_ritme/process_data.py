@@ -127,9 +127,10 @@ def load_tax_phylo(
         num_leaves = tree_phylo_f.count(tips=True)
         assert num_leaves == ft.shape[1]
     else:
-        raise ValueError(
-            "Simulation of taxonomy and phylogeny data not implemented yet."
-        )
+        # load empty variables
+        df_tax_f = pd.DataFrame()
+        tree_phylo_f = skbio.TreeNode()
+
     return df_tax_f, tree_phylo_f
 
 
@@ -215,10 +216,10 @@ def load_n_split_data(
         is used.
         path2ft (str, optional): Path to features file. If None, simulated data
         is used.
-        path2tax (str, optional): Path to taxonomy file. If None, simulated data
-        is used.
-        path2phylo (str, optional): Path to phylogeny file. If None, simulated data
-        is used.
+        path2tax (str, optional): Path to taxonomy file. If None, model options
+        requiring taxonomy can't be run.
+        path2phylo (str, optional): Path to phylogeny file. If None, model
+        options requiring taxonomy can't be run.
         host_id (str, optional): ID of the host. Default is HOST_ID from config.
         target (str, optional): Name of target variable. Default is TARGET from
         config.

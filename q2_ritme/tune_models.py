@@ -171,6 +171,15 @@ def run_all_trials(
 ) -> dict:
     results_all = {}
     model_search_space = ss.get_search_space(train_val)
+
+    # if tax + phylogeny empty we can't run trac
+    if tax.empty or tree_phylo.children == []:
+        model_types.remove("trac")
+        print(
+            "Removing trac from model_types since no taxonomy and phylogeny were "
+            "provided."
+        )
+
     for model in model_types:
         # todo: parallelize this for loop
         if not os.path.exists(path_exp):
