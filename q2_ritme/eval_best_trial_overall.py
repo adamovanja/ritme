@@ -29,7 +29,7 @@ def parse_args():
         "--ls_model_types",
         type=str,
         nargs="+",
-        default=["nn_reg", "nn_class", "nn_corn", "xgb", "linreg", "rf"],
+        default=["nn_reg", "nn_class", "nn_corn", "xgb", "linreg", "rf", "trac"],
         help="List of model types to evaluate. Separate each model type with a space.",
     )
     return parser.parse_args()
@@ -55,11 +55,15 @@ def main():
         experiment_dir = f"{model_path}/*/{model}"
         analyses_ls = get_all_exp_analyses(experiment_dir)
 
-        # identify best trial from all analyses of this model type
-        best_trials_overall[model] = best_trial_name(
-            analyses_ls, "rmse_val", mode="min"
-        )
+        if len(analyses_ls) == 0:
+            print(f"No analyses found for model type: {model}")
+        else:
+            # identify best trial from all analyses of this model type
+            best_trials_overall[model] = best_trial_name(
+                analyses_ls, "rmse_val", mode="min"
+            )
 
+    print(best_trials_overall)
     compare_trials(best_trials_overall, model_path, overall_comparison_output)
 
 
