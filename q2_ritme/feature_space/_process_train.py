@@ -57,7 +57,7 @@ def _verify_matrix_a(A, feature_columns, tree_phylo):
 
 def _preprocess_taxonomy_aggregation(x, A):
     pseudo_count = 0.000001
-    # ? what happens if x is relative abundances
+
     X = np.log(pseudo_count + x)
     nleaves = np.sum(A, axis=0)
     log_geom = X.dot(A) / nleaves
@@ -87,7 +87,22 @@ def process_train(config, train_val, target, host_id, seed_data):
     train, val = split_data_by_host(train_val_t, host_id, 0.8, seed_data)
     X_train, y_train = train[feature_columns], train[target]
     X_val, y_val = val[feature_columns], val[target]
-    return X_train.values, y_train.values, X_val.values, y_val.values
+    return X_train.values, y_train.values, X_val.values, y_val.values, feature_columns
+
+
+def derive_matrix_a(tree_phylo, tax, feature_columns):
+    # todo: fix a2_names to be consensus taxonomy names
+    a, a2_names = _create_matrix_from_tree(tree_phylo)
+    _verify_matrix_a(a, feature_columns, tree_phylo)
+
+    # get labels for all dimensions of A -> A_df
+    label = tax["Taxon"].values
+    nb_features = len(feature_columns)
+    assert len(label) == len(feature_columns)
+    label = np.append(label, a2_names)
+    assert len(label) == a.shape[1]
+    a_df = pd.DataFrame(a, columns=label, index=label[:nb_features])
+    return a_df
 
 
 def process_train_trac(config, train_val, target, host_id, seed_data, tax, tree_phylo):
@@ -99,10 +114,11 @@ def process_train_trac(config, train_val, target, host_id, seed_data, tax, tree_
     # no need to split train-val for trac since CV is performed within the model
 
     # derive matrix A
+    # todo: fix a2_names to be consensus taxonomy names
     A, a2_names = _create_matrix_from_tree(tree_phylo)
     _verify_matrix_a(A, feature_columns, tree_phylo)
 
-    # get labels for all dimensions of A
+    # get labels for all dimensions of A -> A_df
     label = tax["Taxon"].values
     nb_features = len(feature_columns)
     assert len(label) == len(feature_columns)

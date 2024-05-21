@@ -12,9 +12,10 @@ import ray
 import skbio
 import torch
 import xgboost as xgb
-from classo import classo_problem
+from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
+from numpy import linalg
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from ray import tune
@@ -29,7 +30,11 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
 
-from q2_ritme.feature_space._process_train import process_train, process_train_trac
+from q2_ritme.feature_space._process_train import (
+    _preprocess_taxonomy_aggregation,
+    derive_matrix_a,
+    process_train,
+)
 
 
 def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:
@@ -124,7 +129,7 @@ def train_linreg(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
 
@@ -140,7 +145,52 @@ def train_linreg(
     _report_results_manually(linreg, X_train, y_train, X_val, y_val)
 
 
-def _report_results_manually_trac(alpha, A_df, log_geom_trainval, y_train_val):
+def solve_unpenalized_least_squares(cmatrices, intercept=False):
+    # adapted from classo > misc_functions.py > unpenalised
+    if intercept:
+        A1, C1, y = cmatrices
+        A = np.concatenate([np.ones((len(A1), 1)), A1], axis=1)
+        C = np.concatenate([np.zeros((len(C1), 1)), C1], axis=1)
+    else:
+        A, C, y = cmatrices
+
+    k = len(C)
+    d = len(A[0])
+    M1 = np.concatenate([A.T.dot(A), C.T], axis=1)
+    M2 = np.concatenate([C, np.zeros((k, k))], axis=1)
+    M = np.concatenate([M1, M2], axis=0)
+    b = np.concatenate([A.T.dot(y), np.zeros(k)])
+    sol = linalg.lstsq(M, b, rcond=None)[0]
+    beta = sol[:d]
+    return beta
+
+
+def min_least_squares_solution(matrices, selected, intercept=False):
+    """Minimum Least Squares solution for selected features."""
+    # adapted from classo > misc_functions.py > min_LS
+    X, C, y = matrices
+    beta = np.zeros(len(selected))
+
+    if intercept:
+        beta[selected] = solve_unpenalized_least_squares(
+            (X[:, selected[1:]], C[:, selected[1:]], y), intercept=selected[0]
+        )
+    else:
+        beta[selected] = solve_unpenalized_least_squares(
+            (X[:, selected], C[:, selected], y), intercept=False
+        )
+
+    return beta
+
+
+def _predict_rmse_trac(alpha, log_geom_X, y):
+    y_pred = log_geom_X.dot(alpha[1:]) + alpha[0]
+    return mean_squared_error(y, y_pred, squared=False)
+
+
+def _report_results_manually_trac(
+    alpha, A_df, log_geom_train, y_train, log_geom_val, y_val
+):
     # save coefficients w labels & matrix A with labels -> model_path
     idx_alpha = ["intercept"] + A_df.columns.tolist()
     df_alpha_with_labels = pd.DataFrame(alpha, columns=["alpha"], index=idx_alpha)
@@ -152,19 +202,15 @@ def _report_results_manually_trac(alpha, A_df, log_geom_trainval, y_train_val):
     model_path = os.path.join(path_to_save, "model.pkl")
     with open(model_path, "wb") as file:
         pickle.dump(model, file)
-    # with pd.HDFStore(model_path, mode="w") as store:
-    #     store["model"] = df_alpha_with_labels
-    #     store["matrix_a"] = A_df
 
     # calculate RMSE
-    y_pred = log_geom_trainval.dot(alpha[1:]) + alpha[0]
-    score_train_val = mean_squared_error(y_train_val, y_pred, squared=False)
+    score_train = _predict_rmse_trac(alpha, log_geom_train, y_train)
+    score_val = _predict_rmse_trac(alpha, log_geom_val, y_val)
 
     session.report(
         metrics={
-            # todo: check is this a problem that both are given?
-            "rmse_val": score_train_val,
-            "rmse_train": score_train_val,
+            "rmse_val": score_val,
+            "rmse_train": score_train,
             "model_path": model_path,
         }
     )
@@ -196,50 +242,37 @@ def train_trac(
     None
     """
     # ! process dataset: X with features & y with host_id
-    log_geom_trainval, y_train_val, nleaves, A_df = process_train_trac(
-        config, train_val, target, host_id, seed_data, tax, tree_phylo
+    X_train, y_train, X_val, y_val, ft_col = process_train(
+        config, train_val, target, host_id, seed_data
     )
+    # ! derive matrix A
+    a_df = derive_matrix_a(tree_phylo, tax, ft_col)
+
+    # ! get log_geom
+    log_geom_train, nleaves = _preprocess_taxonomy_aggregation(X_train, a_df.values)
+    log_geom_val, _ = _preprocess_taxonomy_aggregation(X_val, a_df.values)
 
     # ! model
     np.random.seed(seed_model)
-
-    # perform CV classo: trac
-    label_short = np.array([la.split(";")[-1].strip() for la in A_df.columns])
-    problem = classo_problem(log_geom_trainval, y_train_val.values, label=label_short)
-
-    problem.formulation.w = 1 / nleaves
-    problem.formulation.intercept = True
-    problem.formulation.concomitant = False  # not relevant for here
-
-    # ! one form of model selection needs to be chosen
-    # stability selection: for pre-selected range of lambda find beta paths
-    problem.model_selection.StabSel = False
-    # calculate coefficients for a grid of lambdas
-    problem.model_selection.PATH = False
-    # lambda values checked with CV are `Nlam` points between 1 and `lamin`, with
-    # logarithm scale or not depending on `logscale`.
-    problem.model_selection.CV = True
-    problem.model_selection.CVparameters.seed = (
-        seed_model  # one could change logscale, Nsubset, oneSE
+    matrices_train = (log_geom_train, np.ones((1, len(log_geom_train[0]))), y_train)
+    intercept = True
+    # todo: config["lambda"] = tune.loguniform(1e-4, 1.0)
+    alpha_norefit = Classo(
+        matrix=matrices_train,
+        lam=config["lambda"],
+        typ="R1",
+        meth="Path-Alg",
+        w=1 / nleaves,
+        intercept=intercept,
     )
-    # 'one-standard-error' = select simplest model (largest lambda value) in CV
-    # whose CV score is within 1 stddev of best score
-    problem.model_selection.CVparameters.oneSE = config["cv_one_stddev"]
-    problem.model_selection.CVparameters.Nlam = config["lambdas_num_searched"]
-    problem.model_selection.CVparameters.lamin = config["lambda_min"]
-    problem.model_selection.CVparameters.logscale = config["lambda_logscale_search"]
+    selected_param = abs(alpha_norefit) > 1e-5
+    alpha = min_least_squares_solution(
+        matrices_train, selected_param, intercept=intercept
+    )
 
-    problem.solve()
-    # todo: try to save output to file
-    # print(problem.solution)
-
-    # extract coefficients
-    # if oneSE=True -> uses lambda_1SE else lambda_min
-    # CV.refit -> solves unconstrained least squares problem with selected
-    # lambda and variables
-    alpha = problem.solution.CV.refit
-
-    _report_results_manually_trac(alpha, A_df, log_geom_trainval, y_train_val)
+    _report_results_manually_trac(
+        alpha, a_df, log_geom_train, y_train, log_geom_val, y_val
+    )
 
 
 def train_rf(
@@ -267,7 +300,7 @@ def train_rf(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
 
@@ -396,7 +429,7 @@ def train_nn(
     seed_everything(seed_model, workers=True)
 
     # Process dataset
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
 
@@ -539,7 +572,7 @@ def train_xgb(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
     # Set seeds

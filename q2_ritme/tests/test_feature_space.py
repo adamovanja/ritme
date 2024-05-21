@@ -157,7 +157,7 @@ class TestProcessTrain(TestPluginBase):
         )
 
         # Act
-        X_train, y_train, X_val, y_val = process_train(
+        X_train, y_train, X_val, y_val, ft_col = process_train(
             self.config, self.train_val, self.target, self.host_id, self.seed_data
         )
 

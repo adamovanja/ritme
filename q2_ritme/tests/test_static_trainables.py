@@ -80,7 +80,7 @@ class TestTrainables(TestPluginBase):
         # define input parameters
         config = {"fit_intercept": True, "alpha": 0.1, "l1_ratio": 0.5}
 
-        mock_process_train.return_value = (None, None, None, None)
+        mock_process_train.return_value = (None, None, None, None, None)
         mock_linreg_instance = mock_linreg.return_value
 
         # run model
@@ -112,7 +112,7 @@ class TestTrainables(TestPluginBase):
         # Arrange
         config = {"n_estimators": 100, "max_depth": 10}
 
-        mock_process_train.return_value = (None, None, None, None)
+        mock_process_train.return_value = (None, None, None, None, None)
         mock_rf_instance = mock_rf.return_value
 
         # Act
@@ -159,11 +159,13 @@ class TestTrainables(TestPluginBase):
         mock_train_y = mock_train[self.target].values
         mock_test_x = mock_test[["F1", "F2"]].values
         mock_test_y = mock_test[self.target].values
+        mock_ft_cols = ["F1", "F2"]
         mock_process_train.return_value = (
             mock_train_x,
             mock_train_y,
             mock_test_x,
             mock_test_y,
+            mock_ft_cols,
         )
         mock_dmatrix.return_value = None
 
@@ -209,6 +211,7 @@ class TestTrainables(TestPluginBase):
             torch.rand(10),
             torch.rand(3, 5),
             torch.rand(3),
+            ["F1", "F2", "F3", "F4", "F5"],
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
         mock_trainer_instance = mock_trainer.return_value
