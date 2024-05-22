@@ -23,18 +23,15 @@ requirements:
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
     - q2-phylogeny {{ qiime2_epoch }}.*
-    # todo: check if q2-types is really needed - if not remove
-    - q2-types {{ qiime2_epoch }}.*
     - lightning
-    # todo: once newest version is passing all tests: upgrade mlflow
-    - mlflow==2.11.3
+    - mlflow
     - numpy
     - pandas
     - pip
     - pytorch
     - py-xgboost
     # todo: update ray to newest once Q2 has migrated to Python 3.10
-    # note: currently ray is in v2.8.1
+    # note: currently ray is in v2.8.1 restricted by Q2
     - ray-default
     - ray-tune
     - scipy

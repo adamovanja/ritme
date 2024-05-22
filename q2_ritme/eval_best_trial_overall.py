@@ -63,7 +63,6 @@ def main():
                 analyses_ls, "rmse_val", mode="min"
             )
 
-    print(best_trials_overall)
     compare_trials(best_trials_overall, model_path, overall_comparison_output)
 
 

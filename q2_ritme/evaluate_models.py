@@ -217,7 +217,6 @@ def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
     path_to_save = os.path.join(save_loc, "rmse_over_experiments_train_test.png")
     plt.tight_layout()
     plt.savefig(path_to_save, dpi=dpi)
-    plt.show()
 
 
 def plot_rmse_over_time(preds_dic, ls_model_types, save_loc, dpi=300):
@@ -260,7 +259,6 @@ def plot_rmse_over_time(preds_dic, ls_model_types, save_loc, dpi=300):
             save_loc, f"rmse_over_time_train_test_{model_type}.png"
         )
         plt.savefig(path_to_save, dpi=dpi)
-        plt.show()
 
 
 def get_best_model_metrics_and_config(
@@ -333,7 +331,6 @@ def plot_best_models_comparison(
     plt.tight_layout()
     path_to_save = os.path.join(save_loc, "rmse_over_experiments_train_val.png")
     plt.savefig(path_to_save, dpi=400)
-    plt.show()
 
 
 def plot_model_training_over_iterations(model_type, result_dic, labels, save_loc):
