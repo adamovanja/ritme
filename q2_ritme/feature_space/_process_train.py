@@ -60,7 +60,7 @@ def create_matrix_from_tree(tree, tax) -> pd.DataFrame:
     # taxonomic name should include OTU name
     tax_e = tax.copy()
     tax_e["tax_ft"] = tax_e["Taxon"] + "; otu__" + tax_e.index
-    a2_node_names = tax_e.loc[leaf_names, "tax_ft"].tolist()
+    a1_node_names = tax_e.loc[leaf_names, "tax_ft"].tolist()
     # Create the matrix for the internal nodes: A2 (num_leaves x
     # num_internal_nodes)
     # initialise it with zeros
@@ -70,6 +70,7 @@ def create_matrix_from_tree(tree, tax) -> pd.DataFrame:
     # iterate over all internal nodes to find descendents of this node and mark
     # them accordingly
     # dict_node2leaf = {}
+    a2_node_names = []
     for j, node in enumerate(internal_nodes):
         # per node keep track of leaf names - for consensus naming
         node_leaf_names = []
@@ -95,7 +96,7 @@ def create_matrix_from_tree(tree, tax) -> pd.DataFrame:
 
     # Concatenate A1 and A2 to create the final matrix A
     A = np.hstack((A1, A2))
-    df_a = pd.DataFrame(A, columns=a2_node_names, index=leaf_names)
+    df_a = pd.DataFrame(A, columns=a1_node_names + a2_node_names, index=leaf_names)
 
     _verify_matrix_a(df_a.values, tax.index.tolist(), tree)
     return df_a
@@ -106,6 +107,8 @@ def _preprocess_taxonomy_aggregation(x, A):
 
     X = np.log(pseudo_count + x)
     nleaves = np.sum(A, axis=0)
+    # safekeeping: dot-product would not work with wrong dimensions
+    # X: n_samples, n_features,  A: n_features, (n_features+n_nodes)
     log_geom = X.dot(A) / nleaves
 
     return log_geom, nleaves

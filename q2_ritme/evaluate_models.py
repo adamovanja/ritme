@@ -57,11 +57,6 @@ def load_trac_model(result: Result) -> Any:
     :param result: The result object containing the model path.
     :return: The loaded TRAC model.
     """
-    # with pd.HDFStore(result.metrics["model_path"], mode="r") as store:
-    #     alpha_df = store["model"]
-    #     A_df = store["matrix_a"]
-    # model = {"model": alpha_df, "matrix_a": A_df}
-
     with open(result.metrics["model_path"], "rb") as file:
         model = pickle.load(file)
 
