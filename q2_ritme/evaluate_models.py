@@ -12,7 +12,9 @@ from joblib import load
 from ray.air.result import Result
 from sklearn.metrics import mean_squared_error
 
-from q2_ritme.feature_space._process_train import _preprocess_taxonomy_aggregation
+from q2_ritme.feature_space._process_trac_specific import (
+    _preprocess_taxonomy_aggregation,
+)
 from q2_ritme.feature_space.transform_features import transform_features
 from q2_ritme.model_space.static_trainables import NeuralNet
 
