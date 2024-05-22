@@ -26,6 +26,7 @@ requirements:
     - lightning
     - mlflow
     - numpy
+    - packaging
     - pandas
     - pip
     - pytorch
