@@ -5,6 +5,31 @@ from q2_ritme.feature_space.transform_features import transform_features
 from q2_ritme.process_data import split_data_by_host
 
 
+def _transform_features_in_complete_data(config, train_val, target):
+    features = [x for x in train_val if x.startswith("F")]
+    non_features = [x for x in train_val if x not in features]
+
+    ft_transformed = transform_features(
+        train_val[features],
+        config["data_transform"],
+        config["data_alr_denom_idx"],
+    )
+    train_val_t = train_val[non_features].join(ft_transformed)
+
+    return train_val_t, ft_transformed.columns
+
+
+def process_train(config, train_val, target, host_id, seed_data):
+    train_val_t, feature_columns = _transform_features_in_complete_data(
+        config, train_val, target
+    )
+
+    train, val = split_data_by_host(train_val_t, host_id, 0.8, seed_data)
+    X_train, y_train = train[feature_columns], train[target]
+    X_val, y_val = val[feature_columns], val[target]
+    return X_train.values, y_train.values, X_val.values, y_val.values, feature_columns
+
+
 def _create_matrix_from_tree(tree):
     # Get all leaves and create a mapping from leaf names to indices
     leaves = list(tree.tips())
@@ -65,31 +90,6 @@ def _preprocess_taxonomy_aggregation(x, A):
     return log_geom, nleaves
 
 
-def _transform_features_in_complete_data(config, train_val, target):
-    features = [x for x in train_val if x.startswith("F")]
-    non_features = [x for x in train_val if x not in features]
-
-    ft_transformed = transform_features(
-        train_val[features],
-        config["data_transform"],
-        config["data_alr_denom_idx"],
-    )
-    train_val_t = train_val[non_features].join(ft_transformed)
-
-    return train_val_t, ft_transformed.columns
-
-
-def process_train(config, train_val, target, host_id, seed_data):
-    train_val_t, feature_columns = _transform_features_in_complete_data(
-        config, train_val, target
-    )
-
-    train, val = split_data_by_host(train_val_t, host_id, 0.8, seed_data)
-    X_train, y_train = train[feature_columns], train[target]
-    X_val, y_val = val[feature_columns], val[target]
-    return X_train.values, y_train.values, X_val.values, y_val.values, feature_columns
-
-
 def derive_matrix_a(tree_phylo, tax, feature_columns):
     # todo: fix a2_names to be consensus taxonomy names
     a, a2_names = _create_matrix_from_tree(tree_phylo)
@@ -103,32 +103,3 @@ def derive_matrix_a(tree_phylo, tax, feature_columns):
     assert len(label) == a.shape[1]
     a_df = pd.DataFrame(a, columns=label, index=label[:nb_features])
     return a_df
-
-
-def process_train_trac(config, train_val, target, host_id, seed_data, tax, tree_phylo):
-    train_val_t, feature_columns = _transform_features_in_complete_data(
-        config, train_val, target
-    )
-    X_train_val, y_train_val = train_val_t[feature_columns], train_val_t[target]
-
-    # no need to split train-val for trac since CV is performed within the model
-
-    # derive matrix A
-    # todo: fix a2_names to be consensus taxonomy names
-    A, a2_names = _create_matrix_from_tree(tree_phylo)
-    _verify_matrix_a(A, feature_columns, tree_phylo)
-
-    # get labels for all dimensions of A -> A_df
-    label = tax["Taxon"].values
-    nb_features = len(feature_columns)
-    assert len(label) == len(feature_columns)
-    label = np.append(label, a2_names)
-    assert len(label) == A.shape[1]
-    A_df = pd.DataFrame(A, columns=label, index=label[:nb_features])
-
-    # get log_geom
-    log_geom_trainval, nleaves = _preprocess_taxonomy_aggregation(
-        X_train_val.values, A_df.values
-    )
-
-    return log_geom_trainval, y_train_val, nleaves, A_df

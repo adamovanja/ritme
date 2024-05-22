@@ -256,7 +256,6 @@ def train_trac(
     np.random.seed(seed_model)
     matrices_train = (log_geom_train, np.ones((1, len(log_geom_train[0]))), y_train)
     intercept = True
-    # todo: config["lambda"] = tune.loguniform(1e-4, 1.0)
     alpha_norefit = Classo(
         matrix=matrices_train,
         lam=config["lambda"],
