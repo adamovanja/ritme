@@ -16,7 +16,7 @@ from q2_ritme.feature_space.transform_features import (
 
 
 class TestTransformFeatures(TestPluginBase):
-    package = "q2_ritme.test"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()
@@ -119,7 +119,7 @@ class TestTransformFeatures(TestPluginBase):
 
 
 class TestProcessTrain(TestPluginBase):
-    package = "q2_ritme.test"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()

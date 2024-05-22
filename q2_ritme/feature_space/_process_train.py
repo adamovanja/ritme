@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -30,7 +32,18 @@ def process_train(config, train_val, target, host_id, seed_data):
     return X_train.values, y_train.values, X_val.values, y_val.values, feature_columns
 
 
-def _create_matrix_from_tree(tree):
+def _verify_matrix_a(A, feature_columns, tree_phylo):
+    # no all 1 in one column
+    assert not np.any(np.all(A == 1.0, axis=0))
+
+    # shape should be = feature_count + node_count
+    nb_features = len(feature_columns)
+    nb_non_leaf_nodes = len(list(tree_phylo.non_tips()))
+
+    assert nb_features + nb_non_leaf_nodes == A.shape[1]
+
+
+def create_matrix_from_tree(tree, tax) -> pd.DataFrame:
     # Get all leaves and create a mapping from leaf names to indices
     leaves = list(tree.tips())
     leaf_names = [leaf.name for leaf in leaves]
@@ -44,7 +57,10 @@ def _create_matrix_from_tree(tree):
 
     # Create the identity matrix for the leaves: A1 (num_leaves x num_leaves)
     A1 = np.eye(num_leaves)
-
+    # taxonomic name should include OTU name
+    tax_e = tax.copy()
+    tax_e["tax_ft"] = tax_e["Taxon"] + "; otu__" + tax_e.index
+    a2_node_names = tax_e.loc[leaf_names, "tax_ft"].tolist()
     # Create the matrix for the internal nodes: A2 (num_leaves x
     # num_internal_nodes)
     # initialise it with zeros
@@ -53,31 +69,36 @@ def _create_matrix_from_tree(tree):
     # Populate A2 with 1s for the leaves linked by each internal node
     # iterate over all internal nodes to find descendents of this node and mark
     # them accordingly
-    a2_node_names = []
+    # dict_node2leaf = {}
     for j, node in enumerate(internal_nodes):
-        # todo: adjust names to consensus taxonomy from descentents
-        # for now node names are just increasing integers - since node.name is float
-        a2_node_names.append("n" + str(j))
+        # per node keep track of leaf names - for consensus naming
+        node_leaf_names = []
+
+        # flag leaves that match to a node
         descendant_leaves = {leaf.name for leaf in node.tips()}
         for leaf_name in leaf_names:
             if leaf_name in descendant_leaves:
+                node_leaf_names.append(leaf_name)
                 A2[leaf_index_map[leaf_name], j] = 1
+
+        # create consensus taxonomy from all leaf_names- since node.name is just float
+        node_mapped_taxon = tax_e.loc[node_leaf_names, "tax_ft"].tolist()
+        # dict_node2leaf[j] = node_mapped_taxon
+        str_consensus_taxon = os.path.commonprefix(node_mapped_taxon)
+        # get name before last ";"
+        node_consensus_taxon = str_consensus_taxon.rpartition(";")[0]
+
+        # if consensus name already exists, add index to make it unique
+        if node_consensus_taxon in a2_node_names:
+            node_consensus_taxon = node_consensus_taxon + "; n__" + str(j)
+        a2_node_names.append(node_consensus_taxon)
 
     # Concatenate A1 and A2 to create the final matrix A
     A = np.hstack((A1, A2))
+    df_a = pd.DataFrame(A, columns=a2_node_names, index=leaf_names)
 
-    return A, a2_node_names
-
-
-def _verify_matrix_a(A, feature_columns, tree_phylo):
-    # no all 1 in one column
-    assert not np.any(np.all(A == 1.0, axis=0))
-
-    # shape should be = feature_count + node_count
-    nb_features = len(feature_columns)
-    nb_non_leaf_nodes = len(list(tree_phylo.non_tips()))
-
-    assert nb_features + nb_non_leaf_nodes == A.shape[1]
+    _verify_matrix_a(df_a.values, tax.index.tolist(), tree)
+    return df_a
 
 
 def _preprocess_taxonomy_aggregation(x, A):
@@ -88,18 +109,3 @@ def _preprocess_taxonomy_aggregation(x, A):
     log_geom = X.dot(A) / nleaves
 
     return log_geom, nleaves
-
-
-def derive_matrix_a(tree_phylo, tax, feature_columns):
-    # todo: fix a2_names to be consensus taxonomy names
-    a, a2_names = _create_matrix_from_tree(tree_phylo)
-    _verify_matrix_a(a, feature_columns, tree_phylo)
-
-    # get labels for all dimensions of A -> A_df
-    label = tax["Taxon"].values
-    nb_features = len(feature_columns)
-    assert len(label) == len(feature_columns)
-    label = np.append(label, a2_names)
-    assert len(label) == a.shape[1]
-    a_df = pd.DataFrame(a, columns=label, index=label[:nb_features])
-    return a_df

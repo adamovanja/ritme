@@ -1,21 +1,36 @@
 import numpy as np
 import pandas as pd
-from numpy.testing import assert_array_equal
+from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 from skbio import TreeNode
 
-from q2_ritme.feature_space._process_train import (
-    _create_matrix_from_tree,
-    derive_matrix_a,
-)
+from q2_ritme.feature_space._process_train import create_matrix_from_tree
 
 
 class TestProcessTrain(TestPluginBase):
-    package = "q2_ritme.test"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()
         self.tree = self._build_example_tree()
+        self.tax = self._build_example_taxonomy()
+
+    def _build_example_taxonomy(self):
+        tax = pd.DataFrame(
+            {
+                "Taxon": [
+                    "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                    "f__SBR1031; g__SBR1031; s__anaerobic_digester",
+                    "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                    "f__SBR1031; g__SBR1031; s__uncultured_bacterium",
+                    "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031",
+                ],
+                "Confidence": [0.9, 0.9, 0.9],
+            }
+        )
+        tax.index = ["F1", "F2", "F3"]
+        tax.index.name = "Feature ID"
+        return tax
 
     def _build_example_tree(self):
         # Create the tree nodes with lengths
@@ -40,17 +55,17 @@ class TestProcessTrain(TestPluginBase):
         ma_exp = np.array(
             [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]]
         )
-        ma_act, a_names_act = _create_matrix_from_tree(self.tree)
-
-        assert_array_equal(ma_exp, ma_act)
-        self.assertEqual(a_names_act, ["n0"])
-
-    def test_derive_matrix_a(self):
-        ft_act = ["F1", "F2", "F3"]
-        tax_act = ["tax1", "tax2", "tax3"]
-        tax = pd.DataFrame(
-            {"Feature ID": ft_act, "Taxon": tax_act, "Confidence": 3 * [0.9]}
+        node_taxon_names = [
+            "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+            "f__SBR1031; g__SBR1031"
+        ]
+        leaf_names = (self.tax["Taxon"] + "; otu__" + self.tax.index).values.tolist()
+        ft_names = ["F1", "F2", "F3"]
+        ma_exp = pd.DataFrame(
+            ma_exp,
+            columns=leaf_names + node_taxon_names,
+            index=ft_names,
         )
-        a_act = derive_matrix_a(self.tree, tax, ft_act)
+        ma_act = create_matrix_from_tree(self.tree, self.tax)
 
-        self.assertEqual(a_act.columns.tolist(), tax_act + ["n0"])
+        assert_frame_equal(ma_exp, ma_act)

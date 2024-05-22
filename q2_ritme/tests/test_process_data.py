@@ -16,7 +16,7 @@ from q2_ritme.process_data import (
 
 
 class TestProcessData(TestPluginBase):
-    package = "q2_ritme.test"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()

@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from q2_ritme.feature_space._process_train import (
     _preprocess_taxonomy_aggregation,
-    derive_matrix_a,
+    create_matrix_from_tree,
     process_train,
 )
 
@@ -246,7 +246,7 @@ def train_trac(
         config, train_val, target, host_id, seed_data
     )
     # ! derive matrix A
-    a_df = derive_matrix_a(tree_phylo, tax, ft_col)
+    a_df = create_matrix_from_tree(tree_phylo, tax)
 
     # ! get log_geom
     log_geom_train, nleaves = _preprocess_taxonomy_aggregation(X_train, a_df.values)
