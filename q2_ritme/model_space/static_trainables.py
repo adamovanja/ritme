@@ -15,7 +15,6 @@ import xgboost as xgb
 from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
-from numpy import linalg
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from ray import tune
@@ -30,11 +29,12 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
 
-from q2_ritme.feature_space._process_train import (
+from q2_ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
     create_matrix_from_tree,
-    process_train,
 )
+from q2_ritme.feature_space._process_train import process_train
+from q2_ritme.model_space._model_trac_calc import min_least_squares_solution
 
 
 def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:
@@ -143,44 +143,6 @@ def train_linreg(
     linreg.fit(X_train, y_train)
 
     _report_results_manually(linreg, X_train, y_train, X_val, y_val)
-
-
-def solve_unpenalized_least_squares(cmatrices, intercept=False):
-    # adapted from classo > misc_functions.py > unpenalised
-    if intercept:
-        A1, C1, y = cmatrices
-        A = np.concatenate([np.ones((len(A1), 1)), A1], axis=1)
-        C = np.concatenate([np.zeros((len(C1), 1)), C1], axis=1)
-    else:
-        A, C, y = cmatrices
-
-    k = len(C)
-    d = len(A[0])
-    M1 = np.concatenate([A.T.dot(A), C.T], axis=1)
-    M2 = np.concatenate([C, np.zeros((k, k))], axis=1)
-    M = np.concatenate([M1, M2], axis=0)
-    b = np.concatenate([A.T.dot(y), np.zeros(k)])
-    sol = linalg.lstsq(M, b, rcond=None)[0]
-    beta = sol[:d]
-    return beta
-
-
-def min_least_squares_solution(matrices, selected, intercept=False):
-    """Minimum Least Squares solution for selected features."""
-    # adapted from classo > misc_functions.py > min_LS
-    X, C, y = matrices
-    beta = np.zeros(len(selected))
-
-    if intercept:
-        beta[selected] = solve_unpenalized_least_squares(
-            (X[:, selected[1:]], C[:, selected[1:]], y), intercept=selected[0]
-        )
-    else:
-        beta[selected] = solve_unpenalized_least_squares(
-            (X[:, selected], C[:, selected], y), intercept=False
-        )
-
-    return beta
 
 
 def _predict_rmse_trac(alpha, log_geom_X, y):

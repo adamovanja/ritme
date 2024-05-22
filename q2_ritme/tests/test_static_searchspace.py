@@ -1,7 +1,7 @@
 import pandas as pd
 from qiime2.plugin.testing import TestPluginBase
 
-from q2_ritme.model_space import _static_searchspace as ss
+from q2_ritme.model_space import static_searchspace as ss
 
 
 class TestFindNonzeroFeatureIdx(TestPluginBase):
