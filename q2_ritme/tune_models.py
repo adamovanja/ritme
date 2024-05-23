@@ -1,3 +1,4 @@
+import multiprocessing
 import os
 import random
 
@@ -48,7 +49,6 @@ def run_trials(
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
     scheduler_grace_period=5,
     scheduler_max_t=100,
-    # resources=None,
 ):
     # per default ray tune uses 1 CPU per trial and all GPU/#trials - but this
     # does not work with slurm.
@@ -158,7 +158,45 @@ def run_trials(
     return analysis.fit()
 
 
-def run_all_trials(
+def launch_model_trials(
+    model,
+    path_exp,
+    mlflow_uri,
+    model_trainables,
+    model_search_space,
+    train_val,
+    target,
+    host_id,
+    seed_data,
+    seed_model,
+    tax,
+    tree_phylo,
+    num_trials,
+    fully_reproducible,
+):
+    if not os.path.exists(path_exp):
+        os.makedirs(path_exp)
+    print(f"Ray tune training of: {model}...")
+    result_grid = run_trials(
+        mlflow_uri,
+        model,
+        model_trainables[model],
+        model_search_space[model],
+        train_val,
+        target,
+        host_id,
+        seed_data,
+        seed_model,
+        tax,
+        tree_phylo,
+        path_exp,
+        num_trials,
+        fully_reproducible=fully_reproducible,
+    )
+    return model, result_grid
+
+
+def run_all_trials_parallel(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
@@ -180,37 +218,48 @@ def run_all_trials(
     ],
     fully_reproducible: bool = False,
 ) -> dict:
-    results_all = {}
     model_search_space = ss.get_search_space(train_val)
 
     # if tax + phylogeny empty we can't run trac
-    if tax.empty or tree_phylo.children == []:
+    if (tax.empty or tree_phylo.children == []) and "trac" in model_types:
         model_types.remove("trac")
         print(
             "Removing trac from model_types since no taxonomy and phylogeny were "
             "provided."
         )
 
+    pool = multiprocessing.Pool()
+    ls_async_results = []
+    # launch models in parallel way
     for model in model_types:
-        # todo: parallelize this for loop
-        if not os.path.exists(path_exp):
-            os.makedirs(path_exp)
-        print(f"Ray tune training of: {model}...")
-        result = run_trials(
-            mlflow_uri,
-            model,
-            model_trainables[model],
-            model_search_space[model],
-            train_val,
-            target,
-            host_id,
-            seed_data,
-            seed_model,
-            tax,
-            tree_phylo,
-            path_exp,
-            num_trials,
-            fully_reproducible=fully_reproducible,
+        async_result = pool.apply_async(
+            launch_model_trials,
+            args=(
+                model,
+                path_exp,
+                mlflow_uri,
+                model_trainables,
+                model_search_space,
+                train_val,
+                target,
+                host_id,
+                seed_data,
+                seed_model,
+                tax,
+                tree_phylo,
+                num_trials,
+                fully_reproducible,
+            ),
         )
-        results_all[model] = result
+        ls_async_results.append(async_result)
+
+    pool.close()
+    pool.join()
+
+    results_all = {}
+    # ls_async_results is a list of AsyncResult objects
+    for result in ls_async_results:
+        model, result_grid = result.get()
+        results_all[model] = result_grid
+
     return results_all

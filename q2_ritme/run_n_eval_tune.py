@@ -15,7 +15,7 @@ from q2_ritme.evaluate_models import (
     retrieve_best_models,
 )
 from q2_ritme.process_data import load_n_split_data
-from q2_ritme.tune_models import run_all_trials
+from q2_ritme.tune_models import run_all_trials_parallel
 
 
 def parse_args():
@@ -59,7 +59,7 @@ def run_n_eval_tune(config_path):
     )
 
     # ! Run all experiments
-    result_dic = run_all_trials(
+    result_dic = run_all_trials_parallel(
         train_val,
         config["target"],
         config["host_id"],
