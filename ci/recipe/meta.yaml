@@ -26,20 +26,20 @@ requirements:
     # todo: check if q2-types is really needed - if not remove
     - q2-types {{ qiime2_epoch }}.*
     - lightning
-    # todo: once newest version is passing all tests: upgrade mlflow
-    - mlflow==2.11.3
+    - mlflow
     - numpy
     - pandas
     - pip
     - pytorch
     - py-xgboost
     # todo: update ray to newest once Q2 has migrated to Python 3.10
-    # note: currently ray is in v2.8.1
+    # note: currently ray is in v2.8.1 restricted by Q2
     - ray-default
     - ray-tune
     - scipy
     - scikit-learn
     - scikit-bio
+    # needs to be pinned due to deprecation of pkg_resources in v70
     - setuptools==69.5.1
     - torchvision
     - zipp

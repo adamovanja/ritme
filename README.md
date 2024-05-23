@@ -7,7 +7,6 @@ Longitudinal modeling approaches accounting for high-dimensional, sparse and com
 ## Why q2-ritme?
 * q2-ritme allows optimized application of various feature engineering and modelling methods: usually optimal hyperparameters (e.g. regularization) depend on the feature transformation that is performed. q2-ritme can infer feature transformation and optimal model in one go.
 
-
 ## Setup
 To install the required dependencies for this package run (note: running `conda activate` before `make dev` is a mandatory step to ensure also coral_pytorch is installed):
 ```shell
