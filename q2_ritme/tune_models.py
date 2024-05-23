@@ -24,11 +24,11 @@ model_trainables = {
 }
 
 
-# def get_slurm_resource(resource_name, default_value=0):
-#     try:
-#         return int(os.environ[resource_name])
-#     except (KeyError, ValueError):
-#         return default_value
+def get_slurm_resource(resource_name, default_value=0):
+    try:
+        return int(os.environ[resource_name])
+    except (KeyError, ValueError):
+        return default_value
 
 
 def run_trials(
@@ -75,11 +75,14 @@ def run_trials(
     #         }
     #     # nn, rf - through n_jobs, xgb - nthread
 
-    #     # if not a slurm process: default values are used
-    #     resources = {
-    #         "cpu": get_slurm_resource("SLURM_CPUS_PER_TASK", 1),
-    #         "gpu": get_slurm_resource("SLURM_GPUS_PER_TASK", 0),
-    #     }
+    # if not a slurm process: default values are used
+    num_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
+    num_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
+    # resource per 1 trial
+    resources = {
+        "cpu": max(1, num_cpus_avail // num_trials),
+        "gpu": max(0, num_gpus_avail // num_trials),
+    }
 
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)
@@ -117,15 +120,18 @@ def run_trials(
     experiment_tag = os.path.basename(path2exp)
     analysis = tune.Tuner(
         # trainable with input parameters passed
-        tune.with_parameters(
-            trainable,
-            train_val=train_val,
-            target=target,
-            host_id=host_id,
-            seed_data=seed_data,
-            seed_model=seed_model,
-            tax=tax,
-            tree_phylo=tree_phylo,
+        tune.with_resources(
+            tune.with_parameters(
+                trainable,
+                train_val=train_val,
+                target=target,
+                host_id=host_id,
+                seed_data=seed_data,
+                seed_model=seed_model,
+                tax=tax,
+                tree_phylo=tree_phylo,
+            ),
+            resources=resources,
         ),
         # mlflow
         run_config=air.RunConfig(
