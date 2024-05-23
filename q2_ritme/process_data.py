@@ -1,6 +1,8 @@
 import biom
 import pandas as pd
 import qiime2 as q2
+import skbio
+from qiime2.plugins import phylogeny
 from sklearn.model_selection import GroupShuffleSplit
 
 # todo: adjust to json file to be read in from user
@@ -37,7 +39,6 @@ def get_relative_abundance(
         columns=ft_rel_biom.ids(axis="observation"),
     )
 
-    print(ft_rel.head())
     # round needed as certain 1.0 are represented in different digits 2e-16
     assert ft_rel[ft_cols].sum(axis=1).round(5).eq(1.0).all()
 
@@ -84,6 +85,53 @@ def load_data(
         ft = get_relative_abundance(ft, "F")
 
     return ft, md
+
+
+def load_tax_phylo(
+    path2tax: str, path2phylo: str, ft: pd.DataFrame
+) -> (pd.DataFrame, skbio.TreeNode):
+    """
+    Load taxonomy and phylogeny data.
+    """
+    # todo: add option for simulated data
+    if path2tax and path2phylo:
+        # taxonomy
+        art_taxonomy = q2.Artifact.load(path2tax)
+        df_tax = art_taxonomy.view(pd.DataFrame)
+        # rename taxonomy to match new "F" feature names
+        df_tax.index = df_tax.index.map(lambda x: "F" + str(x))
+
+        # Filter the taxonomy based on the feature table
+        df_tax_f = df_tax[df_tax.index.isin(ft.columns.tolist())]
+
+        if df_tax_f.shape[0] == 0:
+            raise ValueError("Taxonomy data does not match with feature table.")
+
+        # phylogeny
+        art_phylo = q2.Artifact.load(path2phylo)
+        # filter tree by feature table: this prunes a phylogenetic tree to match
+        # the input ids
+        # Remove the first letter of each column name: "F" to match phylotree
+        ft_i = ft.copy()
+        ft_i.columns = [col[1:] for col in ft_i.columns]
+        art_ft_i = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft_i)
+
+        (art_phylo_f,) = phylogeny.actions.filter_tree(tree=art_phylo, table=art_ft_i)
+        tree_phylo_f = art_phylo_f.view(skbio.TreeNode)
+
+        # add prefix "F" to leaf names in tree to remain consistent with ft
+        for node in tree_phylo_f.tips():
+            node.name = "F" + node.name
+
+        # ensure that # leaves in tree == feature table dimension
+        num_leaves = tree_phylo_f.count(tips=True)
+        assert num_leaves == ft.shape[1]
+    else:
+        # load empty variables
+        df_tax_f = pd.DataFrame()
+        tree_phylo_f = skbio.TreeNode()
+
+    return df_tax_f, tree_phylo_f
 
 
 def filter_merge_n_sort(
@@ -152,12 +200,14 @@ def split_data_by_host(
 def load_n_split_data(
     path2md: str,
     path2ft: str,
+    path2tax: str,
+    path2phylo: str,
     host_id: str,
     target: str,
     train_size: float,
     seed: int,
     filter_md_cols: list = None,
-) -> (pd.DataFrame, pd.DataFrame):
+) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame, skbio.TreeNode):
     """
     Load, merge and sort data, then split into train-test sets by host_id.
 
@@ -166,6 +216,10 @@ def load_n_split_data(
         is used.
         path2ft (str, optional): Path to features file. If None, simulated data
         is used.
+        path2tax (str, optional): Path to taxonomy file. If None, model options
+        requiring taxonomy can't be run.
+        path2phylo (str, optional): Path to phylogeny file. If None, model
+        options requiring taxonomy can't be run.
         host_id (str, optional): ID of the host. Default is HOST_ID from config.
         target (str, optional): Name of target variable. Default is TARGET from
         config.
@@ -177,13 +231,16 @@ def load_n_split_data(
         SEED_DATA from config.
 
     Returns:
-        tuple: A tuple containing train and test dataframes.
+        : Train and test dataframes as well as matching taxonomy and phylogeny.
     """
     ft, md = load_data(path2md, path2ft, target)
 
+    # tax: n_features x ("Taxon", "Confidence")
+    # tree_phylo: n_features leaf nodes
+    tax, tree_phylo = load_tax_phylo(path2tax, path2phylo, ft)
     data = filter_merge_n_sort(md, ft, host_id, target, filter_md_cols)
 
     # todo: add split also by study_id
     train_val, test = split_data_by_host(data, host_id, train_size, seed)
 
-    return train_val, test
+    return train_val, test, tax, tree_phylo

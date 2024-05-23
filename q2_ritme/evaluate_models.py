@@ -1,4 +1,5 @@
 import os
+import pickle
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -11,6 +12,9 @@ from joblib import load
 from ray.air.result import Result
 from sklearn.metrics import mean_squared_error
 
+from q2_ritme.feature_space._process_trac_specific import (
+    _preprocess_taxonomy_aggregation,
+)
 from q2_ritme.feature_space.transform_features import transform_features
 from q2_ritme.model_space.static_trainables import NeuralNet
 
@@ -48,6 +52,19 @@ def load_sklearn_model(result: Result) -> Any:
     return load(result.metrics["model_path"])
 
 
+def load_trac_model(result: Result) -> Any:
+    """
+    Load a TRAC model from a given result object.
+
+    :param result: The result object containing the model path.
+    :return: The loaded TRAC model.
+    """
+    with open(result.metrics["model_path"], "rb") as file:
+        model = pickle.load(file)
+
+    return model
+
+
 def load_xgb_model(result: Result) -> xgb.Booster:
     """
     Load an XGBoost model from a given result object.
@@ -77,6 +94,7 @@ def get_model(model_type: str, result) -> Any:
     """
     model_loaders = {
         "linreg": load_sklearn_model,
+        "trac": load_trac_model,
         "rf": load_sklearn_model,
         "xgb": load_xgb_model,
         "nn_reg": load_nn_model,
@@ -128,6 +146,13 @@ class TunedModel:
                 elif self.model.nn_type == "ordinal_regression":
                     logits = self.model(transformed)
                     predicted = corn_label_from_logits(logits).numpy()
+        elif isinstance(self.model, dict):
+            # trac model
+            log_geom, _ = _preprocess_taxonomy_aggregation(
+                transformed, self.model["matrix_a"].values
+            )
+            alpha = self.model["model"].values
+            predicted = log_geom.dot(alpha[1:]) + alpha[0]
         else:
             predicted = self.model.predict(transformed).flatten()
         return predicted
@@ -189,7 +214,6 @@ def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
     path_to_save = os.path.join(save_loc, "rmse_over_experiments_train_test.png")
     plt.tight_layout()
     plt.savefig(path_to_save, dpi=dpi)
-    plt.show()
 
 
 def plot_rmse_over_time(preds_dic, ls_model_types, save_loc, dpi=300):
@@ -232,7 +256,6 @@ def plot_rmse_over_time(preds_dic, ls_model_types, save_loc, dpi=300):
             save_loc, f"rmse_over_time_train_test_{model_type}.png"
         )
         plt.savefig(path_to_save, dpi=dpi)
-        plt.show()
 
 
 def get_best_model_metrics_and_config(
@@ -305,7 +328,6 @@ def plot_best_models_comparison(
     plt.tight_layout()
     path_to_save = os.path.join(save_loc, "rmse_over_experiments_train_val.png")
     plt.savefig(path_to_save, dpi=400)
-    plt.show()
 
 
 def plot_model_training_over_iterations(model_type, result_dic, labels, save_loc):

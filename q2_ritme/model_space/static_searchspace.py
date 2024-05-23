@@ -56,7 +56,7 @@ def get_rf_space(train_val):
         model="rf",
         **data_eng_space,
         **{
-            "n_estimators": tune.randint(100, 500),
+            "n_estimators": tune.randint(50, 300),
             "max_depth": tune.randint(2, 32),
             "min_samples_split": tune.choice([0.001, 0.01, 0.1]),
             "min_samples_leaf": tune.choice([0.0001, 0.001]),
@@ -103,6 +103,20 @@ def get_xgb_space(train_val):
     )
 
 
+def get_trac_space(train_val):
+    # no feature_transformation to be used for trac
+    data_eng_space = {"data_transform": None, "data_alr_denom_idx": None}
+    return dict(
+        model="trac",
+        **data_eng_space,
+        **{
+            # with loguniform: sampled values are more densely concentrated
+            # towards the lower end of the range
+            "lambda": tune.loguniform(1e-3, 1.0)
+        },
+    )
+
+
 def get_search_space(train_val):
     return {
         "xgb": get_xgb_space(train_val),
@@ -111,4 +125,5 @@ def get_search_space(train_val):
         "nn_corn": get_nn_space(train_val, "nn_corn"),
         "linreg": get_linreg_space(train_val),
         "rf": get_rf_space(train_val),
+        "trac": get_trac_space(train_val),
     }

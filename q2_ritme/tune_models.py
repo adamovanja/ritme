@@ -3,6 +3,7 @@ import random
 
 import numpy as np
 import pandas as pd
+import skbio
 import torch
 from ray import air, init, shutdown, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
@@ -19,6 +20,7 @@ model_trainables = {
     "nn_corn": st.train_nn_corn,
     "linreg": st.train_linreg,
     "rf": st.train_rf,
+    "trac": st.train_trac,
 }
 
 
@@ -39,6 +41,8 @@ def run_trials(
     host_id,
     seed_data,
     seed_model,
+    tax,
+    tree_phylo,
     path2exp,
     num_trials,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
@@ -97,6 +101,8 @@ def run_trials(
                 host_id=host_id,
                 seed_data=seed_data,
                 seed_model=seed_model,
+                tax=tax,
+                tree_phylo=tree_phylo,
             ),
             resources,
         ),
@@ -147,14 +153,33 @@ def run_all_trials(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
     mlflow_uri: str,
     path_exp: str,
     num_trials: int,
-    model_types: list = ["xgb", "nn_reg", "nn_class", "nn_corn", "linreg", "rf"],
+    model_types: list = [
+        "xgb",
+        "nn_reg",
+        "nn_class",
+        "nn_corn",
+        "linreg",
+        "rf",
+        "trac",
+    ],
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}
     model_search_space = ss.get_search_space(train_val)
+
+    # if tax + phylogeny empty we can't run trac
+    if tax.empty or tree_phylo.children == []:
+        model_types.remove("trac")
+        print(
+            "Removing trac from model_types since no taxonomy and phylogeny were "
+            "provided."
+        )
+
     for model in model_types:
         # todo: parallelize this for loop
         if not os.path.exists(path_exp):
@@ -170,6 +195,8 @@ def run_all_trials(
             host_id,
             seed_data,
             seed_model,
+            tax,
+            tree_phylo,
             path_exp,
             num_trials,
             fully_reproducible=fully_reproducible,

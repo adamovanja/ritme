@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pandas as pd
+import skbio
 import torch
 from qiime2.plugin.testing import TestPluginBase
 from sklearn.linear_model import LinearRegression
@@ -80,7 +81,7 @@ class TestTrainables(TestPluginBase):
         # define input parameters
         config = {"fit_intercept": True, "alpha": 0.1, "l1_ratio": 0.5}
 
-        mock_process_train.return_value = (None, None, None, None)
+        mock_process_train.return_value = (None, None, None, None, None)
         mock_linreg_instance = mock_linreg.return_value
 
         # run model
@@ -106,13 +107,74 @@ class TestTrainables(TestPluginBase):
         mock_report.assert_called_once()
 
     @patch("q2_ritme.model_space.static_trainables.process_train")
+    @patch("q2_ritme.model_space.static_trainables.create_matrix_from_tree")
+    @patch("q2_ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
+    @patch("q2_ritme.model_space.static_trainables.Classo")
+    @patch("q2_ritme.model_space.static_trainables.min_least_squares_solution")
+    @patch("q2_ritme.model_space.static_trainables._report_results_manually_trac")
+    def test_train_trac(
+        self,
+        mock_report,
+        mock_min_least_squares,
+        mock_classo,
+        mock_preprocess_taxonomy,
+        mock_create_matrix,
+        mock_process_train,
+    ):
+        # Arrange
+        config = {"lambda": 0.1}
+        mock_process_train.return_value = (None, None, None, None, None)
+        mock_create_matrix.return_value = pd.DataFrame()
+        mock_preprocess_taxonomy.side_effect = [
+            (np.array([[1, 2], [3, 4]]), 2),
+            (np.array([[5, 6], [7, 8]]), 2),
+        ]
+        mock_classo.return_value = np.array([0.1, 0.2])
+        mock_min_least_squares.return_value = np.array([0.1, 0.2])
+
+        # Act
+        st.train_trac(
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.seed_data,
+            self.seed_model,
+            pd.DataFrame(),
+            skbio.TreeNode(),
+        )
+
+        # Assert
+        mock_process_train.assert_called_once_with(
+            config, self.train_val, self.target, self.host_id, self.seed_data
+        )
+        mock_create_matrix.assert_called_once()
+        assert mock_preprocess_taxonomy.call_count == 2
+
+        # mock_classo.assert_called_once_with doesn't work because matrix is a
+        # numpy array
+        kwargs = mock_classo.call_args.kwargs
+
+        self.assertTrue(np.array_equal(kwargs["matrix"][0], np.array([[1, 2], [3, 4]])))
+        self.assertTrue(np.array_equal(kwargs["matrix"][1], np.ones((1, 2))))
+        self.assertIsNone(kwargs["matrix"][2])
+        self.assertEqual(kwargs["lam"], config["lambda"])
+        self.assertEqual(kwargs["typ"], "R1")
+        self.assertEqual(kwargs["meth"], "Path-Alg")
+        self.assertEqual(kwargs["w"], 0.5)
+        self.assertEqual(kwargs["intercept"], True)
+
+        mock_min_least_squares.assert_called_once()
+        mock_report.assert_called_once()
+
+    @patch("q2_ritme.model_space.static_trainables.process_train")
     @patch("q2_ritme.model_space.static_trainables.RandomForestRegressor")
     @patch("q2_ritme.model_space.static_trainables._report_results_manually")
     def test_train_rf(self, mock_report, mock_rf, mock_process_train):
         # Arrange
         config = {"n_estimators": 100, "max_depth": 10}
 
-        mock_process_train.return_value = (None, None, None, None)
+        mock_process_train.return_value = (None, None, None, None, None)
         mock_rf_instance = mock_rf.return_value
 
         # Act
@@ -159,11 +221,13 @@ class TestTrainables(TestPluginBase):
         mock_train_y = mock_train[self.target].values
         mock_test_x = mock_test[["F1", "F2"]].values
         mock_test_y = mock_test[self.target].values
+        mock_ft_cols = ["F1", "F2"]
         mock_process_train.return_value = (
             mock_train_x,
             mock_train_y,
             mock_test_x,
             mock_test_y,
+            mock_ft_cols,
         )
         mock_dmatrix.return_value = None
 
@@ -209,6 +273,7 @@ class TestTrainables(TestPluginBase):
             torch.rand(10),
             torch.rand(3, 5),
             torch.rand(3),
+            ["F1", "F2", "F3", "F4", "F5"],
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
         mock_trainer_instance = mock_trainer.return_value

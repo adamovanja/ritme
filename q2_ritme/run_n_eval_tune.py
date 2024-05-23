@@ -43,14 +43,15 @@ def run_n_eval_tune(config_path):
             "Please use another one."
         )
 
-    # todo: flag mlflow runs also with experiment tag somehow
     path_mlflow = os.path.join("experiments", config["mlflow_tracking_uri"])
     path_exp = os.path.join(base_path, config["experiment_tag"])
 
     # ! Load and split data
-    train_val, test = load_n_split_data(
+    train_val, test, tax, tree_phylo = load_n_split_data(
         config["path_to_md"],
         config["path_to_ft"],
+        config["path_to_tax"],
+        config["path_to_phylo"],
         config["host_id"],
         config["target"],
         config["train_size"],
@@ -64,6 +65,8 @@ def run_n_eval_tune(config_path):
         config["host_id"],
         config["seed_data"],
         config["seed_model"],
+        tax,
+        tree_phylo,
         path_mlflow,
         path_exp,
         # number of trials to run per model type * grid_search parameters in

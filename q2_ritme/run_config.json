@@ -1,8 +1,9 @@
 {
-  "experiment_tag": "test_synthetic",
+  "experiment_tag": "run_config",
   "host_id": "host_id",
   "ls_model_types": [
     "linreg",
+    "trac",
     "xgb",
     "nn_reg",
     "nn_class",
@@ -16,9 +17,11 @@
     "nn_class",
     "nn_corn"
   ],
-  "num_trials": 1,
-  "path_to_ft": null,
-  "path_to_md": null,
+  "num_trials": 10,
+  "path_to_ft": "experiments/data/all_otu_table_filt.qza",
+  "path_to_md": "experiments/data/metadata_proc_v20240323_r0_r3_le_2yrs.tsv",
+  "path_to_phylo": "experiments/data/silva-138-99-rooted-tree.qza",
+  "path_to_tax": "experiments/data/otu_taxonomy_all.qza",
   "seed_data": 12,
   "seed_model": 12,
   "target": "age_months",

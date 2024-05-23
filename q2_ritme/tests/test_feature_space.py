@@ -5,8 +5,16 @@ import pandas as pd
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 from scipy.stats.mstats import gmean
+from skbio import TreeNode
 from skbio.stats.composition import ilr
 
+from q2_ritme.feature_space._process_trac_specific import (
+    _create_identity_matrix_for_leaves,
+    _create_matrix_for_internal_nodes,
+    _get_internal_nodes,
+    _get_leaves_and_index_map,
+    create_matrix_from_tree,
+)
 from q2_ritme.feature_space._process_train import process_train
 from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
@@ -16,7 +24,7 @@ from q2_ritme.feature_space.transform_features import (
 
 
 class TestTransformFeatures(TestPluginBase):
-    package = "q2_ritme.test"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()
@@ -119,7 +127,7 @@ class TestTransformFeatures(TestPluginBase):
 
 
 class TestProcessTrain(TestPluginBase):
-    package = "q2_ritme.test"
+    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()
@@ -157,7 +165,7 @@ class TestProcessTrain(TestPluginBase):
         )
 
         # Act
-        X_train, y_train, X_val, y_val = process_train(
+        X_train, y_train, X_val, y_val, ft_col = process_train(
             self.config, self.train_val, self.target, self.host_id, self.seed_data
         )
 
@@ -170,3 +178,107 @@ class TestProcessTrain(TestPluginBase):
             0.8,
             0,
         )
+
+
+class TestProcessTracSpecific(TestPluginBase):
+    package = "q2_ritme.tests"
+
+    def setUp(self):
+        super().setUp()
+        self.tree = self._build_example_tree()
+        self.tax = self._build_example_taxonomy()
+
+    def _build_example_taxonomy(self):
+        tax = pd.DataFrame(
+            {
+                "Taxon": [
+                    "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                    "f__SBR1031; g__SBR1031; s__anaerobic_digester",
+                    "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                    "f__SBR1031; g__SBR1031; s__uncultured_bacterium",
+                    "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031",
+                ],
+                "Confidence": [0.9, 0.9, 0.9],
+            }
+        )
+        tax.index = ["F1", "F2", "F3"]
+        tax.index.name = "Feature ID"
+        return tax
+
+    def _build_example_tree(self):
+        # Create the tree nodes with lengths
+        n1 = TreeNode(name="node1")
+        f1 = TreeNode(name="F1", length=1.0)
+        f2 = TreeNode(name="F2", length=1.0)
+        n2 = TreeNode(name="node2")
+        f3 = TreeNode(name="F3", length=1.0)
+
+        # Build the tree structure with lengths
+        n1.extend([f1, f2])
+        n2.extend([n1, f3])
+        n1.length = 1.0
+        n2.length = 1.0
+
+        # n2 is the root of this tree
+        tree = n2
+
+        return tree
+
+    def test_get_leaves_and_index_map(self):
+        leaves, leaf_index_map = _get_leaves_and_index_map(self.tree)
+        self.assertEqual(len(leaves), 3)
+        self.assertEqual(leaf_index_map, {"F1": 0, "F2": 1, "F3": 2})
+
+    def test_get_internal_nodes(self):
+        internal_nodes = _get_internal_nodes(self.tree)
+        self.assertEqual(len(internal_nodes), 1)
+        self.assertEqual(internal_nodes[0].name, "node1")
+
+    def test_create_identity_matrix_for_leaves(self):
+        leaves = list(self.tree.tips())
+        A1, a1_node_names = _create_identity_matrix_for_leaves(3, self.tax, leaves)
+        np.testing.assert_array_equal(A1, np.eye(3))
+        self.assertEqual(
+            a1_node_names,
+            [
+                "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                "f__SBR1031; g__SBR1031; s__anaerobic_digester; otu__F1",
+                "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                "f__SBR1031; g__SBR1031; s__uncultured_bacterium; otu__F2",
+                "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; otu__F3",
+            ],
+        )
+
+    def test_create_matrix_for_internal_nodes(self):
+        leaves, leaf_index_map = _get_leaves_and_index_map(self.tree)
+        internal_nodes = _get_internal_nodes(self.tree)
+        A2, a2_node_names = _create_matrix_for_internal_nodes(
+            3, internal_nodes, leaf_index_map, self.tax
+        )
+        np.testing.assert_array_equal(A2, np.array([[1], [1], [0]]))
+        self.assertEqual(
+            a2_node_names,
+            [
+                "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                "f__SBR1031; g__SBR1031"
+            ],
+        )
+
+    def test_create_matrix_from_tree(self):
+        ma_exp = np.array(
+            [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]]
+        )
+        node_taxon_names = [
+            "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+            "f__SBR1031; g__SBR1031"
+        ]
+        leaf_names = (self.tax["Taxon"] + "; otu__" + self.tax.index).values.tolist()
+        ft_names = ["F1", "F2", "F3"]
+        ma_exp = pd.DataFrame(
+            ma_exp,
+            columns=leaf_names + node_taxon_names,
+            index=ft_names,
+        )
+        ma_act = create_matrix_from_tree(self.tree, self.tax)
+
+        assert_frame_equal(ma_exp, ma_act)

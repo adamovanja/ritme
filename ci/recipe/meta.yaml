@@ -22,9 +22,11 @@ requirements:
     - importlib-metadata
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
+    - q2-phylogeny {{ qiime2_epoch }}.*
     - lightning
     - mlflow
     - numpy
+    - packaging
     - pandas
     - pip
     - pytorch
@@ -44,6 +46,9 @@ requirements:
   run_constrained:
     - pip:
       - coral_pytorch
+      - c-lasso
+      # grpcio pinned due to incompatibility with ray caused by c-lasso
+      - grpcio==1.51.1
 
 
 test:

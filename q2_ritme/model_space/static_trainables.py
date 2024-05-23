@@ -1,6 +1,7 @@
 """Module with tune trainables of all static models"""
 
 import os
+import pickle
 import random
 from typing import Any, Dict
 
@@ -8,8 +9,10 @@ import joblib
 import numpy as np
 import pandas as pd
 import ray
+import skbio
 import torch
 import xgboost as xgb
+from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from pytorch_lightning import LightningModule, Trainer, seed_everything
@@ -26,7 +29,12 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
 
+from q2_ritme.feature_space._process_trac_specific import (
+    _preprocess_taxonomy_aggregation,
+    create_matrix_from_tree,
+)
 from q2_ritme.feature_space._process_train import process_train
+from q2_ritme.model_space._model_trac_calc import min_least_squares_solution
 
 
 def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:
@@ -103,6 +111,8 @@ def train_linreg(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -119,7 +129,7 @@ def train_linreg(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
 
@@ -135,6 +145,97 @@ def train_linreg(
     _report_results_manually(linreg, X_train, y_train, X_val, y_val)
 
 
+def _predict_rmse_trac(alpha, log_geom_X, y):
+    y_pred = log_geom_X.dot(alpha[1:]) + alpha[0]
+    return mean_squared_error(y, y_pred, squared=False)
+
+
+def _report_results_manually_trac(
+    alpha, A_df, log_geom_train, y_train, log_geom_val, y_val
+):
+    # save coefficients w labels & matrix A with labels -> model_path
+    idx_alpha = ["intercept"] + A_df.columns.tolist()
+    df_alpha_with_labels = pd.DataFrame(alpha, columns=["alpha"], index=idx_alpha)
+
+    model = {"model": df_alpha_with_labels, "matrix_a": A_df}
+
+    # save model
+    path_to_save = ray.train.get_context().get_trial_dir()
+    model_path = os.path.join(path_to_save, "model.pkl")
+    with open(model_path, "wb") as file:
+        pickle.dump(model, file)
+
+    # calculate RMSE
+    score_train = _predict_rmse_trac(alpha, log_geom_train, y_train)
+    score_val = _predict_rmse_trac(alpha, log_geom_val, y_val)
+
+    session.report(
+        metrics={
+            "rmse_val": score_val,
+            "rmse_train": score_train,
+            "model_path": model_path,
+        }
+    )
+    return None
+
+
+def train_trac(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
+) -> None:
+    """
+    Train a trac model and report the results to Ray Tune.
+
+    Parameters:
+    config (Dict[str, Any]): The configuration for the training.
+    train_val (DataFrame): The training and validation data.
+    target (str): The target variable.
+    host_id (str): The host ID.
+    seed_data (int): The seed for the data.
+    seed_model (int): The seed for the model.
+
+    Returns:
+    None
+    """
+    # ! process dataset: X with features & y with host_id
+    X_train, y_train, X_val, y_val, ft_col = process_train(
+        config, train_val, target, host_id, seed_data
+    )
+    # ! derive matrix A
+    a_df = create_matrix_from_tree(tree_phylo, tax)
+
+    # ! get log_geom
+    log_geom_train, nleaves = _preprocess_taxonomy_aggregation(X_train, a_df.values)
+    log_geom_val, _ = _preprocess_taxonomy_aggregation(X_val, a_df.values)
+
+    # ! model
+    np.random.seed(seed_model)
+    matrices_train = (log_geom_train, np.ones((1, len(log_geom_train[0]))), y_train)
+    intercept = True
+    alpha_norefit = Classo(
+        matrix=matrices_train,
+        lam=config["lambda"],
+        typ="R1",
+        meth="Path-Alg",
+        w=1 / nleaves,
+        intercept=intercept,
+    )
+    selected_param = abs(alpha_norefit) > 1e-5
+    alpha = min_least_squares_solution(
+        matrices_train, selected_param, intercept=intercept
+    )
+
+    _report_results_manually_trac(
+        alpha, a_df, log_geom_train, y_train, log_geom_val, y_val
+    )
+
+
 def train_rf(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -142,6 +243,8 @@ def train_rf(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -158,7 +261,7 @@ def train_rf(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
 
@@ -275,13 +378,19 @@ def load_data(X_train, y_train, X_val, y_val, y_type, config):
 
 
 def train_nn(
-    config, train_val, target, host_id, seed_data, seed_model, nn_type="regression"
+    config,
+    train_val,
+    target,
+    host_id,
+    seed_data,
+    seed_model,
+    nn_type="regression",
 ):
     # Set the seed for reproducibility
     seed_everything(seed_model, workers=True)
 
     # Process dataset
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
 
@@ -362,13 +471,17 @@ def train_nn(
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 
-def train_nn_reg(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn_reg(
+    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+):
     train_nn(
         config, train_val, target, host_id, seed_data, seed_model, nn_type="regression"
     )
 
 
-def train_nn_class(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn_class(
+    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+):
     train_nn(
         config,
         train_val,
@@ -380,7 +493,9 @@ def train_nn_class(config, train_val, target, host_id, seed_data, seed_model):
     )
 
 
-def train_nn_corn(config, train_val, target, host_id, seed_data, seed_model):
+def train_nn_corn(
+    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+):
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
         config,
@@ -400,6 +515,8 @@ def train_xgb(
     host_id: str,
     seed_data: int,
     seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
 ) -> None:
     """
     Train an XGBoost model and report the results to Ray Tune.
@@ -416,7 +533,7 @@ def train_xgb(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val = process_train(
+    X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, seed_data
     )
     # Set seeds
