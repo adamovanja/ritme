@@ -38,6 +38,8 @@ requirements:
     - scipy
     - scikit-learn
     - scikit-bio
+    # needs to be pinned due to deprecation of pkg_resources in v70
+    - setuptools==69.5.1
     - torchvision
     - zipp
   # TODO: build package from GH or pypip
