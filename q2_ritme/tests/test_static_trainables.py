@@ -11,7 +11,7 @@ from qiime2.plugin.testing import TestPluginBase
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 
-from q2_ritme.model_space import _static_trainables as st
+from q2_ritme.model_space import static_trainables as st
 
 
 class TestHelperFunctions(TestPluginBase):
@@ -73,9 +73,9 @@ class TestTrainables(TestPluginBase):
         self.seed_data = 0
         self.seed_model = 0
 
-    @patch("q2_ritme.model_space._static_trainables.process_train")
-    @patch("q2_ritme.model_space._static_trainables.ElasticNet")
-    @patch("q2_ritme.model_space._static_trainables._report_results_manually")
+    @patch("q2_ritme.model_space.static_trainables.process_train")
+    @patch("q2_ritme.model_space.static_trainables.ElasticNet")
+    @patch("q2_ritme.model_space.static_trainables._report_results_manually")
     def test_train_linreg(self, mock_report, mock_linreg, mock_process_train):
         # define input parameters
         config = {"fit_intercept": True, "alpha": 0.1, "l1_ratio": 0.5}
@@ -105,9 +105,9 @@ class TestTrainables(TestPluginBase):
         mock_linreg_instance.fit.assert_called_once()
         mock_report.assert_called_once()
 
-    @patch("q2_ritme.model_space._static_trainables.process_train")
-    @patch("q2_ritme.model_space._static_trainables.RandomForestRegressor")
-    @patch("q2_ritme.model_space._static_trainables._report_results_manually")
+    @patch("q2_ritme.model_space.static_trainables.process_train")
+    @patch("q2_ritme.model_space.static_trainables.RandomForestRegressor")
+    @patch("q2_ritme.model_space.static_trainables._report_results_manually")
     def test_train_rf(self, mock_report, mock_rf, mock_process_train):
         # Arrange
         config = {"n_estimators": 100, "max_depth": 10}
@@ -138,10 +138,10 @@ class TestTrainables(TestPluginBase):
     # def test_train_nn(self, mock_adam, mock_neural_net, mock_process_train):
     #     # todo: add unit test for pytorch NN
 
-    @patch("q2_ritme.model_space._static_trainables.process_train")
-    @patch("q2_ritme.model_space._static_trainables.xgb.DMatrix")
-    @patch("q2_ritme.model_space._static_trainables.xgb.train")
-    @patch("q2_ritme.model_space._static_trainables.xgb_cc")
+    @patch("q2_ritme.model_space.static_trainables.process_train")
+    @patch("q2_ritme.model_space.static_trainables.xgb.DMatrix")
+    @patch("q2_ritme.model_space.static_trainables.xgb.train")
+    @patch("q2_ritme.model_space.static_trainables.xgb_cc")
     def test_train_xgb(
         self, mock_checkpoint, mock_xgb_train, mock_dmatrix, mock_process_train
     ):
@@ -190,11 +190,11 @@ class TestTrainables(TestPluginBase):
         mock_xgb_train.assert_called_once()
         mock_checkpoint.assert_called_once()
 
-    @patch("q2_ritme.model_space._static_trainables.seed_everything")
-    @patch("q2_ritme.model_space._static_trainables.process_train")
-    @patch("q2_ritme.model_space._static_trainables.load_data")
-    @patch("q2_ritme.model_space._static_trainables.NeuralNet")
-    @patch("q2_ritme.model_space._static_trainables.Trainer")
+    @patch("q2_ritme.model_space.static_trainables.seed_everything")
+    @patch("q2_ritme.model_space.static_trainables.process_train")
+    @patch("q2_ritme.model_space.static_trainables.load_data")
+    @patch("q2_ritme.model_space.static_trainables.NeuralNet")
+    @patch("q2_ritme.model_space.static_trainables.Trainer")
     def test_train_nn(
         self,
         mock_trainer,

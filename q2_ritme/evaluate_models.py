@@ -12,7 +12,7 @@ from ray.air.result import Result
 from sklearn.metrics import mean_squared_error
 
 from q2_ritme.feature_space.transform_features import transform_features
-from q2_ritme.model_space._static_trainables import NeuralNet
+from q2_ritme.model_space.static_trainables import NeuralNet
 
 plt.rcParams.update({"font.family": "DejaVu Sans"})
 plt.style.use("seaborn-v0_8-pastel")
