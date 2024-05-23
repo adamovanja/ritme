@@ -50,32 +50,9 @@ def run_trials(
     scheduler_max_t=100,
     # resources=None,
 ):
-    # # ! per default ray tune uses 1 CPU per trial and all GPU/#trials
-    # if resources is None:
-    #     # no parallel processing supported
-    #     if exp_name in ["linreg", "trac"]:
-    #         # trac: Parallelisation: solver Path-Alg not parallelized by default;
-    #         # Classo is a CPU-based library
-    #         # linreg: also not parallelisable + CPU based
-    #         resources = {
-    #             "cpu": 1,
-    #             "gpu": 0,
-    #         }
-    #     # parallel processing supported but no GPU support
-    #     elif exp_name in ["rf"]:
-    #         resources = {
-    #             "cpu": 2,
-    #             "gpu": 0,
-    #         }
-    #     # parallel processing supported with GPU support
-    #     else:  # exp_name in ["xgb", "nn_reg", "nn_class", "nn_corn"]:
-    #         resources = {
-    #             "cpu": 2,
-    #             "gpu": 1,
-    #         }
-    #     # nn, rf - through n_jobs, xgb - nthread
-
-    # if not a slurm process: default values are used
+    # per default ray tune uses 1 CPU per trial and all GPU/#trials - but this
+    # does not work with slurm.
+    # configure such that if not a slurm process: default values are used
     num_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
     num_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
     # resource per 1 trial
@@ -83,6 +60,13 @@ def run_trials(
         "cpu": max(1, num_cpus_avail // num_trials),
         "gpu": max(0, num_gpus_avail // num_trials),
     }
+
+    # funfacts about trainables and their parallelisation/GPU capabilities:
+    # - linreg: not parallelisable + CPU based
+    # - trac: solver Path-Alg not parallelized by default + Classo is a
+    #   CPU-based library
+    # - rf: parallel processing supported but no GPU support
+    # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU support
 
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)
