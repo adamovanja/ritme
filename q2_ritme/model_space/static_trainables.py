@@ -269,7 +269,11 @@ def train_rf(
     # setting seed for scikit library
     np.random.seed(seed_model)
     rf = RandomForestRegressor(
-        n_estimators=config["n_estimators"], max_depth=config["max_depth"]
+        n_estimators=config["n_estimators"],
+        max_depth=config["max_depth"],
+        # ray tune uses joblib for parallelization - so this makes sure all
+        # available resources are used
+        n_jobs=None,
     )
     rf.fit(X_train, y_train)
 
@@ -553,7 +557,7 @@ def train_xgb(
         filename="checkpoint",
     )
     # todo: add test set here to be tracked as well
-
+    # nthread defaults to max available threads available if not set
     xgb.train(
         config,
         dtrain,

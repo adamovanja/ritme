@@ -24,11 +24,11 @@ model_trainables = {
 }
 
 
-def get_slurm_resource(resource_name, default_value=0):
-    try:
-        return int(os.environ[resource_name])
-    except (KeyError, ValueError):
-        return default_value
+# def get_slurm_resource(resource_name, default_value=0):
+#     try:
+#         return int(os.environ[resource_name])
+#     except (KeyError, ValueError):
+#         return default_value
 
 
 def run_trials(
@@ -48,14 +48,38 @@ def run_trials(
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
     scheduler_grace_period=5,
     scheduler_max_t=100,
-    resources=None,
+    # resources=None,
 ):
-    if resources is None:
-        # if not a slurm process: default values are used
-        resources = {
-            "cpu": get_slurm_resource("SLURM_CPUS_PER_TASK", 1),
-            "gpu": get_slurm_resource("SLURM_GPUS_PER_TASK", 0),
-        }
+    # # ! per default ray tune uses 1 CPU per trial and all GPU/#trials
+    # if resources is None:
+    #     # no parallel processing supported
+    #     if exp_name in ["linreg", "trac"]:
+    #         # trac: Parallelisation: solver Path-Alg not parallelized by default;
+    #         # Classo is a CPU-based library
+    #         # linreg: also not parallelisable + CPU based
+    #         resources = {
+    #             "cpu": 1,
+    #             "gpu": 0,
+    #         }
+    #     # parallel processing supported but no GPU support
+    #     elif exp_name in ["rf"]:
+    #         resources = {
+    #             "cpu": 2,
+    #             "gpu": 0,
+    #         }
+    #     # parallel processing supported with GPU support
+    #     else:  # exp_name in ["xgb", "nn_reg", "nn_class", "nn_corn"]:
+    #         resources = {
+    #             "cpu": 2,
+    #             "gpu": 1,
+    #         }
+    #     # nn, rf - through n_jobs, xgb - nthread
+
+    #     # if not a slurm process: default values are used
+    #     resources = {
+    #         "cpu": get_slurm_resource("SLURM_CPUS_PER_TASK", 1),
+    #         "gpu": get_slurm_resource("SLURM_GPUS_PER_TASK", 0),
+    #     }
 
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)
@@ -92,19 +116,16 @@ def run_trials(
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)
     analysis = tune.Tuner(
-        # trainable with input parameters passed and set resources
-        tune.with_resources(
-            tune.with_parameters(
-                trainable,
-                train_val=train_val,
-                target=target,
-                host_id=host_id,
-                seed_data=seed_data,
-                seed_model=seed_model,
-                tax=tax,
-                tree_phylo=tree_phylo,
-            ),
-            resources,
+        # trainable with input parameters passed
+        tune.with_parameters(
+            trainable,
+            train_val=train_val,
+            target=target,
+            host_id=host_id,
+            seed_data=seed_data,
+            seed_model=seed_model,
+            tax=tax,
+            tree_phylo=tree_phylo,
         ),
         # mlflow
         run_config=air.RunConfig(
