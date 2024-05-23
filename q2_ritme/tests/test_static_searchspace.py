@@ -72,6 +72,15 @@ class TestStaticSearchSpace(TestPluginBase):
         self.assertIn("alpha", linreg_space)
         self.assertIn("l1_ratio", linreg_space)
 
+    def test_get_trac_space(self):
+        trac_space = ss.get_trac_space(self.train_val)
+
+        self.assertIsInstance(trac_space, dict)
+        self.assertEqual(trac_space["model"], "trac")
+        self.assertEqual(trac_space["data_transform"], None)
+        self.assertEqual(trac_space["data_alr_denom_idx"], None)
+        self.assertIn("lambda", trac_space)
+
     def test_get_rf_space(self):
         rf_space = ss.get_rf_space(self.train_val)
 
