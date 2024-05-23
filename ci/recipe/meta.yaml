@@ -14,7 +14,7 @@ build:
 requirements:
   host:
     - python {{ python }}
-    - setuptools
+    - setuptools==69.5.1
     - pip
 
   run:
@@ -40,6 +40,7 @@ requirements:
     - scipy
     - scikit-learn
     - scikit-bio
+    - setuptools==69.5.1
     - torchvision
     - zipp
   # TODO: build package from GH or pypip
