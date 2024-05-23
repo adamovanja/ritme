@@ -192,7 +192,9 @@ class TestTrainables(TestPluginBase):
             config, self.train_val, self.target, self.host_id, self.seed_data
         )
         mock_rf.assert_called_once_with(
-            n_estimators=config["n_estimators"], max_depth=config["max_depth"]
+            n_estimators=config["n_estimators"],
+            max_depth=config["max_depth"],
+            n_jobs=None,
         )
         mock_rf_instance.fit.assert_called_once()
         mock_report.assert_called_once()
