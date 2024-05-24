@@ -46,28 +46,11 @@ def run_trials(
     tree_phylo,
     path2exp,
     num_trials,
+    resources,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
     scheduler_grace_period=5,
     scheduler_max_t=100,
 ):
-    # per default ray tune uses 1 CPU per trial and all GPU/#trials - but this
-    # does not work with slurm.
-    # configure such that if not a slurm process: default values are used
-    num_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
-    num_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
-    # resource per 1 trial
-    resources = {
-        "cpu": max(1, num_cpus_avail // num_trials),
-        "gpu": max(0, num_gpus_avail // num_trials),
-    }
-
-    # funfacts about trainables and their parallelisation/GPU capabilities:
-    # - linreg: not parallelisable + CPU based
-    # - trac: solver Path-Alg not parallelized by default + Classo is a
-    #   CPU-based library
-    # - rf: parallel processing supported but no GPU support
-    # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU support
-
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)
 
@@ -172,10 +155,12 @@ def launch_model_trials(
     tax,
     tree_phylo,
     num_trials,
+    resources,
     fully_reproducible,
 ):
     if not os.path.exists(path_exp):
         os.makedirs(path_exp)
+
     print(f"Ray tune training of: {model}...")
     result_grid = run_trials(
         mlflow_uri,
@@ -191,6 +176,7 @@ def launch_model_trials(
         tree_phylo,
         path_exp,
         num_trials,
+        resources,
         fully_reproducible=fully_reproducible,
     )
     return model, result_grid
@@ -228,6 +214,30 @@ def run_all_trials_parallel(
             "provided."
         )
 
+    # ! define resources
+    # per default ray tune uses 1 CPU per trial and all GPU/#trials - but this
+    # does not work with slurm.
+    # configure such that if not a slurm process: default values are used
+    num_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
+    num_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
+    # TODO: make gird_search options dependent on number of grid search
+    # TODO: occurrences in static_searchspace.py
+    nb_grid_search_options = 4
+    num_actual_trials = num_trials * len(model_types) * nb_grid_search_options
+
+    # resource per 1 trial
+    resources = {
+        "cpu": max(1, num_cpus_avail // num_actual_trials),
+        "gpu": max(0, num_gpus_avail // num_actual_trials),
+    }
+
+    # funfacts about trainables and their parallelisation/GPU capabilities:
+    # - linreg: not parallelisable + CPU based
+    # - trac: solver Path-Alg not parallelized by default + Classo is a
+    #   CPU-based library
+    # - rf: parallel processing supported but no GPU support
+    # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU support
+
     pool = multiprocessing.Pool()
     ls_async_results = []
     # launch models in parallel way
@@ -248,6 +258,7 @@ def run_all_trials_parallel(
                 tax,
                 tree_phylo,
                 num_trials,
+                resources,
                 fully_reproducible,
             ),
         )

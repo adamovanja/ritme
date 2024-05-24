@@ -27,7 +27,7 @@ def get_alr_denom_idx_space(train_val):
 
 def get_data_eng_space(train_val):
     return {
-        # tune.grid_search specified here checks all options: so new nb_trials=
+        # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options in data_transform * nb of model types
         "data_transform": tune.grid_search([None, "clr", "ilr", "alr"]),
         "data_alr_denom_idx": get_alr_denom_idx_space(train_val),
