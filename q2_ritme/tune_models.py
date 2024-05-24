@@ -223,7 +223,7 @@ def run_all_trials_parallel(
     # TODO: make gird_search options dependent on number of grid search
     # TODO: occurrences in static_searchspace.py
     nb_grid_search_options = 4
-    num_actual_trials = num_trials * len(model_types) * nb_grid_search_options
+    num_actual_trials = num_trials * nb_grid_search_options
 
     # resource per 1 trial
     resources = {

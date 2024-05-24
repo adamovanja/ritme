@@ -375,9 +375,9 @@ def load_data(X_train, y_train, X_val, y_val, y_type, config):
         torch.tensor(y_val, dtype=y_type),
     )
     train_loader = DataLoader(
-        train_dataset, batch_size=config["batch_size"], shuffle=True
+        train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=3
     )
-    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"])
+    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], num_workers=3)
     return train_loader, val_loader
 
 
