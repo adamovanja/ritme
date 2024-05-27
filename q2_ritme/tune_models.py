@@ -54,13 +54,12 @@ def run_trials(
     max_concurrent_trials = 20
     if resources is None:
         # if not a slurm process: default values are used
-        cpus = int(
-            max(
-                1, get_slurm_resource("SLURM_CPUS_PER_TASK", 1) // max_concurrent_trials
-            )
-        )
-        gpus = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
+        all_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
+        all_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
+        cpus = int(max(1, (all_cpus_avail // max_concurrent_trials)))
+        gpus = max(0, (all_gpus_avail // max_concurrent_trials))
         print(f"Using these resources: CPU {cpus}")
+        print(f"Using these resources: GPU {gpus}")
         resources = {
             "cpu": cpus,
             "gpu": gpus,
