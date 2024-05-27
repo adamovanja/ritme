@@ -33,6 +33,10 @@ Edit file `launch_slurm_syn_cpu.sh` and then run
 ````
 sbatch launch_slurm_syn_cpu.sh
 ````
+If you plan to launch two jobs on the same infrastructure to need to adjust the ports assigned in the above shell script accordingly. Please see [here](https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html#slurm-networking-caveats) for more defailed instructions.
+
+If you are using SLURM and get the following error returned: "RuntimeError: can't start new thread"
+it is probably caused by your hardware. Try decreasing the CPUs allocated to the job and/or decrease the variable `max_concurrent_trials` in `tune_models.py`.
 
 ## Call graphs
 To create a call graph for all functions in the package, run the following commands:
