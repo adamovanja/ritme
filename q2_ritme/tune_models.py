@@ -50,11 +50,20 @@ def run_trials(
     scheduler_max_t=100,
     resources=None,
 ):
+    # todo: this 20 is imposed by my HPC system - should be made flexible
+    max_concurrent_trials = 20
     if resources is None:
         # if not a slurm process: default values are used
+        cpus = int(
+            max(
+                1, get_slurm_resource("SLURM_CPUS_PER_TASK", 1) // max_concurrent_trials
+            )
+        )
+        gpus = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
+        print(f"Using these resources: CPU {cpus}")
         resources = {
-            "cpu": get_slurm_resource("SLURM_CPUS_PER_TASK", 1),
-            "gpu": get_slurm_resource("SLURM_GPUS_PER_TASK", 0),
+            "cpu": cpus,
+            "gpu": gpus,
         }
 
     if not os.path.exists(mlflow_tracking_uri):
@@ -138,6 +147,7 @@ def run_trials(
             scheduler=scheduler,
             # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
+            max_concurrent_trials=max_concurrent_trials,
             # ! set seed
             # todo: set advanced search algo -> here default random
             search_alg=tune.search.BasicVariantGenerator(),
