@@ -177,7 +177,7 @@ def run_all_trials(
     # per default ray tune uses 1 CPU per trial and all GPU/#trials - but this
     # does not work with slurm.
     # configure such that if not a slurm process: default values are used
-    num_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
+    # num_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
     num_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
     # TODO: make gird_search options dependent on number of grid search
     # TODO: occurrences in static_searchspace.py
@@ -186,7 +186,7 @@ def run_all_trials(
 
     # resource per 1 trial
     resources = {
-        "cpu": max(1, num_cpus_avail),  # // num_trials_per_model_type),
+        "cpu": max(1, 2),  # num_cpus_avail),  # // num_trials_per_model_type),
         "gpu": max(0, num_gpus_avail),  #  // num_trials_per_model_type),
     }
 
