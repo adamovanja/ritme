@@ -182,12 +182,12 @@ def run_all_trials(
     # TODO: make gird_search options dependent on number of grid search
     # TODO: occurrences in static_searchspace.py
     nb_grid_search_options = 4
-    num_actual_trials = num_trials * nb_grid_search_options
+    num_trials_per_model_type = num_trials * nb_grid_search_options
 
     # resource per 1 trial
     resources = {
-        "cpu": max(1, num_cpus_avail // num_actual_trials),
-        "gpu": max(0, num_gpus_avail // num_actual_trials),
+        "cpu": max(1, num_cpus_avail // num_trials_per_model_type),
+        "gpu": max(0, num_gpus_avail // num_trials_per_model_type),
     }
 
     # funfacts about trainables and their parallelisation/GPU capabilities:
