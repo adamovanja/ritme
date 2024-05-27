@@ -1,4 +1,3 @@
-import multiprocessing
 import os
 import random
 
@@ -86,7 +85,7 @@ def run_trials(
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)
     analysis = tune.Tuner(
-        # trainable with input parameters passed
+        # trainable with input parameters passed and set resources
         tune.with_resources(
             tune.with_parameters(
                 trainable,
@@ -141,48 +140,7 @@ def run_trials(
     return analysis.fit()
 
 
-def launch_model_trials(
-    model,
-    path_exp,
-    mlflow_uri,
-    model_trainables,
-    model_search_space,
-    train_val,
-    target,
-    host_id,
-    seed_data,
-    seed_model,
-    tax,
-    tree_phylo,
-    num_trials,
-    resources,
-    fully_reproducible,
-):
-    if not os.path.exists(path_exp):
-        os.makedirs(path_exp)
-
-    print(f"Ray tune training of: {model}...")
-    result_grid = run_trials(
-        mlflow_uri,
-        model,
-        model_trainables[model],
-        model_search_space[model],
-        train_val,
-        target,
-        host_id,
-        seed_data,
-        seed_model,
-        tax,
-        tree_phylo,
-        path_exp,
-        num_trials,
-        resources,
-        fully_reproducible=fully_reproducible,
-    )
-    return model, result_grid
-
-
-def run_all_trials_parallel(
+def run_all_trials(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
@@ -204,6 +162,7 @@ def run_all_trials_parallel(
     ],
     fully_reproducible: bool = False,
 ) -> dict:
+    results_all = {}
     model_search_space = ss.get_search_space(train_val)
 
     # if tax + phylogeny empty we can't run trac
@@ -238,39 +197,26 @@ def run_all_trials_parallel(
     # - rf: parallel processing supported but no GPU support
     # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU support
 
-    pool = multiprocessing.Pool()
-    ls_async_results = []
-    # launch models in parallel way
     for model in model_types:
-        async_result = pool.apply_async(
-            launch_model_trials,
-            args=(
-                model,
-                path_exp,
-                mlflow_uri,
-                model_trainables,
-                model_search_space,
-                train_val,
-                target,
-                host_id,
-                seed_data,
-                seed_model,
-                tax,
-                tree_phylo,
-                num_trials,
-                resources,
-                fully_reproducible,
-            ),
+        if not os.path.exists(path_exp):
+            os.makedirs(path_exp)
+        print(f"Ray tune training of: {model}...")
+        result = run_trials(
+            mlflow_uri,
+            model,
+            model_trainables[model],
+            model_search_space[model],
+            train_val,
+            target,
+            host_id,
+            seed_data,
+            seed_model,
+            tax,
+            tree_phylo,
+            path_exp,
+            num_trials,
+            resources,
+            fully_reproducible=fully_reproducible,
         )
-        ls_async_results.append(async_result)
-
-    pool.close()
-    pool.join()
-
-    results_all = {}
-    # ls_async_results is a list of AsyncResult objects
-    for result in ls_async_results:
-        model, result_grid = result.get()
-        results_all[model] = result_grid
-
+        results_all[model] = result
     return results_all
