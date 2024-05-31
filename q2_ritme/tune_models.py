@@ -190,7 +190,7 @@ def run_all_trials(
     model_search_space = ss.get_search_space(train_val)
 
     # if tax + phylogeny empty we can't run trac
-    if tax.empty or tree_phylo.children == []:
+    if (tax.empty or tree_phylo.children == []) and "trac" in model_types:
         model_types.remove("trac")
         print(
             "Removing trac from model_types since no taxonomy and phylogeny were "
