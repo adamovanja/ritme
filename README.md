@@ -33,7 +33,7 @@ Edit file `launch_slurm_syn_cpu.sh` and then run
 ````
 sbatch launch_slurm_syn_cpu.sh
 ````
-If you plan to launch two jobs on the same infrastructure to need to adjust the ports assigned in the above shell script accordingly. Please see [here](https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html#slurm-networking-caveats) for more defailed instructions.
+If you (or your collaborators) plan to launch multiple jobs on the same infrastructure you should set the variable `JOB_NB` in `launch_slurm_cpu.sh` accordingly. This variable makes sure that the assigned ports don't overlap (see [here](https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html#slurm-networking-caveats)).
 
 If you are using SLURM and get the following error returned: "RuntimeError: can't start new thread"
 it is probably caused by your hardware. Try decreasing the CPUs allocated to the job and/or decrease the variable `max_concurrent_trials` in `tune_models.py`.
