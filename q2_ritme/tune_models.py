@@ -198,7 +198,6 @@ def run_all_trials(
         )
 
     for model in model_types:
-        # todo: parallelize this for loop
         if not os.path.exists(path_exp):
             os.makedirs(path_exp)
         print(f"Ray tune training of: {model}...")
