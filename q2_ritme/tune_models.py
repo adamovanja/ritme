@@ -65,6 +65,13 @@ def run_trials(
             "cpu": cpus,
             "gpu": gpus,
         }
+    # funfacts about trainables and their parallelisation/GPU capabilities:
+    # - linreg: not parallelisable + CPU based
+    # - trac: solver Path-Alg not parallelized by default + Classo is a
+    #   CPU-based library
+    # - rf: parallel processing supported but no GPU support
+    # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU
+    #   support
 
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)
