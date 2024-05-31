@@ -161,7 +161,17 @@ def run_trials(
         ),
     )
     # ResultGrid output
-    return analysis.fit()
+    result = analysis.fit()
+
+    # Check if any trial has an "ERROR" status
+    for trial in result.get_all_trials():
+        if trial.status == "ERROR":
+            raise RuntimeError(
+                f"Trial {trial.trial_id} encountered an error - please check stdout "
+                f"for more information."
+            )
+
+    return result
 
 
 def run_all_trials(
