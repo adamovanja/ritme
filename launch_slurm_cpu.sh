@@ -18,6 +18,8 @@ echo "SLURM_GPUS_PER_TASK: $SLURM_GPUS_PER_TASK"
 # -> config file to use
 CONFIG="q2_ritme/run_config.json"
 # -> count of this concurrent job launched on same infrastructure
+# -> only these values are allowed: 1, 2, 3 - since below ports are
+# -> otherwise taken or not allowed
 JOB_NB=1
 # ! USER END __________
 
