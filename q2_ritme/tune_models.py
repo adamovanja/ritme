@@ -163,13 +163,15 @@ def run_trials(
     # ResultGrid output
     result = analysis.fit()
 
-    # Check if any trial has an "ERROR" status
-    for trial in result.get_all_trials():
-        if trial.status == "ERROR":
-            raise RuntimeError(
-                f"Trial {trial.trial_id} encountered an error - please check stdout "
-                f"for more information."
-            )
+    # Check all trials & check for error status
+    trials_df = result.get_dataframe()
+    error_trials = trials_df[trials_df["status"] == "ERROR"]
+    if not error_trials.empty:
+        trial_ids = error_trials.index.tolist()
+        raise RuntimeError(
+            f"Trials {trial_ids} encountered an error - please check stdout "
+            f"for more information."
+        )
 
     return result
 
