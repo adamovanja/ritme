@@ -164,13 +164,8 @@ def run_trials(
     result = analysis.fit()
 
     # Check all trials & check for error status
-    error_trials = [trial for trial in result if trial.error]
-
-    if len(error_trials) > 0:
-        for et in error_trials:
-            raise RuntimeError(
-                f"Trials {et.trial_id} encountered this error {et.error}"
-            )
+    if result.num_errors > 0:
+        raise RuntimeError(f"Some trials encountered these errors {result.errors}")
 
     return result
 
