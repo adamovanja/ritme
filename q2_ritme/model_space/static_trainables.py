@@ -269,7 +269,11 @@ def train_rf(
     # setting seed for scikit library
     np.random.seed(seed_model)
     rf = RandomForestRegressor(
-        n_estimators=config["n_estimators"], max_depth=config["max_depth"]
+        n_estimators=config["n_estimators"],
+        max_depth=config["max_depth"],
+        # ray tune uses joblib for parallelization - so this makes sure all
+        # available resources are used
+        n_jobs=None,
     )
     rf.fit(X_train, y_train)
 
@@ -371,9 +375,9 @@ def load_data(X_train, y_train, X_val, y_val, y_type, config):
         torch.tensor(y_val, dtype=y_type),
     )
     train_loader = DataLoader(
-        train_dataset, batch_size=config["batch_size"], shuffle=True
+        train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=2
     )
-    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"])
+    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], num_workers=2)
     return train_loader, val_loader
 
 

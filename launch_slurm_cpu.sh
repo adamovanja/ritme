@@ -1,22 +1,26 @@
 #!/bin/bash
 
-#SBATCH --job-name="ra_5c_cpu_t10_long_rf"
-#SBATCH -A es_bokulich
+#SBATCH --job-name="run_config"
+#SBATCH -A partition_name
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=30
-#SBATCH --time=03:59:59
-#SBATCH --mem-per-cpu=1024
+#SBATCH --cpus-per-task=20
+#SBATCH --time=23:59:59
+#SBATCH --mem-per-cpu=4096
 #SBATCH --output="%x_out.txt"
 #SBATCH --open-mode=append
 
 set -x
 
-# echo "SLURM_CPUS_PER_TASK: $SLURM_CPUS_PER_TASK"
-# echo "SLURM_GPUS_PER_TASK: $SLURM_GPUS_PER_TASK"
+echo "SLURM_CPUS_PER_TASK: $SLURM_CPUS_PER_TASK"
+echo "SLURM_GPUS_PER_TASK: $SLURM_GPUS_PER_TASK"
 
 # ! USER SETTINGS HERE
 # -> config file to use
-CONFIG="q2_ritme/ra_5c_cpu_t10_long_rf.json"
+CONFIG="q2_ritme/run_config.json"
+# -> count of this concurrent job launched on same infrastructure
+# -> only these values are allowed: 1, 2, 3 - since below ports are
+# -> otherwise taken or not allowed
+JOB_NB=1
 # ! USER END __________
 
 # __doc_head_address_start__
@@ -44,14 +48,28 @@ fi
 # __doc_head_address_end__
 
 # __doc_head_ray_start__
-port=6379
+port=$((6378 + JOB_NB))
+node_manager_port=$((6600 + JOB_NB * 100))
+object_manager_port=$((6601 + JOB_NB * 100))
+ray_client_server_port=$((1 + JOB_NB * 10000))
+redis_shard_ports=$((6602 + JOB_NB * 100))
+min_worker_port=$((2 + JOB_NB * 10000))
+max_worker_port=$((9999 + JOB_NB * 10000))
+
 ip_head=$head_node_ip:$port
 export ip_head
 echo "IP Head: $ip_head"
 
 echo "Starting HEAD at $head_node"
 srun --nodes=1 --ntasks=1 -w "$head_node" \
-    ray start --head --node-ip-address="$head_node_ip" --port=$port \
+    ray start --head --node-ip-address="$head_node_ip" \
+    --port=$port \
+    --node-manager-port=$node_manager_port \
+    --object-manager-port=$object_manager_port \
+    --ray-client-server-port=$ray_client_server_port \
+    --redis-shard-ports=$redis_shard_ports \
+    --min-worker-port=$min_worker_port \
+    --max-worker-port=$max_worker_port \
     --num-cpus "${SLURM_CPUS_PER_TASK}" --num-gpus "${SLURM_GPUS_PER_TASK:-0}" --block &
 # __doc_head_ray_end__
 

@@ -50,12 +50,28 @@ def run_trials(
     scheduler_max_t=100,
     resources=None,
 ):
+    # todo: this 10 is imposed by my HPC system - should be made flexible (20
+    # could also be possible)
+    max_concurrent_trials = 10
     if resources is None:
         # if not a slurm process: default values are used
+        all_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
+        all_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
+        cpus = int(max(1, (all_cpus_avail // max_concurrent_trials)))
+        gpus = max(0, (all_gpus_avail // max_concurrent_trials))
+        print(f"Using these resources: CPU {cpus}")
+        print(f"Using these resources: GPU {gpus}")
         resources = {
-            "cpu": get_slurm_resource("SLURM_CPUS_PER_TASK", 1),
-            "gpu": get_slurm_resource("SLURM_GPUS_PER_TASK", 0),
+            "cpu": cpus,
+            "gpu": gpus,
         }
+    # funfacts about trainables and their parallelisation/GPU capabilities:
+    # - linreg: not parallelisable + CPU based
+    # - trac: solver Path-Alg not parallelized by default + Classo is a
+    #   CPU-based library
+    # - rf: parallel processing supported but no GPU support
+    # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU
+    #   support
 
     if not os.path.exists(mlflow_tracking_uri):
         os.makedirs(mlflow_tracking_uri)
@@ -138,13 +154,20 @@ def run_trials(
             scheduler=scheduler,
             # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
+            max_concurrent_trials=max_concurrent_trials,
             # ! set seed
             # todo: set advanced search algo -> here default random
             search_alg=tune.search.BasicVariantGenerator(),
         ),
     )
     # ResultGrid output
-    return analysis.fit()
+    result = analysis.fit()
+
+    # Check all trials & check for error status
+    if result.num_errors > 0:
+        raise RuntimeError(f"Some trials encountered these errors {result.errors}")
+
+    return result
 
 
 def run_all_trials(
@@ -173,7 +196,7 @@ def run_all_trials(
     model_search_space = ss.get_search_space(train_val)
 
     # if tax + phylogeny empty we can't run trac
-    if tax.empty or tree_phylo.children == []:
+    if (tax.empty or tree_phylo.children == []) and "trac" in model_types:
         model_types.remove("trac")
         print(
             "Removing trac from model_types since no taxonomy and phylogeny were "
@@ -181,7 +204,6 @@ def run_all_trials(
         )
 
     for model in model_types:
-        # todo: parallelize this for loop
         if not os.path.exists(path_exp):
             os.makedirs(path_exp)
         print(f"Ray tune training of: {model}...")

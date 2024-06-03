@@ -33,6 +33,7 @@ def _create_identity_matrix_for_leaves(num_leaves, tax, leaves):
     # taxonomic name should include OTU name
     tax_e = tax.copy()
     tax_e["tax_ft"] = tax_e["Taxon"] + "; otu__" + tax_e.index
+    # tax matched by leave name - order does not matter
     a1_node_names = tax_e.loc[[leaf.name for leaf in leaves], "tax_ft"].tolist()
     return A1, a1_node_names
 

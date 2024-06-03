@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name="r_5c_cpu_t10_compare"
-#SBATCH -A es_bokulich
+#SBATCH -A partition_name
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=01:59:59
