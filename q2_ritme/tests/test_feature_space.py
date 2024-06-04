@@ -21,7 +21,7 @@ from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
     alr,
     presence_absence,
-    transform_features,
+    transform_microbial_features,
 )
 from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
 
@@ -52,7 +52,7 @@ class TestUtils(TestPluginBase):
         assert obs_biom_table == self.true_biom_table
 
 
-class TestTransformFeatures(TestPluginBase):
+class TestTransformMicrobialFeatures(TestPluginBase):
     package = "q2_ritme.tests"
 
     def setUp(self):
@@ -103,7 +103,7 @@ class TestTransformFeatures(TestPluginBase):
         exp_ft = exp_ft.add_prefix("pa_")
 
         # observed
-        obs_ft = transform_features(self.ft, "pa")
+        obs_ft = transform_microbial_features(self.ft, "pa")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -115,7 +115,7 @@ class TestTransformFeatures(TestPluginBase):
         exp_ft = exp_ft.add_prefix("clr_")
 
         # observed
-        obs_ft = transform_features(self.ft, "clr")
+        obs_ft = transform_microbial_features(self.ft, "clr")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -128,7 +128,7 @@ class TestTransformFeatures(TestPluginBase):
         exp_ft = exp_ft.add_prefix("clr_")
 
         # observed
-        obs_ft = transform_features(self.ft_zero, "clr")
+        obs_ft = transform_microbial_features(self.ft_zero, "clr")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -140,7 +140,7 @@ class TestTransformFeatures(TestPluginBase):
         exp_ft = exp_ft.add_prefix("alr_")
 
         # observed
-        obs_ft = transform_features(self.ft, "alr", 1)
+        obs_ft = transform_microbial_features(self.ft, "alr", 1)
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -156,7 +156,7 @@ class TestTransformFeatures(TestPluginBase):
         )
 
         # observed
-        obs_ft = transform_features(self.ft, "ilr")
+        obs_ft = transform_microbial_features(self.ft, "ilr")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -166,7 +166,7 @@ class TestTransformFeatures(TestPluginBase):
         exp_ft = self.ft
 
         # observed
-        obs_ft = transform_features(self.ft, None)
+        obs_ft = transform_microbial_features(self.ft, None)
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -175,7 +175,7 @@ class TestTransformFeatures(TestPluginBase):
         with self.assertRaisesRegex(
             ValueError, "Method FancyTransform is not implemented yet."
         ):
-            transform_features(self.ft, "FancyTransform")
+            transform_microbial_features(self.ft, "FancyTransform")
 
 
 class TestProcessTrain(TestPluginBase):
@@ -204,7 +204,7 @@ class TestProcessTrain(TestPluginBase):
         for expected, actual in zip(expected_args, args[1:]):
             assert expected == actual, f"Expected {expected}, but got {actual}"
 
-    @patch("q2_ritme.feature_space._process_train.transform_features")
+    @patch("q2_ritme.feature_space._process_train.transform_microbial_features")
     @patch("q2_ritme.feature_space._process_train.split_data_by_host")
     def test_process_train(self, mock_split_data_by_host, mock_transform_features):
         # Arrange

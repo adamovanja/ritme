@@ -33,7 +33,7 @@ def presence_absence(feat: pd.DataFrame) -> np.ndarray:
     return abspres_df.values
 
 
-def transform_features(
+def transform_microbial_features(
     feat: pd.DataFrame,
     method: str,
     denom_idx: int = False,
