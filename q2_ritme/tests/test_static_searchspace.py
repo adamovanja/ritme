@@ -1,5 +1,6 @@
 import pandas as pd
 from qiime2.plugin.testing import TestPluginBase
+from ray import tune
 
 from q2_ritme.model_space import static_searchspace as ss
 
@@ -52,7 +53,10 @@ class TestStaticSearchSpace(TestPluginBase):
         data_eng_space = ss.get_data_eng_space(self.train_val)
 
         self.assertIsInstance(data_eng_space, dict)
-        self.assertIn("data_transform", data_eng_space)
+        self.assertEqual(
+            data_eng_space["data_transform"],
+            tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
+        )
         self.assertIn("data_alr_denom_idx", data_eng_space)
 
     def test_get_data_alr_denom_idx_space(self):

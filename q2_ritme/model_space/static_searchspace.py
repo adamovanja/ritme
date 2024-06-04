@@ -29,7 +29,7 @@ def get_data_eng_space(train_val):
     return {
         # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options in data_transform * nb of model types
-        "data_transform": tune.grid_search([None, "clr", "ilr", "alr"]),
+        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
         "data_alr_denom_idx": get_alr_denom_idx_space(train_val),
     }
 
@@ -105,10 +105,10 @@ def get_xgb_space(train_val):
 
 def get_trac_space(train_val):
     # no feature_transformation to be used for trac
-    data_eng_space = {"data_transform": None, "data_alr_denom_idx": None}
+    data_eng_space_trac = {"data_transform": None, "data_alr_denom_idx": None}
     return dict(
         model="trac",
-        **data_eng_space,
+        **data_eng_space_trac,
         **{
             # with loguniform: sampled values are more densely concentrated
             # towards the lower end of the range

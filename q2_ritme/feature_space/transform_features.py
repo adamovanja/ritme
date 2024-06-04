@@ -1,5 +1,8 @@
+import numpy as np
 import pandas as pd
 from skbio.stats.composition import clr, ilr
+
+from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
 
 PSEUDOCOUNT = 0.000001
 
@@ -20,6 +23,16 @@ def alr(feat: pd.DataFrame, denom_idx: int) -> pd.DataFrame:
     return feat_t
 
 
+def presence_absence(feat: pd.DataFrame) -> np.ndarray:
+    """
+    Convert feature table to presence/absence array
+    """
+    ft_tab = _df_to_biom(feat)
+    ft_tab.pa(inplace=True)
+    abspres_df = _biom_to_df(ft_tab)
+    return abspres_df.values
+
+
 def transform_features(
     feat: pd.DataFrame,
     method: str,
@@ -33,13 +46,19 @@ def transform_features(
     # to relative abundances (closure). For alr this is not done as transformed result
     # is the same.
 
-    # add pseudocounts
-    feat = feat.replace(0, pseudocount).copy()
-
-    # transform & rename columns
-    method_map = {"clr": clr, "ilr": ilr, "alr": alr, None: None}
+    method_map = {
+        "clr": clr,
+        "ilr": ilr,
+        "alr": alr,
+        "pa": presence_absence,
+        None: None,
+    }
     if method not in method_map.keys():
         raise ValueError(f"Method {method} is not implemented yet.")
+
+    # add pseudocounts
+    if method in ["clr", "ilr", "alr"]:
+        feat = feat.replace(0, pseudocount).copy()
 
     # transform
     if method == "alr":
@@ -47,10 +66,10 @@ def transform_features(
         feat_trans = feat_trans.add_prefix(f"{method}_")
     elif method is None:
         feat_trans = feat.copy()
-    else:
+    else:  # ilr, clr, pa
         col_names = (
             [f"{method}_{x}" for x in feat.columns]
-            if method == "clr"
+            if method in ["clr", "pa"]
             else [f"ilr_{x}" for x in range(len(feat.columns) - 1)]
         )
         feat_trans = pd.DataFrame(

@@ -1,11 +1,10 @@
-import biom
 import pandas as pd
 import qiime2 as q2
 import skbio
 from qiime2.plugins import phylogeny
 from sklearn.model_selection import GroupShuffleSplit
 
-# todo: adjust to json file to be read in from user
+from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
 from q2_ritme.simulate_data import simulate_data
 
 
@@ -24,20 +23,15 @@ def get_relative_abundance(
     else:
         raise ValueError("Either feature_prefix or no_features must be set")
     ft_sel = ft[ft_cols]
-    # Convert the pandas DataFrame to a biom.Table object
-    ft_biom = biom.Table(
-        ft_sel.T.values, observation_ids=ft_sel.columns, sample_ids=ft_sel.index
-    )
+
+    # biom.norm faster than skbio.stats.composition.closure
+    ft_biom = _df_to_biom(ft_sel)
 
     # Normalize the feature table using biom.Table.norm()
     ft_rel_biom = ft_biom.norm(axis="sample", inplace=False)
 
     # Convert the normalized biom.Table back to a pandas DataFrame
-    ft_rel = pd.DataFrame(
-        ft_rel_biom.matrix_data.toarray().T,
-        index=ft_rel_biom.ids(axis="sample"),
-        columns=ft_rel_biom.ids(axis="observation"),
-    )
+    ft_rel = _biom_to_df(ft_rel_biom)
 
     # round needed as certain 1.0 are represented in different digits 2e-16
     assert ft_rel[ft_cols].sum(axis=1).round(5).eq(1.0).all()

@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import biom
 import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
@@ -19,8 +20,36 @@ from q2_ritme.feature_space._process_train import process_train
 from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
     alr,
+    presence_absence,
     transform_features,
 )
+from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
+
+
+class TestUtils(TestPluginBase):
+    package = "q2_ritme.tests"
+
+    def setUp(self):
+        super().setUp()
+        idx_ls = ["Sample1", "Sample2", "Sample3"]
+        self.true_df = pd.DataFrame(
+            {"F0": [10.0, 20.0, 50.0], "F1": [20.0, 30.0, 5.0]}, index=idx_ls
+        )
+
+        ft_biom_array = np.array([[10.0, 20.0, 50.0], [20.0, 30.0, 5.0]])
+        self.true_biom_table = biom.table.Table(
+            ft_biom_array,
+            observation_ids=["F0", "F1"],
+            sample_ids=idx_ls,
+        )
+
+    def test_biom_to_df(self):
+        obs_df = _biom_to_df(self.true_biom_table)
+        assert_frame_equal(self.true_df, obs_df)
+
+    def test_df_to_biom(self):
+        obs_biom_table = _df_to_biom(self.true_df)
+        assert obs_biom_table == self.true_biom_table
 
 
 class TestTransformFeatures(TestPluginBase):
@@ -52,6 +81,29 @@ class TestTransformFeatures(TestPluginBase):
 
         # observed
         obs_ft = alr(ft, 1)
+
+        assert_frame_equal(exp_ft, obs_ft)
+
+    def test_presence_absence(self):
+        """Tests presence_absence function"""
+        # expected
+        exp_ft = self.ft.copy()
+        exp_ft[exp_ft > 0] = 1
+
+        # observed
+        obs_ft = presence_absence(self.ft)
+
+        np.array_equal(exp_ft.values, obs_ft)
+
+    def test_transform_presence_absence(self):
+        """Tests presence_absence transformation"""
+        # expected
+        exp_ft = self.ft.copy()
+        exp_ft[exp_ft > 0] = 1
+        exp_ft = exp_ft.add_prefix("pa_")
+
+        # observed
+        obs_ft = transform_features(self.ft, "pa")
 
         assert_frame_equal(exp_ft, obs_ft)
 
