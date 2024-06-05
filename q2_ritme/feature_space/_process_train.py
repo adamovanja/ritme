@@ -1,21 +1,26 @@
+from q2_ritme.feature_space.aggregate_features import aggregate_microbial_features
 from q2_ritme.feature_space.transform_features import transform_microbial_features
 from q2_ritme.process_data import split_data_by_host
 
 
-def process_train(config, train_val, target, host_id, seed_data):
+def process_train(config, train_val, target, host_id, tax, seed_data):
     microbial_ft_ls = [x for x in train_val if x.startswith("F")]
     nonm_ft_ls = [x for x in train_val if x not in microbial_ft_ls]
 
     # AGGREGATE
-    # todo: if tax empty - no tax_aggregation
+    ft_agg = aggregate_microbial_features(
+        train_val[microbial_ft_ls],
+        config["data_aggregation"],
+        tax,
+    )
 
     # TRANSFORM
-    ft_transformed = transform_microbial_features(
-        train_val[microbial_ft_ls],
-        config["data_transform"],
-        config["data_alr_denom_idx"],
-    )
+    # todo: make dependent config variables tune dependent (see
+    # todo: experiments/test_parallel)
+    ft_transformed = transform_microbial_features(ft_agg, config["data_transform"])
     microbial_ft_ls_transf = ft_transformed.columns
+
+    # rejoin metadata to feature table
     train_val_t = train_val[nonm_ft_ls].join(ft_transformed)
 
     # SPLIT

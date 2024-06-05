@@ -1,41 +1,22 @@
 from ray import tune
 
 
-def find_most_nonzero_feature_idx(data):
-    """
-    Find the index of the first feature with the most non-zero values.
-
-    Args:
-        data (pd.DataFrame): DataFrame containing features.
-
-    Returns:
-        int: Index of the feature with the most non-zero values.
-    """
-    nonzero_counts = (data != 0).sum()
-    if nonzero_counts.max() > 0:
-        feature_name = nonzero_counts.idxmax()
-        return data.columns.get_loc(feature_name)
-    else:
-        raise ValueError("All features are zero in all samples.")
-
-
-def get_alr_denom_idx_space(train_val):
-    features = [x for x in train_val if x.startswith("F")]
-    nonzero_feature_idx = find_most_nonzero_feature_idx(train_val[features])
-    return nonzero_feature_idx
-
-
-def get_data_eng_space(train_val):
+def get_data_eng_space(train_val, tax):
     return {
         # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options in data_transform * nb of model types
         "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
-        "data_alr_denom_idx": get_alr_denom_idx_space(train_val),
+        # if tax is not empty set data_aggregation options
+        "data_aggregation": tune.grid_search(
+            [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
+        )
+        if not tax.empty
+        else None,
     }
 
 
-def get_linreg_space(train_val):
-    data_eng_space = get_data_eng_space(train_val)
+def get_linreg_space(train_val, tax):
+    data_eng_space = get_data_eng_space(train_val, tax)
     return dict(
         model="linreg",
         **data_eng_space,
@@ -50,8 +31,8 @@ def get_linreg_space(train_val):
     )
 
 
-def get_rf_space(train_val):
-    data_eng_space = get_data_eng_space(train_val)
+def get_rf_space(train_val, tax):
+    data_eng_space = get_data_eng_space(train_val, tax)
     return dict(
         model="rf",
         **data_eng_space,
@@ -67,8 +48,8 @@ def get_rf_space(train_val):
     )
 
 
-def get_nn_space(train_val, model_name):
-    data_eng_space = get_data_eng_space(train_val)
+def get_nn_space(train_val, tax, model_name):
+    data_eng_space = get_data_eng_space(train_val, tax)
     max_layers = 12
     nn_space = {
         # Sample random uniformly between [1,9] rounding to multiples of 3
@@ -84,8 +65,8 @@ def get_nn_space(train_val, model_name):
     return dict(model=model_name, **data_eng_space, **nn_space)
 
 
-def get_xgb_space(train_val):
-    data_eng_space = get_data_eng_space(train_val)
+def get_xgb_space(train_val, tax):
+    data_eng_space = get_data_eng_space(train_val, tax)
     return dict(
         model="xgb",
         **data_eng_space,
@@ -103,9 +84,11 @@ def get_xgb_space(train_val):
     )
 
 
-def get_trac_space(train_val):
+def get_trac_space(train_val, tax):
     # no feature_transformation to be used for trac
-    data_eng_space_trac = {"data_transform": None, "data_alr_denom_idx": None}
+    # data_aggregate=taxonomy not an option because tax tree does not match with
+    # regards to feature IDs here
+    data_eng_space_trac = {"data_transform": None}
     return dict(
         model="trac",
         **data_eng_space_trac,
@@ -117,13 +100,13 @@ def get_trac_space(train_val):
     )
 
 
-def get_search_space(train_val):
+def get_search_space(train_val, tax):
     return {
-        "xgb": get_xgb_space(train_val),
-        "nn_reg": get_nn_space(train_val, "nn_reg"),
-        "nn_class": get_nn_space(train_val, "nn_class"),
-        "nn_corn": get_nn_space(train_val, "nn_corn"),
-        "linreg": get_linreg_space(train_val),
-        "rf": get_rf_space(train_val),
-        "trac": get_trac_space(train_val),
+        "xgb": get_xgb_space(train_val, tax),
+        "nn_reg": get_nn_space(train_val, tax, "nn_reg"),
+        "nn_class": get_nn_space(train_val, tax, "nn_class"),
+        "nn_corn": get_nn_space(train_val, tax, "nn_corn"),
+        "linreg": get_linreg_space(train_val, tax),
+        "rf": get_rf_space(train_val, tax),
+        "trac": get_trac_space(train_val, tax),
     }

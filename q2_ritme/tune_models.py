@@ -193,7 +193,7 @@ def run_all_trials(
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}
-    model_search_space = ss.get_search_space(train_val)
+    model_search_space = ss.get_search_space(train_val, tax)
 
     # if tax + phylogeny empty we can't run trac
     if (tax.empty or tree_phylo.children == []) and "trac" in model_types:

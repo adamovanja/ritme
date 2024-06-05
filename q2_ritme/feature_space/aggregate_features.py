@@ -91,7 +91,7 @@ def aggregate_ft_by_taxonomy(
     return aggregated_df
 
 
-def transform_ft_by_tax_entity(
+def agg_microbial_fts_taxonomy(
     ft: pd.DataFrame, tax_entity: str, df_taxonomy: pd.DataFrame
 ):
     """
@@ -124,3 +124,30 @@ def transform_ft_by_tax_entity(
     ft_aggregated = aggregate_ft_by_taxonomy(ft, tax_dict)
 
     return ft_aggregated
+
+
+def aggregate_microbial_features(
+    feat: pd.DataFrame,
+    method: str,
+    df_taxonomy: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Aggregate features with specified `method`.
+    """
+    method_map = {
+        "tax_class": agg_microbial_fts_taxonomy,
+        "tax_order": agg_microbial_fts_taxonomy,
+        "tax_family": agg_microbial_fts_taxonomy,
+        "tax_genus": agg_microbial_fts_taxonomy,
+        None: None,
+    }
+    if method not in method_map.keys():
+        raise ValueError(f"Method {method} is not implemented yet.")
+
+    # aggregate
+    if method is not None and method.startswith("tax_"):
+        tax_entity = method.split("_")[1]
+        feat_agg = method_map[method](feat, tax_entity, df_taxonomy)
+    else:
+        feat_agg = feat.copy()
+    return feat_agg

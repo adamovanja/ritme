@@ -73,6 +73,7 @@ class TestTrainables(TestPluginBase):
         self.host_id = "host_id"
         self.seed_data = 0
         self.seed_model = 0
+        self.tax = pd.DataFrame()
 
     @patch("q2_ritme.model_space.static_trainables.process_train")
     @patch("q2_ritme.model_space.static_trainables.ElasticNet")
@@ -92,11 +93,12 @@ class TestTrainables(TestPluginBase):
             self.host_id,
             self.seed_data,
             self.seed_model,
+            self.tax,
         )
 
         # assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.seed_data
+            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
         )
         mock_linreg.assert_called_once_with(
             alpha=config["alpha"],
@@ -140,13 +142,13 @@ class TestTrainables(TestPluginBase):
             self.host_id,
             self.seed_data,
             self.seed_model,
-            pd.DataFrame(),
+            self.tax,
             skbio.TreeNode(),
         )
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.seed_data
+            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
         )
         mock_create_matrix.assert_called_once()
         assert mock_preprocess_taxonomy.call_count == 2
@@ -185,11 +187,12 @@ class TestTrainables(TestPluginBase):
             self.host_id,
             self.seed_data,
             self.seed_model,
+            self.tax,
         )
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.seed_data
+            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
         )
         mock_rf.assert_called_once_with(
             n_estimators=config["n_estimators"],
@@ -241,11 +244,12 @@ class TestTrainables(TestPluginBase):
             self.host_id,
             self.seed_data,
             self.seed_model,
+            self.tax,
         )
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.seed_data
+            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
         )
         mock_dmatrix.assert_has_calls(
             [
@@ -296,12 +300,12 @@ class TestTrainables(TestPluginBase):
         seed_model = 42
 
         # Call the function under test
-        st.train_nn(config, train_val, target, host_id, seed_data, seed_model)
+        st.train_nn(config, train_val, target, host_id, self.tax, seed_data, seed_model)
 
         # Assertions to verify the expected behavior
         mock_seed_everything.assert_called_once_with(seed_model, workers=True)
         mock_process_train.assert_called_once_with(
-            config, train_val, target, host_id, seed_data
+            config, train_val, target, host_id, self.tax, seed_data
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(

@@ -130,7 +130,7 @@ def train_linreg(
     """
     # ! process dataset: X with features & y with host_id
     X_train, y_train, X_val, y_val, ft_col = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, host_id, tax, seed_data
     )
 
     # ! model
@@ -205,7 +205,7 @@ def train_trac(
     """
     # ! process dataset: X with features & y with host_id
     X_train, y_train, X_val, y_val, ft_col = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, host_id, tax, seed_data
     )
     # ! derive matrix A
     a_df = create_matrix_from_tree(tree_phylo, tax)
@@ -262,7 +262,7 @@ def train_rf(
     """
     # ! process dataset
     X_train, y_train, X_val, y_val, ft_col = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, host_id, tax, seed_data
     )
 
     # ! model
@@ -386,6 +386,7 @@ def train_nn(
     train_val,
     target,
     host_id,
+    tax,
     seed_data,
     seed_model,
     nn_type="regression",
@@ -395,7 +396,7 @@ def train_nn(
 
     # Process dataset
     X_train, y_train, X_val, y_val, ft_col = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, host_id, tax, seed_data
     )
 
     # round target to monthly classes in case of ordinal regression and load
@@ -479,7 +480,14 @@ def train_nn_reg(
     config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
 ):
     train_nn(
-        config, train_val, target, host_id, seed_data, seed_model, nn_type="regression"
+        config,
+        train_val,
+        target,
+        host_id,
+        tax,
+        seed_data,
+        seed_model,
+        nn_type="regression",
     )
 
 
@@ -491,6 +499,7 @@ def train_nn_class(
         train_val,
         target,
         host_id,
+        tax,
         seed_data,
         seed_model,
         nn_type="classification",
@@ -506,6 +515,7 @@ def train_nn_corn(
         train_val,
         target,
         host_id,
+        tax,
         seed_data,
         seed_model,
         nn_type="ordinal_regression",
@@ -538,7 +548,7 @@ def train_xgb(
     """
     # ! process dataset
     X_train, y_train, X_val, y_val, ft_col = process_train(
-        config, train_val, target, host_id, seed_data
+        config, train_val, target, host_id, tax, seed_data
     )
     # Set seeds
     np.random.seed(seed_model)

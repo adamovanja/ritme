@@ -19,12 +19,14 @@ from q2_ritme.feature_space._process_trac_specific import (
 )
 from q2_ritme.feature_space._process_train import process_train
 from q2_ritme.feature_space.aggregate_features import (
+    agg_microbial_fts_taxonomy,
     aggregate_ft_by_taxonomy,
+    aggregate_microbial_features,
     extract_taxonomic_entity,
-    transform_ft_by_tax_entity,
 )
 from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
+    _find_most_nonzero_feature_idx,
     alr,
     presence_absence,
     transform_microbial_features,
@@ -77,6 +79,23 @@ class TestTransformMicrobialFeatures(TestPluginBase):
         for i in ft.index:
             ft_trans.loc[i] = np.log(ft.loc[i, :] / ft_gmean[i])
         return ft_trans
+
+    def test_find_most_nonzero_feature_idx_with_nonzero_feature(self):
+        data = pd.DataFrame(
+            {"F1": [0.1, 0.2, 0.7], "F2": [0, 0, 0], "F3": [0.9, 0.8, 0.3]}
+        )
+        expected_idx = 0
+        self.assertEqual(_find_most_nonzero_feature_idx(data), expected_idx)
+
+    def test_find_most_nonzero_feature_idx_with_all_zero_features(self):
+        data = pd.DataFrame({"F1": [0, 0, 0], "F2": [0, 0, 0], "F3": [0, 0, 0]})
+        with self.assertRaises(ValueError):
+            _find_most_nonzero_feature_idx(data)
+
+    def test_find_most_nonzero_feature_idx_with_empty_dataframe(self):
+        data = pd.DataFrame()
+        with self.assertRaises(ValueError):
+            _find_most_nonzero_feature_idx(data)
 
     def test_alr(self):
         """Tests alr function"""
@@ -142,11 +161,11 @@ class TestTransformMicrobialFeatures(TestPluginBase):
         """Tests alr transformation"""
         # expected
         ft = self.ft.replace(0.0, PSEUDOCOUNT)
-        exp_ft = alr(ft, 1)
+        exp_ft = alr(ft, 0)
         exp_ft = exp_ft.add_prefix("alr_")
 
         # observed
-        obs_ft = transform_microbial_features(self.ft, "alr", 1)
+        obs_ft = transform_microbial_features(self.ft, "alr")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -238,7 +257,7 @@ class TestAggregateMicrobialFeatures(TestPluginBase):
         with self.assertWarnsRegex(Warning, r".*are hence disregarded: \['F5', 'F6'\]"):
             aggregate_ft_by_taxonomy(self.ft, tax_dict)
 
-    def test_transform_ft_by_tax_entity(self):
+    def test_agg_microbial_fts_taxonomy(self):
         # Define the expected feature table columns - no feature dim reduction
         # here only resorting
         exp_ft_cols = sorted(
@@ -253,11 +272,26 @@ class TestAggregateMicrobialFeatures(TestPluginBase):
         )
         exp_ft = self.ft[["F5", "F3", "F6", "F2", "F4", "F1"]].copy()
 
-        # Call the function being tested
-        obs_ft = transform_ft_by_tax_entity(self.ft, "species", self.tax)
+        obs_ft = agg_microbial_fts_taxonomy(self.ft, "species", self.tax)
 
         self.assertEqual(exp_ft_cols, obs_ft.columns.tolist())
         assert_array_equal(exp_ft.values, obs_ft.values)
+
+    def test_aggregate_microbial_features_tax_class(self):
+        exp_ft = pd.DataFrame()
+        exp_ft["c__Bacilli"] = self.ft[["F4", "F6"]].sum(axis=1)
+        exp_ft["c__Clostridia"] = self.ft[["F1", "F2", "F3", "F5"]].sum(axis=1)
+
+        obs_ft = aggregate_microbial_features(self.ft, "tax_class", self.tax)
+
+        assert_frame_equal(exp_ft, obs_ft)
+
+    def test_aggregate_microbial_features_none(self):
+        exp_ft = self.ft.copy()
+
+        obs_ft = aggregate_microbial_features(self.ft, None, self.tax)
+
+        assert_frame_equal(exp_ft, obs_ft)
 
 
 class TestProcessTrain(TestPluginBase):
@@ -265,7 +299,7 @@ class TestProcessTrain(TestPluginBase):
 
     def setUp(self):
         super().setUp()
-        self.config = {"data_transform": None, "data_alr_denom_idx": False}
+        self.config = {"data_transform": None, "data_aggregation": None}
         self.train_val = pd.DataFrame(
             {
                 "host_id": ["c", "b", "c", "a"],
@@ -278,20 +312,26 @@ class TestProcessTrain(TestPluginBase):
         self.target = "target"
         self.host_id = "host_id"
         self.seed_data = 0
+        self.tax = pd.DataFrame()
 
-    def _assert_called_with_df(self, mock, expected_df, *expected_args):
-        mock.assert_called_once()
-        args, _ = mock.call_args
-        pd.testing.assert_frame_equal(args[0], expected_df)
-        for expected, actual in zip(expected_args, args[1:]):
-            assert expected == actual, f"Expected {expected}, but got {actual}"
+    def _assert_called_with_df(self, mock_method, *expected_args):
+        actual_args = mock_method.call_args[0]
+        for expected, actual in zip(expected_args, actual_args):
+            if isinstance(expected, pd.DataFrame):
+                assert_frame_equal(expected, actual)
+            else:
+                assert expected == actual, f"Expected {expected}, but got {actual}"
 
+    @patch("q2_ritme.feature_space._process_train.aggregate_microbial_features")
     @patch("q2_ritme.feature_space._process_train.transform_microbial_features")
     @patch("q2_ritme.feature_space._process_train.split_data_by_host")
-    def test_process_train(self, mock_split_data_by_host, mock_transform_features):
+    def test_process_train(
+        self, mock_split_data_by_host, mock_transform_features, mock_aggregate_features
+    ):
         # Arrange
         ls_ft = ["F0", "F1"]
         ft = self.train_val[ls_ft]
+        mock_aggregate_features.return_value = ft
         mock_transform_features.return_value = ft
         mock_split_data_by_host.return_value = (
             self.train_val.iloc[:2, :],
@@ -300,11 +340,17 @@ class TestProcessTrain(TestPluginBase):
 
         # Act
         X_train, y_train, X_val, y_val, ft_col = process_train(
-            self.config, self.train_val, self.target, self.host_id, self.seed_data
+            self.config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
         )
 
         # Assert
-        self._assert_called_with_df(mock_transform_features, ft, None, False)
+        self._assert_called_with_df(mock_aggregate_features, ft, None, self.tax)
+        self._assert_called_with_df(mock_transform_features, ft, None)
         self._assert_called_with_df(
             mock_split_data_by_host,
             self.train_val[[self.host_id, self.target] + ls_ft],
