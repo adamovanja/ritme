@@ -68,12 +68,20 @@ def _save_sklearn_model(model: BaseEstimator) -> str:
     return model_path
 
 
+def _save_taxonomy(tax: pd.DataFrame) -> None:
+    taxonomy_path = os.path.join(
+        ray.train.get_context().get_trial_dir(), "taxonomy.pkl"
+    )
+    joblib.dump(tax, taxonomy_path)
+
+
 def _report_results_manually(
     model: BaseEstimator,
     X_train: np.ndarray,
     y_train: np.ndarray,
     X_val: np.ndarray,
     y_val: np.ndarray,
+    tax: pd.DataFrame,
 ) -> None:
     """
     Manually report results and model to Ray Tune. This function is used for
@@ -90,6 +98,8 @@ def _report_results_manually(
     None
     """
     model_path = _save_sklearn_model(model)
+
+    _save_taxonomy(tax)
 
     score_train = _predict_rmse(model, X_train, y_train)
     score_val = _predict_rmse(model, X_val, y_val)
@@ -142,7 +152,7 @@ def train_linreg(
     )
     linreg.fit(X_train, y_train)
 
-    _report_results_manually(linreg, X_train, y_train, X_val, y_val)
+    _report_results_manually(linreg, X_train, y_train, X_val, y_val, tax)
 
 
 def _predict_rmse_trac(alpha, log_geom_X, y):
@@ -151,7 +161,7 @@ def _predict_rmse_trac(alpha, log_geom_X, y):
 
 
 def _report_results_manually_trac(
-    alpha, A_df, log_geom_train, y_train, log_geom_val, y_val
+    alpha, A_df, log_geom_train, y_train, log_geom_val, y_val, tax
 ):
     # save coefficients w labels & matrix A with labels -> model_path
     idx_alpha = ["intercept"] + A_df.columns.tolist()
@@ -169,6 +179,8 @@ def _report_results_manually_trac(
     score_train = _predict_rmse_trac(alpha, log_geom_train, y_train)
     score_val = _predict_rmse_trac(alpha, log_geom_val, y_val)
 
+    # taxonomy
+    _save_taxonomy(tax)
     session.report(
         metrics={
             "rmse_val": score_val,
@@ -232,7 +244,7 @@ def train_trac(
     )
 
     _report_results_manually_trac(
-        alpha, a_df, log_geom_train, y_train, log_geom_val, y_val
+        alpha, a_df, log_geom_train, y_train, log_geom_val, y_val, tax
     )
 
 
@@ -277,7 +289,7 @@ def train_rf(
     )
     rf.fit(X_train, y_train)
 
-    _report_results_manually(rf, X_train, y_train, X_val, y_val)
+    _report_results_manually(rf, X_train, y_train, X_val, y_val, tax)
 
 
 class NeuralNet(LightningModule):
@@ -437,7 +449,7 @@ def train_nn(
     model = NeuralNet(
         n_units=n_units, learning_rate=config["learning_rate"], nn_type=nn_type
     )
-
+    _save_taxonomy(tax)
     # Callbacks
     checkpoint_dir = (
         tune.get_trial_dir() if tune.is_session_enabled() else "checkpoints"
@@ -558,6 +570,7 @@ def train_xgb(
     dtrain = xgb.DMatrix(X_train, label=y_train)
     dval = xgb.DMatrix(X_val, label=y_val)
 
+    _save_taxonomy(tax)
     # ! model
     # Initialize the checkpoint callback - which is built-in support for xgb
     # models in Ray Tune

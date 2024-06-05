@@ -25,6 +25,7 @@ class TestHelperFunctions(TestPluginBase):
         self.X = np.array([[1, 2], [3, 4]])
         self.y = np.array([1, 2])
         self.model = LinearRegression().fit(self.X, self.y)
+        self.tax = pd.DataFrame()
 
     def test_predict_rmse(self):
         expected = mean_squared_error(self.y, self.model.predict(self.X), squared=False)
@@ -51,7 +52,9 @@ class TestHelperFunctions(TestPluginBase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_trial_context.get_trial_dir.return_value = tmpdir
 
-            st._report_results_manually(self.model, self.X, self.y, self.X, self.y)
+            st._report_results_manually(
+                self.model, self.X, self.y, self.X, self.y, self.tax
+            )
             mock_report.assert_called_once()
 
 
@@ -73,7 +76,7 @@ class TestTrainables(TestPluginBase):
         self.host_id = "host_id"
         self.seed_data = 0
         self.seed_model = 0
-        self.tax = pd.DataFrame()
+        self.tax = pd.DataFrame([])
 
     @patch("q2_ritme.model_space.static_trainables.process_train")
     @patch("q2_ritme.model_space.static_trainables.ElasticNet")
@@ -205,12 +208,18 @@ class TestTrainables(TestPluginBase):
     # def test_train_nn(self, mock_adam, mock_neural_net, mock_process_train):
     #     # todo: add unit test for pytorch NN
 
+    @patch("q2_ritme.model_space.static_trainables._save_taxonomy")
     @patch("q2_ritme.model_space.static_trainables.process_train")
     @patch("q2_ritme.model_space.static_trainables.xgb.DMatrix")
     @patch("q2_ritme.model_space.static_trainables.xgb.train")
     @patch("q2_ritme.model_space.static_trainables.xgb_cc")
     def test_train_xgb(
-        self, mock_checkpoint, mock_xgb_train, mock_dmatrix, mock_process_train
+        self,
+        mock_checkpoint,
+        mock_xgb_train,
+        mock_dmatrix,
+        mock_process_train,
+        mock_save_taxonomy,
     ):
         # Arrange
         config = {
@@ -260,6 +269,7 @@ class TestTrainables(TestPluginBase):
         mock_xgb_train.assert_called_once()
         mock_checkpoint.assert_called_once()
 
+    @patch("q2_ritme.model_space.static_trainables._save_taxonomy")
     @patch("q2_ritme.model_space.static_trainables.seed_everything")
     @patch("q2_ritme.model_space.static_trainables.process_train")
     @patch("q2_ritme.model_space.static_trainables.load_data")
@@ -272,6 +282,7 @@ class TestTrainables(TestPluginBase):
         mock_load_data,
         mock_process_train,
         mock_seed_everything,
+        mock_save_taxonomy,
     ):
         # Setup mock return values
         mock_process_train.return_value = (
