@@ -7,6 +7,7 @@ def process_train(config, train_val, target, host_id, seed_data):
     nonm_ft_ls = [x for x in train_val if x not in microbial_ft_ls]
 
     # AGGREGATE
+    # todo: if tax empty - no tax_aggregation
 
     # TRANSFORM
     ft_transformed = transform_microbial_features(

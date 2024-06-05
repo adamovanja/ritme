@@ -3,6 +3,7 @@ from unittest.mock import patch
 import biom
 import numpy as np
 import pandas as pd
+from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 from scipy.stats.mstats import gmean
@@ -17,6 +18,11 @@ from q2_ritme.feature_space._process_trac_specific import (
     create_matrix_from_tree,
 )
 from q2_ritme.feature_space._process_train import process_train
+from q2_ritme.feature_space.aggregate_features import (
+    aggregate_ft_by_taxonomy,
+    extract_taxonomic_entity,
+    transform_ft_by_tax_entity,
+)
 from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
     alr,
@@ -176,6 +182,82 @@ class TestTransformMicrobialFeatures(TestPluginBase):
             ValueError, "Method FancyTransform is not implemented yet."
         ):
             transform_microbial_features(self.ft, "FancyTransform")
+
+
+class TestAggregateMicrobialFeatures(TestPluginBase):
+    package = "q2_ritme.tests"
+
+    def setUp(self):
+        super().setUp()
+        self.ft = pd.read_csv(
+            self.get_data_path("example_feature_table.tsv"), sep="\t", index_col=0
+        )
+        self.tax = pd.read_csv(
+            self.get_data_path("example_taxonomy.tsv"), sep="\t", index_col=0
+        )
+        self.tax_dict_class = {
+            "F1": "c__Clostridia",
+            "F2": "c__Clostridia",
+            "F3": "c__Clostridia",
+            "F4": "c__Bacilli",
+            "F5": "c__Clostridia",
+            "F6": "c__Bacilli",
+        }
+        self.tax_dict_species = {
+            "F1": "s__unknown",
+            "F2": "s__unknown",
+            "F3": "s__uncultured_Dorea",
+            "F4": "s__unknown",
+            "F5": "s__Clostridium_scindens",
+            "F6": "s__unknown",
+        }
+
+    def test_extract_taxonomic_entity_no_unknowns(self):
+        obs_tax_dict = extract_taxonomic_entity(self.tax, "class")
+
+        self.assertDictEqual(self.tax_dict_class, obs_tax_dict)
+
+    def test_extract_taxonomic_entity_w_unknowns(self):
+        # observed
+        obs_tax_dict = extract_taxonomic_entity(self.tax, "species")
+
+        self.assertDictEqual(self.tax_dict_species, obs_tax_dict)
+
+    def test_aggregate_ft_by_taxonomy(self):
+        # expected
+        exp_ft = self.ft.copy()
+        exp_ft = exp_ft.groupby(self.tax_dict_class, axis=1).sum()
+        # observed
+        obs_ft = aggregate_ft_by_taxonomy(self.ft, self.tax_dict_class)
+
+        assert_frame_equal(exp_ft, obs_ft)
+
+    def test_aggregate_ft_by_taxonomy_more_ft_than_tax(self):
+        tax_dict = {f"F{i}": self.tax_dict_class[f"F{i}"] for i in range(1, 5)}
+
+        with self.assertWarnsRegex(Warning, r".*are hence disregarded: \['F5', 'F6'\]"):
+            aggregate_ft_by_taxonomy(self.ft, tax_dict)
+
+    def test_transform_ft_by_tax_entity(self):
+        # Define the expected feature table columns - no feature dim reduction
+        # here only resorting
+        exp_ft_cols = sorted(
+            [
+                "s__unkn_g__Subdoligranulum",
+                "s__unkn_g__Ruminococcus_torques_group",
+                "s__uncultured_Dorea",
+                "s__unkn_g__Streptococcus",
+                "s__Clostridium_scindens",
+                "s__unkn_g__Granulicatella",
+            ]
+        )
+        exp_ft = self.ft[["F5", "F3", "F6", "F2", "F4", "F1"]].copy()
+
+        # Call the function being tested
+        obs_ft = transform_ft_by_tax_entity(self.ft, "species", self.tax)
+
+        self.assertEqual(exp_ft_cols, obs_ft.columns.tolist())
+        assert_array_equal(exp_ft.values, obs_ft.values)
 
 
 class TestProcessTrain(TestPluginBase):
