@@ -23,6 +23,24 @@ def alr(feat: pd.DataFrame, denom_idx: int) -> pd.DataFrame:
     return feat_t
 
 
+def _find_most_nonzero_feature_idx(data):
+    """
+    Find the index of the first feature with the most non-zero values.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing features.
+
+    Returns:
+        int: Index of the feature with the most non-zero values.
+    """
+    nonzero_counts = (data != 0).sum()
+    if nonzero_counts.max() > 0:
+        feature_name = nonzero_counts.idxmax()
+        return data.columns.get_loc(feature_name)
+    else:
+        raise ValueError("All features are zero in all samples.")
+
+
 def presence_absence(feat: pd.DataFrame) -> np.ndarray:
     """
     Convert feature table to presence/absence array
@@ -36,12 +54,9 @@ def presence_absence(feat: pd.DataFrame) -> np.ndarray:
 def transform_microbial_features(
     feat: pd.DataFrame,
     method: str,
-    denom_idx: int = False,
     pseudocount: float = PSEUDOCOUNT,
 ) -> pd.DataFrame:
-    """Transform features with specified `method`. If `method = alr` index of common
-    denominator needs to be provided as `denom_idx`.
-    """
+    """Transform features with specified `method`."""
     # note to self: clr and ilr methods include initial transformation of feature table
     # to relative abundances (closure). For alr this is not done as transformed result
     # is the same.
@@ -62,6 +77,7 @@ def transform_microbial_features(
 
     # transform
     if method == "alr":
+        denom_idx = _find_most_nonzero_feature_idx(feat)
         feat_trans = method_map[method](feat, denom_idx)
         feat_trans = feat_trans.add_prefix(f"{method}_")
     elif method is None:

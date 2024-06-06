@@ -15,11 +15,9 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     )
 
     # TRANSFORM
-    ft_transformed = transform_microbial_features(
-        ft_agg,
-        config["data_transform"],
-        config["data_alr_denom_idx"],
-    )
+    # todo: make dependent config variables tune dependent (see
+    # todo: experiments/test_parallel)
+    ft_transformed = transform_microbial_features(ft_agg, config["data_transform"])
     microbial_ft_ls_transf = ft_transformed.columns
 
     # rejoin metadata to feature table
