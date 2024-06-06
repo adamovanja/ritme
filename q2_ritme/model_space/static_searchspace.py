@@ -1,13 +1,38 @@
 from ray import tune
 
 
+def _find_most_nonzero_feature_idx(data):
+    """
+    Find the index of the first feature with the most non-zero values.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing features.
+
+    Returns:
+        int: Index of the feature with the most non-zero values.
+    """
+    nonzero_counts = (data != 0).sum()
+    if nonzero_counts.max() > 0:
+        feature_name = nonzero_counts.idxmax()
+        return data.columns.get_loc(feature_name)
+    else:
+        raise ValueError("All features are zero in all samples.")
+
+
+def get_alr_denom_idx_space(train_val):
+    features = [x for x in train_val if x.startswith("F")]
+    nonzero_feature_idx = _find_most_nonzero_feature_idx(train_val[features])
+    return nonzero_feature_idx
+
+
 def get_data_eng_space(train_val, tax):
     return {
         # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options in data_transform * nb of model types
-        "data_transform": tune.grid_search(
-            [None]
-        ),  #  todo: adjust, "clr", "ilr", "alr", "pa"]),
+        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
+        # todo: make data_alr conditional on data_transform=alr
+        # note: alr_denom_idx must be here to fix it based on train_val
+        "data_alr_denom_idx": get_alr_denom_idx_space(train_val),
         # if tax is not empty set data_aggregation options
         "data_aggregation": tune.grid_search(
             [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
@@ -90,7 +115,11 @@ def get_trac_space(train_val, tax):
     # no feature_transformation to be used for trac
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
-    data_eng_space_trac = {"data_transform": None, "data_aggregation": None}
+    data_eng_space_trac = {
+        "data_transform": None,
+        "data_alr_denom_idx": None,
+        "data_aggregation": None,
+    }
     return dict(
         model="trac",
         **data_eng_space_trac,

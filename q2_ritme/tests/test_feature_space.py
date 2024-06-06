@@ -26,7 +26,6 @@ from q2_ritme.feature_space.aggregate_features import (
 )
 from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
-    _find_most_nonzero_feature_idx,
     alr,
     presence_absence,
     transform_microbial_features,
@@ -79,23 +78,6 @@ class TestTransformMicrobialFeatures(TestPluginBase):
         for i in ft.index:
             ft_trans.loc[i] = np.log(ft.loc[i, :] / ft_gmean[i])
         return ft_trans
-
-    def test_find_most_nonzero_feature_idx_with_nonzero_feature(self):
-        data = pd.DataFrame(
-            {"F1": [0.1, 0.2, 0.7], "F2": [0, 0, 0], "F3": [0.9, 0.8, 0.3]}
-        )
-        expected_idx = 0
-        self.assertEqual(_find_most_nonzero_feature_idx(data), expected_idx)
-
-    def test_find_most_nonzero_feature_idx_with_all_zero_features(self):
-        data = pd.DataFrame({"F1": [0, 0, 0], "F2": [0, 0, 0], "F3": [0, 0, 0]})
-        with self.assertRaises(ValueError):
-            _find_most_nonzero_feature_idx(data)
-
-    def test_find_most_nonzero_feature_idx_with_empty_dataframe(self):
-        data = pd.DataFrame()
-        with self.assertRaises(ValueError):
-            _find_most_nonzero_feature_idx(data)
 
     def test_alr(self):
         """Tests alr function"""
@@ -165,7 +147,7 @@ class TestTransformMicrobialFeatures(TestPluginBase):
         exp_ft = exp_ft.add_prefix("alr_")
 
         # observed
-        obs_ft = transform_microbial_features(self.ft, "alr")
+        obs_ft = transform_microbial_features(self.ft, "alr", 0)
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -299,7 +281,11 @@ class TestProcessTrain(TestPluginBase):
 
     def setUp(self):
         super().setUp()
-        self.config = {"data_transform": None, "data_aggregation": None}
+        self.config = {
+            "data_transform": None,
+            "data_alr_denom_idx": False,
+            "data_aggregation": None,
+        }
         self.train_val = pd.DataFrame(
             {
                 "host_id": ["c", "b", "c", "a"],
@@ -350,7 +336,7 @@ class TestProcessTrain(TestPluginBase):
 
         # Assert
         self._assert_called_with_df(mock_aggregate_features, ft, None, self.tax)
-        self._assert_called_with_df(mock_transform_features, ft, None)
+        self._assert_called_with_df(mock_transform_features, ft, None, False)
         self._assert_called_with_df(
             mock_split_data_by_host,
             self.train_val[[self.host_id, self.target] + ls_ft],

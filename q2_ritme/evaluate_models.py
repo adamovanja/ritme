@@ -133,7 +133,9 @@ class TunedModel:
 
     def transform(self, data):
         transformed = transform_microbial_features(
-            data, self.data_config["data_transform"]
+            data,
+            self.data_config["data_transform"],
+            self.data_config["data_alr_denom_idx"],
         )
         if isinstance(self.model, xgb.core.Booster):
             return xgb.DMatrix(transformed)
