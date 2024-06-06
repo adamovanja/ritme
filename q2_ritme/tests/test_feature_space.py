@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal
+from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
 from scipy.stats.mstats import gmean
 from skbio import TreeNode
@@ -23,6 +24,10 @@ from q2_ritme.feature_space.aggregate_features import (
     aggregate_ft_by_taxonomy,
     aggregate_microbial_features,
     extract_taxonomic_entity,
+)
+from q2_ritme.feature_space.select_features import (
+    find_features_to_group_by_abundance,
+    find_features_to_group_by_variance,
 )
 from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
@@ -292,6 +297,53 @@ class TestAggregateMicrobialFeatures(TestPluginBase):
         obs_ft = aggregate_microbial_features(self.ft, None, self.tax)
 
         assert_frame_equal(exp_ft, obs_ft)
+
+
+class TestSelectMicrobialFeatures(TestPluginBase):
+    package = "q2_ritme.tests"
+
+    def setUp(self):
+        super().setUp()
+        self.ft = pd.DataFrame(
+            {
+                "F1": [1, 2, 5],
+                "F2": [2, 5, 0],
+                "F3": [9, 9, 9],
+                "F4": [10, 10, 10],
+            }
+        )
+
+    @parameterized.expand(
+        [(1, ["F2", "F1"]), (2, ["F2", "F1"]), (3, ["F2"]), (4, ["F2"])]
+    )
+    def test_find_features_to_group_abundance(self, i, expected_features):
+        features_to_group = find_features_to_group_by_abundance(self.ft, i)
+        self.assertEqual(features_to_group, expected_features)
+        # for IDE test verification or debugging:
+        # def test_find_features_to_group_abundance(self):
+        #     i = 4
+        #     features_to_group = find_features_to_group_by_abundance(self.ft, i)
+
+        #     # Assert
+        #     self.assertEqual(features_to_group, [])
+
+    @parameterized.expand(
+        [
+            (1, ["F3", "F4", "F1"]),
+            (2, ["F3", "F4", "F1"]),
+            (3, ["F3", "F4"]),
+            (4, ["F3", "F4"]),
+        ]
+    )
+    def test_find_features_to_group_variance(self, i, expected_features):
+        features_to_group = find_features_to_group_by_variance(self.ft, i)
+        self.assertEqual(features_to_group, expected_features)
+        # def test_find_features_to_group_variance(self):
+        #     i = 3
+        #     features_to_group = find_features_to_group_by_variance(self.ft, i)
+
+        #     # Assert
+        #     self.assertEqual(features_to_group, ["F1", "F2"])
 
 
 class TestProcessTrain(TestPluginBase):
