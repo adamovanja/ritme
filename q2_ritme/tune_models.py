@@ -165,7 +165,9 @@ def run_trials(
 
     # Check all trials & check for error status
     if result.num_errors > 0:
-        raise RuntimeError(f"Some trials encountered these errors {result.errors}")
+        raise RuntimeError(
+            "Some trials encountered errors see above for reported ray tune errors"
+        )
 
     return result
 
