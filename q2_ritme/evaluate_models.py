@@ -15,7 +15,8 @@ from sklearn.metrics import mean_squared_error
 from q2_ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
 )
-from q2_ritme.feature_space.transform_features import transform_features
+from q2_ritme.feature_space.aggregate_features import aggregate_microbial_features
+from q2_ritme.feature_space.transform_features import transform_microbial_features
 from q2_ritme.model_space.static_trainables import NeuralNet
 
 plt.rcParams.update({"font.family": "DejaVu Sans"})
@@ -107,19 +108,31 @@ def get_model(model_type: str, result) -> Any:
     return model
 
 
+def get_taxonomy(result) -> pd.DataFrame:
+    trial_dir = result.path
+    taxonomy_path = os.path.join(trial_dir, "taxonomy.pkl")
+    return load(taxonomy_path)
+
+
 def get_data_processing(result) -> str:
     config_data = {k: v for k, v in result.config.items() if k.startswith("data_")}
     return config_data
 
 
 class TunedModel:
-    def __init__(self, model, data_config, path):
+    def __init__(self, model, data_config, tax, path):
         self.model = model
         self.data_config = data_config
+        self.tax = tax
         self.path = path
 
+    def aggregate(self, data):
+        return aggregate_microbial_features(
+            data, self.data_config["data_aggregation"], self.tax
+        )
+
     def transform(self, data):
-        transformed = transform_features(
+        transformed = transform_microbial_features(
             data,
             self.data_config["data_transform"],
             self.data_config["data_alr_denom_idx"],
@@ -132,7 +145,8 @@ class TunedModel:
             return transformed.values
 
     def predict(self, data):
-        transformed = self.transform(data)
+        aggregated = self.aggregate(data)
+        transformed = self.transform(aggregated)
         if isinstance(self.model, NeuralNet):
             with torch.no_grad():
                 if self.model.nn_type == "regression":
@@ -165,9 +179,12 @@ def retrieve_best_models(result_dic):
 
         best_model = get_model(model_type, best_result)
         best_data_proc = get_data_processing(best_result)
+        best_tax = get_taxonomy(best_result)
         best_path = best_result.path
 
-        best_model_dic[model_type] = TunedModel(best_model, best_data_proc, best_path)
+        best_model_dic[model_type] = TunedModel(
+            best_model, best_data_proc, best_tax, best_path
+        )
     return best_model_dic
 
 

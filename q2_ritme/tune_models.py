@@ -165,7 +165,9 @@ def run_trials(
 
     # Check all trials & check for error status
     if result.num_errors > 0:
-        raise RuntimeError(f"Some trials encountered these errors {result.errors}")
+        raise RuntimeError(
+            "Some trials encountered errors see above for reported ray tune errors"
+        )
 
     return result
 
@@ -193,7 +195,7 @@ def run_all_trials(
     fully_reproducible: bool = False,
 ) -> dict:
     results_all = {}
-    model_search_space = ss.get_search_space(train_val)
+    model_search_space = ss.get_search_space(train_val, tax)
 
     # if tax + phylogeny empty we can't run trac
     if (tax.empty or tree_phylo.children == []) and "trac" in model_types:
