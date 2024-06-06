@@ -54,6 +54,7 @@ def presence_absence(feat: pd.DataFrame) -> np.ndarray:
 def transform_microbial_features(
     feat: pd.DataFrame,
     method: str,
+    denom_idx: int = None,
     pseudocount: float = PSEUDOCOUNT,
 ) -> pd.DataFrame:
     """Transform features with specified `method`."""
@@ -77,7 +78,6 @@ def transform_microbial_features(
 
     # transform
     if method == "alr":
-        denom_idx = _find_most_nonzero_feature_idx(feat)
         feat_trans = method_map[method](feat, denom_idx)
         feat_trans = feat_trans.add_prefix(f"{method}_")
     elif method is None:

@@ -5,9 +5,7 @@ def get_data_eng_space(train_val, tax):
     return {
         # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options in data_transform * nb of model types
-        "data_transform": tune.grid_search(
-            [None]
-        ),  #  todo: adjust, "clr", "ilr", "alr", "pa"]),
+        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
         # if tax is not empty set data_aggregation options
         "data_aggregation": tune.grid_search(
             [None, "tax_class", "tax_order", "tax_family", "tax_genus"]

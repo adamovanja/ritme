@@ -165,7 +165,7 @@ class TestTransformMicrobialFeatures(TestPluginBase):
         exp_ft = exp_ft.add_prefix("alr_")
 
         # observed
-        obs_ft = transform_microbial_features(self.ft, "alr")
+        obs_ft = transform_microbial_features(self.ft, "alr", 0)
 
         assert_frame_equal(exp_ft, obs_ft)
 
