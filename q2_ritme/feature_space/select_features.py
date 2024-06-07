@@ -1,3 +1,4 @@
+import warnings
 from typing import Callable, List
 
 import numpy as np
@@ -35,27 +36,37 @@ def find_features_to_group_by_variance(
     return _find_features_to_group(feature_table, i, measure_func=lambda x: x.var())
 
 
-def select_microbial_features(feat, method, method_i):
+def select_microbial_features(feat, method, idx_threshold, ft_prefix):
     # todo: finish this function - this is WIP!
-    # if method_i larger than max index of feat.columns raise warning
-    if method_i > len(feat.columns):
+    # if idx_threshold larger than max index of feat.columns raise warning
+    if idx_threshold > len(feat.columns):
         Warning(
-            f"Selected method_i={method_i} is larger than number of features. So it is "
-            f"set to the max. possible value: {len(feat.columns)}."
+            f"Selected idx_threshold={idx_threshold} is larger than number of "
+            f"features. So it is set to the max. possible value: {len(feat.columns)}."
         )
-        method_i = len(feat.columns)
-
+        idx_threshold = len(feat.columns)
+    # todo: add warning when all features are grouped! --> verify when this
+    # could happen
     if method == "abundance":
-        group_ft_ls = find_features_to_group_by_abundance(feat, method_i)
+        group_ft_ls = find_features_to_group_by_abundance(feat, idx_threshold)
+        group_name = "_low_abun"
     elif method == "variance":
-        group_ft_ls = find_features_to_group_by_variance(feat, method_i)
+        group_ft_ls = find_features_to_group_by_variance(feat, idx_threshold)
+        group_name = "_low_var"
     else:
         raise ValueError(f"Unknown method: {method}")
 
     if len(group_ft_ls) == 1:
-        raise ValueError(f"No features to group found using method: {method}")
+        warnings.warn(
+            f"No features found to group using method: {method}. "
+            f"Returning original feature table."
+        )
+        feat_selected = feat.copy()
+    else:
+        feat_selected = feat.copy()
+        feat_selected[f"{ft_prefix}{group_name}"] = feat_selected[group_ft_ls].sum(
+            axis=1
+        )
+        feat_selected.drop(columns=group_ft_ls, inplace=True)
 
-    grouped_feat = feat[group_ft_ls].sum(axis=1)
-    # todo: append grouped features to non-grouped features
-    # todo: add new names to grouped features
-    return grouped_feat
+    return feat_selected

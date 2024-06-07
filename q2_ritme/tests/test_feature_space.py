@@ -28,6 +28,7 @@ from q2_ritme.feature_space.aggregate_features import (
 from q2_ritme.feature_space.select_features import (
     find_features_to_group_by_abundance,
     find_features_to_group_by_variance,
+    select_microbial_features,
 )
 from q2_ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
@@ -344,6 +345,35 @@ class TestSelectMicrobialFeatures(TestPluginBase):
 
         #     # Assert
         #     self.assertEqual(features_to_group, ["F1", "F2"])
+
+    def test_select_microbial_features_none_grouped(self):
+        with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
+            obs_ft = select_microbial_features(self.ft, "abundance", 4, "F")
+        assert_frame_equal(self.ft, obs_ft)
+
+    def test_select_microbial_features_abundance(self):
+        # expected
+        exp_ft = self.ft.copy()
+        exp_ft["F_low_abun"] = self.ft[["F1", "F2"]].sum(axis=1)
+        exp_ft.drop(columns=["F1", "F2"], inplace=True)
+
+        # observed
+        obs_ft = select_microbial_features(self.ft, "abundance", 2, "F")
+
+        assert_frame_equal(exp_ft, obs_ft)
+
+    def test_select_microbial_features_variance(self):
+        # expected
+        exp_ft = self.ft.copy()
+        ls_group = ["F3", "F4", "F1"]
+
+        exp_ft["F_low_var"] = self.ft[ls_group].sum(axis=1)
+        exp_ft.drop(columns=ls_group, inplace=True)
+
+        # observed
+        obs_ft = select_microbial_features(self.ft, "variance", 1, "F")
+
+        assert_frame_equal(exp_ft, obs_ft)
 
 
 class TestProcessTrain(TestPluginBase):

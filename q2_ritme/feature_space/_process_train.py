@@ -7,7 +7,9 @@ from q2_ritme.process_data import split_data_by_host
 
 
 def process_train(config, train_val, target, host_id, tax, seed_data):
-    microbial_ft_ls = [x for x in train_val if x.startswith("F")]
+    # todo: make this a adjustable variable
+    feat_prefix = "F"
+    microbial_ft_ls = [x for x in train_val if x.startswith(feat_prefix)]
     nonm_ft_ls = [x for x in train_val if x not in microbial_ft_ls]
 
     # AGGREGATE
@@ -16,6 +18,9 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
         config["data_aggregation"],
         tax,
     )
+
+    # SELECT
+    # todo: add select_microbial_features here
 
     # TRANSFORM
     if config["data_transform"] == "alr":
