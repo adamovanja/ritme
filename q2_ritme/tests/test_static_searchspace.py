@@ -10,13 +10,10 @@ class TestStaticSearchSpace(TestPluginBase):
 
     def setUp(self):
         super().setUp()
-        self.train_val = pd.DataFrame(
-            {"F1": [1, 2, 3], "F2": [4, 5, 6], "F3": [7, 8, 9]}
-        )
         self.tax = pd.DataFrame()
 
     def test_get_search_space(self):
-        search_space = ss.get_search_space(self.train_val, self.tax)
+        search_space = ss.get_search_space(self.tax)
 
         self.assertIsInstance(search_space, dict)
         self.assertIn("xgb", search_space)
@@ -28,7 +25,7 @@ class TestStaticSearchSpace(TestPluginBase):
 
     def test_get_data_eng_space_w_tax(self):
         tax = pd.DataFrame({"Taxon": ["Bacteria", "Firmicutes", "Clostridia"]})
-        data_eng_space = ss.get_data_eng_space(self.train_val, tax)
+        data_eng_space = ss.get_data_eng_space(tax)
 
         self.assertIsInstance(data_eng_space, dict)
         self.assertEqual(
@@ -51,11 +48,11 @@ class TestStaticSearchSpace(TestPluginBase):
         )
 
     def test_get_data_eng_space_empty_tax(self):
-        data_eng_space = ss.get_data_eng_space(self.train_val, self.tax)
+        data_eng_space = ss.get_data_eng_space(self.tax)
         self.assertEqual(data_eng_space["data_aggregation"], None)
 
     def test_get_linreg_space(self):
-        linreg_space = ss.get_linreg_space(self.train_val, self.tax)
+        linreg_space = ss.get_linreg_space(self.tax)
 
         self.assertIsInstance(linreg_space, dict)
         self.assertEqual(linreg_space["model"], "linreg")
@@ -65,7 +62,7 @@ class TestStaticSearchSpace(TestPluginBase):
         self.assertIn("l1_ratio", linreg_space)
 
     def test_get_trac_space(self):
-        trac_space = ss.get_trac_space(self.train_val, self.tax)
+        trac_space = ss.get_trac_space(self.tax)
 
         self.assertIsInstance(trac_space, dict)
         self.assertEqual(trac_space["model"], "trac")
@@ -73,7 +70,7 @@ class TestStaticSearchSpace(TestPluginBase):
         self.assertIn("lambda", trac_space)
 
     def test_get_rf_space(self):
-        rf_space = ss.get_rf_space(self.train_val, self.tax)
+        rf_space = ss.get_rf_space(self.tax)
 
         self.assertIsInstance(rf_space, dict)
         self.assertEqual(rf_space["model"], "rf")
@@ -87,7 +84,7 @@ class TestStaticSearchSpace(TestPluginBase):
         self.assertIn("bootstrap", rf_space)
 
     def test_get_xgb_space(self):
-        xgb_space = ss.get_xgb_space(self.train_val, self.tax)
+        xgb_space = ss.get_xgb_space(self.tax)
 
         self.assertIsInstance(xgb_space, dict)
         self.assertEqual(xgb_space["model"], "xgb")
@@ -99,7 +96,7 @@ class TestStaticSearchSpace(TestPluginBase):
         self.assertIn("eta", xgb_space)
 
     def test_get_nn_space(self):
-        nn_space = ss.get_nn_space(self.train_val, self.tax, "nn_reg")
+        nn_space = ss.get_nn_space(self.tax, "nn_reg")
 
         self.assertIsInstance(nn_space, dict)
         self.assertEqual(nn_space["model"], "nn_reg")

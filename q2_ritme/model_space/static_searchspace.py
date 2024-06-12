@@ -1,7 +1,7 @@
 from ray import tune
 
 
-def get_data_eng_space(train_val, tax):
+def get_data_eng_space(tax):
     return {
         # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options w gridsearch * nb of model types
@@ -16,8 +16,8 @@ def get_data_eng_space(train_val, tax):
     }
 
 
-def get_linreg_space(train_val, tax):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_linreg_space(tax):
+    data_eng_space = get_data_eng_space(tax)
     return dict(
         model="linreg",
         **data_eng_space,
@@ -32,8 +32,8 @@ def get_linreg_space(train_val, tax):
     )
 
 
-def get_rf_space(train_val, tax):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_rf_space(tax):
+    data_eng_space = get_data_eng_space(tax)
     return dict(
         model="rf",
         **data_eng_space,
@@ -49,8 +49,8 @@ def get_rf_space(train_val, tax):
     )
 
 
-def get_nn_space(train_val, tax, model_name):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_nn_space(tax, model_name):
+    data_eng_space = get_data_eng_space(tax)
     max_layers = 12
     nn_space = {
         # Sample random uniformly between [1,9] rounding to multiples of 3
@@ -66,8 +66,8 @@ def get_nn_space(train_val, tax, model_name):
     return dict(model=model_name, **data_eng_space, **nn_space)
 
 
-def get_xgb_space(train_val, tax):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_xgb_space(tax):
+    data_eng_space = get_data_eng_space(tax)
     return dict(
         model="xgb",
         **data_eng_space,
@@ -85,7 +85,7 @@ def get_xgb_space(train_val, tax):
     )
 
 
-def get_trac_space(train_val, tax):
+def get_trac_space(tax):
     # no feature_transformation to be used for trac
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
@@ -106,13 +106,13 @@ def get_trac_space(train_val, tax):
     )
 
 
-def get_search_space(train_val, tax):
+def get_search_space(tax):
     return {
-        "xgb": get_xgb_space(train_val, tax),
-        "nn_reg": get_nn_space(train_val, tax, "nn_reg"),
-        "nn_class": get_nn_space(train_val, tax, "nn_class"),
-        "nn_corn": get_nn_space(train_val, tax, "nn_corn"),
-        "linreg": get_linreg_space(train_val, tax),
-        "rf": get_rf_space(train_val, tax),
-        "trac": get_trac_space(train_val, tax),
+        "xgb": get_xgb_space(tax),
+        "nn_reg": get_nn_space(tax, "nn_reg"),
+        "nn_class": get_nn_space(tax, "nn_class"),
+        "nn_corn": get_nn_space(tax, "nn_corn"),
+        "linreg": get_linreg_space(tax),
+        "rf": get_rf_space(tax),
+        "trac": get_trac_space(tax),
     }
