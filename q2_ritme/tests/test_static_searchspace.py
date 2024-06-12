@@ -32,25 +32,38 @@ class TestStaticSearchSpace(TestPluginBase):
 
         self.assertIsInstance(data_eng_space, dict)
         self.assertEqual(
-            data_eng_space["data_transform"],
-            tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
-        )
-        self.assertEqual(
             data_eng_space["data_aggregation"],
             tune.grid_search(
                 [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
             ),
         )
-
-    def test_get_data_eng_space_empty_tax(self):
-        data_eng_space = ss.get_data_eng_space(self.train_val, self.tax)
-
-        self.assertIsInstance(data_eng_space, dict)
+        self.assertEqual(
+            data_eng_space["data_selection"],
+            tune.grid_search([None, "abundance_ith", "variance_ith"]),
+        )
         self.assertEqual(
             data_eng_space["data_transform"],
             tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
         )
+
+    def test_get_data_eng_space_empty_tax(self):
+        data_eng_space = ss.get_data_eng_space(self.train_val, self.tax)
         self.assertEqual(data_eng_space["data_aggregation"], None)
+
+    def test_get_data_eng_space_selection_i_none(self):
+        data_eng_space = ss.get_data_eng_space(self.train_val, self.tax)
+
+        config = {"data_selection": None}
+        data_selection_i = data_eng_space["data_selection_i"].func(config)
+        self.assertIsNone(data_selection_i)
+
+    def test_get_data_eng_space_selection_i_not_none(self):
+        data_eng_space = ss.get_data_eng_space(self.train_val, self.tax)
+
+        config = {"data_selection": "abundance_ith"}
+        data_selection_i = data_eng_space["data_selection_i"].func(config)
+        self.assertIsInstance(data_selection_i, tune.search.sample.Categorical)
+        self.assertEqual(data_selection_i.categories, [1, 3, 10])
 
     def test_get_linreg_space(self):
         linreg_space = ss.get_linreg_space(self.train_val, self.tax)

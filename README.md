@@ -39,6 +39,11 @@ If you are using SLURM and get the following error returned: "RuntimeError: can'
 it is probably caused by your hardware. Try decreasing the CPUs allocated to the job and/or decrease the variable `max_concurrent_trials` in `tune_models.py`.
 If you are using SLURM and your error message contains this: "The process is killed by SIGKILL by OOM killer due to high memory usage", you should increase the assigned memory per CPU (`--mem-per-cpu`).
 
+## Code test coverage
+To run test coverage with Code Gutters in VScode run:
+````
+pytest --cov=q2_ritme q2_ritme/tests/ --cov-report=xml:coverage.xml
+````
 
 ## Call graphs
 To create a call graph for all functions in the package, run the following commands:

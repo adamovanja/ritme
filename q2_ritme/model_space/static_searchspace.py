@@ -4,14 +4,21 @@ from ray import tune
 def get_data_eng_space(train_val, tax):
     return {
         # grid search specified here checks all options: so new nb_trials=
-        # num_trials * nb of options in data_transform * nb of model types
-        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
-        # if tax is not empty set data_aggregation options
+        # num_trials * nb of options w gridsearch * nb of model types
         "data_aggregation": tune.grid_search(
             [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
         )
         if not tax.empty
         else None,
+        "data_selection": tune.grid_search([None, "abundance_ith", "variance_ith"]),
+        "data_selection_i": tune.sample_from(
+            lambda config: tune.choice(
+                [1, 3, 10]
+            )  # tune.randint(1, len(train_val.columns))
+            if config["data_selection"]
+            else None
+        ),
+        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
     }
 
 
@@ -88,7 +95,12 @@ def get_trac_space(train_val, tax):
     # no feature_transformation to be used for trac
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
-    data_eng_space_trac = {"data_transform": None, "data_aggregation": None}
+    data_eng_space_trac = {
+        "data_transform": None,
+        "data_aggregation": None,
+        "data_selection": None,
+        "data_selection_i": None,
+    }
     return dict(
         model="trac",
         **data_eng_space_trac,

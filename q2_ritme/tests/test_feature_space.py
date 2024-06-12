@@ -26,8 +26,8 @@ from q2_ritme.feature_space.aggregate_features import (
     extract_taxonomic_entity,
 )
 from q2_ritme.feature_space.select_features import (
-    find_features_to_group_by_abundance,
-    find_features_to_group_by_variance,
+    find_features_to_group_by_abundance_ith,
+    find_features_to_group_by_variance_ith,
     select_microbial_features,
 )
 from q2_ritme.feature_space.transform_features import (
@@ -317,8 +317,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
     @parameterized.expand(
         [(1, ["F2", "F1"]), (2, ["F2", "F1"]), (3, ["F2"]), (4, ["F2"])]
     )
-    def test_find_features_to_group_abundance(self, i, expected_features):
-        features_to_group = find_features_to_group_by_abundance(self.ft, i)
+    def test_find_features_to_group_abundance_ith(self, i, expected_features):
+        features_to_group = find_features_to_group_by_abundance_ith(self.ft, i)
         self.assertEqual(features_to_group, expected_features)
         # for IDE test verification or debugging:
         # def test_find_features_to_group_abundance(self):
@@ -336,8 +336,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
             (4, ["F3", "F4"]),
         ]
     )
-    def test_find_features_to_group_variance(self, i, expected_features):
-        features_to_group = find_features_to_group_by_variance(self.ft, i)
+    def test_find_features_to_group_variance_ith(self, i, expected_features):
+        features_to_group = find_features_to_group_by_variance_ith(self.ft, i)
         self.assertEqual(features_to_group, expected_features)
         # def test_find_features_to_group_variance(self):
         #     i = 3
@@ -348,21 +348,31 @@ class TestSelectMicrobialFeatures(TestPluginBase):
 
     def test_select_microbial_features_none_grouped(self):
         with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
-            obs_ft = select_microbial_features(self.ft, "abundance", 4, "F")
+            obs_ft = select_microbial_features(self.ft, "abundance_ith", 4, "F")
         assert_frame_equal(self.ft, obs_ft)
 
-    def test_select_microbial_features_abundance(self):
+    def test_select_microbial_features_i_too_large(self):
+        with self.assertWarnsRegex(
+            Warning, r"Selected i=1000 is larger than number of features.*"
+        ):
+            select_microbial_features(self.ft, "abundance_ith", 1000, "F")
+
+    def test_select_microbial_features_unknown_method(self):
+        with self.assertRaisesRegex(ValueError, r"Unknown method: FancyMethod."):
+            select_microbial_features(self.ft, "FancyMethod", 1, "F")
+
+    def test_select_microbial_features_abundance_ith(self):
         # expected
         exp_ft = self.ft.copy()
         exp_ft["F_low_abun"] = self.ft[["F1", "F2"]].sum(axis=1)
         exp_ft.drop(columns=["F1", "F2"], inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "abundance", 2, "F")
+        obs_ft = select_microbial_features(self.ft, "abundance_ith", 2, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
-    def test_select_microbial_features_variance(self):
+    def test_select_microbial_features_variance_ith(self):
         # expected
         exp_ft = self.ft.copy()
         ls_group = ["F3", "F4", "F1"]
@@ -371,7 +381,7 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "variance", 1, "F")
+        obs_ft = select_microbial_features(self.ft, "variance_ith", 1, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -381,7 +391,12 @@ class TestProcessTrain(TestPluginBase):
 
     def setUp(self):
         super().setUp()
-        self.config = {"data_transform": None, "data_aggregation": None}
+        self.config = {
+            "data_transform": None,
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_i": None,
+        }
         self.train_val = pd.DataFrame(
             {
                 "host_id": ["c", "b", "c", "a"],
@@ -405,22 +420,28 @@ class TestProcessTrain(TestPluginBase):
                 assert expected == actual, f"Expected {expected}, but got {actual}"
 
     @patch("q2_ritme.feature_space._process_train.aggregate_microbial_features")
+    @patch("q2_ritme.feature_space._process_train.select_microbial_features")
     @patch("q2_ritme.feature_space._process_train.transform_microbial_features")
     @patch("q2_ritme.feature_space._process_train.split_data_by_host")
-    def test_process_train(
-        self, mock_split_data_by_host, mock_transform_features, mock_aggregate_features
+    def test_process_train_no_feature_engineering(
+        self,
+        mock_split_data_by_host,
+        mock_transform_features,
+        mock_select_features,
+        mock_aggregate_features,
     ):
-        # Arrange
+        # only no_feature_engineering is tested here since all individual
+        # functions were tested above
         ls_ft = ["F0", "F1"]
         ft = self.train_val[ls_ft]
         mock_aggregate_features.return_value = ft
+        mock_select_features.return_value = ft
         mock_transform_features.return_value = ft
         mock_split_data_by_host.return_value = (
             self.train_val.iloc[:2, :],
             self.train_val.iloc[2:, :],
         )
 
-        # Act
         X_train, y_train, X_val, y_val, ft_col = process_train(
             self.config,
             self.train_val,
@@ -432,6 +453,7 @@ class TestProcessTrain(TestPluginBase):
 
         # Assert
         self._assert_called_with_df(mock_aggregate_features, ft, None, self.tax)
+        self._assert_called_with_df(mock_select_features, ft, None, None, "F")
         self._assert_called_with_df(mock_transform_features, ft, None)
         self._assert_called_with_df(
             mock_split_data_by_host,
