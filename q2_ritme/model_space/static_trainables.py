@@ -17,7 +17,7 @@ from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
-from ray import tune
+from ray import train, tune
 from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
@@ -109,6 +109,7 @@ def _report_results_manually(
             "rmse_val": score_val,
             "rmse_train": score_train,
             "model_path": model_path,
+            "nb_features": X_train.shape[1],
         }
     )
     return None
@@ -186,6 +187,9 @@ def _report_results_manually_trac(
             "rmse_val": score_val,
             "rmse_train": score_train,
             "model_path": model_path,
+            "nb_features": df_alpha_with_labels[
+                df_alpha_with_labels["alpha"] != 0.0
+            ].shape[0],
         }
     )
     return None
@@ -393,6 +397,31 @@ def load_data(X_train, y_train, X_val, y_val, y_type, config):
     return train_loader, val_loader
 
 
+class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
+    def __init__(
+        self,
+        metrics: Dict[str, str],
+        filename: str = "checkpoint",
+        on: str = "validation_end",
+        nb_features: int = None,
+    ):
+        super().__init__(metrics=metrics, filename=filename, on=on)
+        self.nb_features = nb_features
+
+    def _handle(self, trainer: Trainer, pl_module: LightningModule):
+        # CUSTOM: includes also nb_features in report
+        if trainer.sanity_checking:
+            return
+
+        report_dict = self._get_report_dict(trainer, pl_module)
+        report_dict["nb_features"] = self.nb_features
+        if not report_dict:
+            return
+
+        with self._get_checkpoint(trainer) as checkpoint:
+            train.report(report_dict, checkpoint=checkpoint)
+
+
 def train_nn(
     config,
     train_val,
@@ -465,7 +494,7 @@ def train_nn(
             dirpath=checkpoint_dir,  # Automatically set dirpath
             filename="{epoch}-{val_rmse:.2f}",
         ),
-        TuneReportCheckpointCallback(
+        NNTuneReportCheckpointCallback(
             metrics={
                 "rmse_val": "val_rmse",
                 "rmse_train": "train_rmse",
@@ -474,6 +503,7 @@ def train_nn(
             },
             filename="checkpoint",
             on="validation_end",
+            nb_features=X_train.shape[1],
         ),
     ]
 
@@ -534,6 +564,11 @@ def train_nn_corn(
     )
 
 
+def add_nb_features_to_results(results, nb_features):
+    results["nb_features"] = nb_features
+    return results
+
+
 def train_xgb(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -576,8 +611,14 @@ def train_xgb(
     # models in Ray Tune
     checkpoint_callback = xgb_cc(
         # tune:xgboost
-        metrics={"rmse_train": "train-rmse", "rmse_val": "val-rmse"},
+        metrics={
+            "rmse_train": "train-rmse",
+            "rmse_val": "val-rmse",
+        },
         filename="checkpoint",
+        results_postprocessing_fn=lambda results: add_nb_features_to_results(
+            results, X_train.shape[1]
+        ),
     )
     # todo: add test set here to be tracked as well
 
