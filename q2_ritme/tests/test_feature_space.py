@@ -395,7 +395,6 @@ class TestProcessTrain(TestPluginBase):
             "data_transform": None,
             "data_aggregation": None,
             "data_selection": None,
-            "data_selection_i": None,
         }
         self.train_val = pd.DataFrame(
             {

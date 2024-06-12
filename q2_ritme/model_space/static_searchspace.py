@@ -11,13 +11,7 @@ def get_data_eng_space(train_val, tax):
         if not tax.empty
         else None,
         "data_selection": tune.grid_search([None, "abundance_ith", "variance_ith"]),
-        "data_selection_i": tune.sample_from(
-            lambda config: tune.choice(
-                [1, 3, 10]
-            )  # tune.randint(1, len(train_val.columns))
-            if config["data_selection"]
-            else None
-        ),
+        "data_selection_i": tune.choice([1, 3, 10]),
         "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
     }
 
