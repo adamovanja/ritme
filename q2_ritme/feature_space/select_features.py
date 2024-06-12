@@ -37,7 +37,9 @@ def find_features_to_group_by_variance_ith(
 
 
 def select_microbial_features(feat, method, i, ft_prefix):
-    # todo: finish this function - this is WIP!
+    if method is None:
+        # return original feature table
+        return feat.copy()
     # if i larger than max index of feat.columns raise warning
     if i > len(feat.columns):
         warnings.warn(
