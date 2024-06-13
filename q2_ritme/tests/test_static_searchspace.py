@@ -43,6 +43,8 @@ class TestStaticSearchSpace(TestPluginBase):
                     "variance_ith",
                     "abundance_topi",
                     "variance_topi",
+                    "abundance_quantile",
+                    "variance_quantile",
                 ]
             ),
         )

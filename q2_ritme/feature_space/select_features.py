@@ -74,12 +74,51 @@ def find_features_to_group_by_variance_topi(
     )
 
 
-def select_microbial_features(feat, method, i, ft_prefix):
+def _find_features_to_group_quantile(
+    feature_table: pd.DataFrame,
+    q: float,
+    measure_func: Callable[[pd.DataFrame], pd.Series],
+) -> List[str]:
+    """
+    Helper function to find features to group based on the specified quantile of
+    the given measure. Returns the features below the quantile as a list.
+    """
+    measure_values = measure_func(feature_table)
+    quantile_value = measure_values.quantile(q)
+    features_to_group = measure_values[measure_values < quantile_value].index.tolist()
+    return features_to_group
+
+
+def find_features_to_group_by_abundance_quantile(
+    feature_table: pd.DataFrame, q: float
+) -> List[str]:
+    """
+    Finds features to sum based on the quantile of abundance. Returns the
+    features with abundance lower than the specified quantile.
+    """
+    return _find_features_to_group_quantile(
+        feature_table, q, measure_func=lambda x: x.sum()
+    )
+
+
+def find_features_to_group_by_variance_quantile(
+    feature_table: pd.DataFrame, q: float
+) -> List[str]:
+    """
+    Finds features to sum based on the quantile of variance. Returns the
+    features with variance lower than the specified quantile.
+    """
+    return _find_features_to_group_quantile(
+        feature_table, q, measure_func=lambda x: x.var()
+    )
+
+
+def select_microbial_features(feat, method, i, q, ft_prefix):
     if method is None:
         # return original feature table
         return feat.copy()
     # if i larger than max index of feat.columns raise warning
-    if i > len(feat.columns):
+    if i is not None and i > len(feat.columns):
         warnings.warn(
             f"Selected i={i} is larger than number of "
             f"features. So it is set to the max. possible value: {len(feat.columns)}."
@@ -97,6 +136,10 @@ def select_microbial_features(feat, method, i, ft_prefix):
         group_ft_ls = find_features_to_group_by_abundance_topi(feat, i)
     elif method == "variance_topi":
         group_ft_ls = find_features_to_group_by_variance_topi(feat, i)
+    elif method == "abundance_quantile":
+        group_ft_ls = find_features_to_group_by_abundance_quantile(feat, q)
+    elif method == "variance_quantile":
+        group_ft_ls = find_features_to_group_by_variance_quantile(feat, q)
     else:
         raise ValueError(f"Unknown method: {method}.")
 

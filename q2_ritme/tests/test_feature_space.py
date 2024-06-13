@@ -27,8 +27,10 @@ from q2_ritme.feature_space.aggregate_features import (
 )
 from q2_ritme.feature_space.select_features import (
     find_features_to_group_by_abundance_ith,
+    find_features_to_group_by_abundance_quantile,
     find_features_to_group_by_abundance_topi,
     find_features_to_group_by_variance_ith,
+    find_features_to_group_by_variance_quantile,
     find_features_to_group_by_variance_topi,
     select_microbial_features,
 )
@@ -362,24 +364,34 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         #     # Assert
         #     self.assertEqual(features_to_group, ["F1", "F2"])
 
+    @parameterized.expand([(0.5, ["F1", "F2"]), (0.9, ["F1", "F2", "F3"])])
+    def test_find_features_to_group_abundance_quantile(self, q, expected_features):
+        features_to_group = find_features_to_group_by_abundance_quantile(self.ft, q)
+        self.assertEqual(features_to_group, expected_features)
+
+    @parameterized.expand([(0.5, ["F3", "F4"]), (0.9, ["F1", "F3", "F4"])])
+    def test_find_features_to_group_variance_quantile(self, q, expected_features):
+        features_to_group = find_features_to_group_by_variance_quantile(self.ft, q)
+        self.assertEqual(features_to_group, expected_features)
+
     def test_select_microbial_features_method_none(self):
-        obs_ft = select_microbial_features(self.ft, None, None, "F")
+        obs_ft = select_microbial_features(self.ft, None, None, None, "F")
         assert_frame_equal(self.ft, obs_ft)
 
     def test_select_microbial_features_none_grouped(self):
         with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
-            obs_ft = select_microbial_features(self.ft, "abundance_ith", 4, "F")
+            obs_ft = select_microbial_features(self.ft, "abundance_ith", 4, None, "F")
         assert_frame_equal(self.ft, obs_ft)
 
     def test_select_microbial_features_i_too_large(self):
         with self.assertWarnsRegex(
             Warning, r"Selected i=1000 is larger than number of features.*"
         ):
-            select_microbial_features(self.ft, "abundance_ith", 1000, "F")
+            select_microbial_features(self.ft, "abundance_ith", 1000, None, "F")
 
     def test_select_microbial_features_unknown_method(self):
         with self.assertRaisesRegex(ValueError, r"Unknown method: FancyMethod."):
-            select_microbial_features(self.ft, "FancyMethod", 1, "F")
+            select_microbial_features(self.ft, "FancyMethod", 1, None, "F")
 
     def test_select_microbial_features_abundance_ith(self):
         # expected
@@ -388,7 +400,7 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=["F1", "F2"], inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "abundance_ith", 2, "F")
+        obs_ft = select_microbial_features(self.ft, "abundance_ith", 2, None, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -401,7 +413,7 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "variance_ith", 1, "F")
+        obs_ft = select_microbial_features(self.ft, "variance_ith", 1, None, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -413,7 +425,7 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "abundance_topi", 2, "F")
+        obs_ft = select_microbial_features(self.ft, "abundance_topi", 2, None, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -426,7 +438,34 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "variance_topi", 1, "F")
+        obs_ft = select_microbial_features(self.ft, "variance_topi", 1, None, "F")
+
+        assert_frame_equal(exp_ft, obs_ft)
+
+    def test_select_microbial_features_abundance_quantile(self):
+        # expected
+        exp_ft = self.ft.copy()
+        ls_group = ["F1", "F2"]
+        exp_ft["F_low_abun"] = self.ft[ls_group].sum(axis=1)
+        exp_ft.drop(columns=ls_group, inplace=True)
+
+        # observed
+        obs_ft = select_microbial_features(
+            self.ft, "abundance_quantile", None, 0.5, "F"
+        )
+
+        assert_frame_equal(exp_ft, obs_ft)
+
+    def test_select_microbial_features_variance_quantile(self):
+        # expected
+        exp_ft = self.ft.copy()
+        ls_group = ["F3", "F4"]
+
+        exp_ft["F_low_var"] = self.ft[ls_group].sum(axis=1)
+        exp_ft.drop(columns=ls_group, inplace=True)
+
+        # observed
+        obs_ft = select_microbial_features(self.ft, "variance_quantile", None, 0.5, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -497,7 +536,7 @@ class TestProcessTrain(TestPluginBase):
 
         # Assert
         self._assert_called_with_df(mock_aggregate_features, ft, None, self.tax)
-        self._assert_called_with_df(mock_select_features, ft, None, None, "F")
+        self._assert_called_with_df(mock_select_features, ft, None, None, None, "F")
         self._assert_called_with_df(mock_transform_features, ft, None)
         self._assert_called_with_df(
             mock_split_data_by_host,

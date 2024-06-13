@@ -25,9 +25,14 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     # adjust used data_selection_i to actual None in case there is no selection
     if config["data_selection"] is None:
         config["data_selection_i"] = None
+        config["data_selection_q"] = None
 
     ft_selected = select_microbial_features(
-        ft_agg, config["data_selection"], config["data_selection_i"], feat_prefix
+        ft_agg,
+        config["data_selection"],
+        config["data_selection_i"],
+        config["data_selection_q"],
+        feat_prefix,
     )
     print(f"Number of features after selection: {len(ft_selected.columns)}")
 

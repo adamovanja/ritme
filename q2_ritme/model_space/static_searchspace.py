@@ -6,8 +6,11 @@ def get_data_eng_space(tax, test_mode=False):
         # note: test mode can be adjusted to whatever one wants to test
         return {
             "data_aggregation": None,
-            "data_selection": tune.grid_search(["abundance_topi", "variance_topi"]),
+            "data_selection": tune.grid_search(
+                ["abundance_quantile", "variance_quantile"]
+            ),
             "data_selection_i": tune.choice([1, 5]),
+            "data_selection_q": tune.choice([0.5, 0.75]),
             "data_transform": None,
         }
     return {
@@ -19,10 +22,19 @@ def get_data_eng_space(tax, test_mode=False):
         if not tax.empty
         else None,
         "data_selection": tune.grid_search(
-            [None, "abundance_ith", "variance_ith", "abundance_topi", "variance_topi"]
+            [
+                None,
+                "abundance_ith",
+                "variance_ith",
+                "abundance_topi",
+                "variance_topi",
+                "abundance_quantile",
+                "variance_quantile",
+            ]
         ),
-        # todo: adjust the i range to more sophisticated quantities
+        # todo: adjust the i and q ranges to more sophisticated quantities
         "data_selection_i": tune.choice([1, 3, 5, 10]),
+        "data_selection_q": tune.choice([0.5, 0.75, 0.9, 0.95]),
         "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
     }
 
