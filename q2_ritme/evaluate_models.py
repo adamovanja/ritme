@@ -16,6 +16,7 @@ from q2_ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
 )
 from q2_ritme.feature_space.aggregate_features import aggregate_microbial_features
+from q2_ritme.feature_space.select_features import select_microbial_features
 from q2_ritme.feature_space.transform_features import transform_microbial_features
 from q2_ritme.model_space.static_trainables import NeuralNet
 
@@ -131,6 +132,14 @@ class TunedModel:
             data, self.data_config["data_aggregation"], self.tax
         )
 
+    def select(self, data):
+        return select_microbial_features(
+            data,
+            self.data_config["data_selection"],
+            self.data_config["data_selection_i"],
+            "F",
+        )
+
     def transform(self, data):
         transformed = transform_microbial_features(
             data,
@@ -146,7 +155,8 @@ class TunedModel:
 
     def predict(self, data):
         aggregated = self.aggregate(data)
-        transformed = self.transform(aggregated)
+        selected = self.select(aggregated)
+        transformed = self.transform(selected)
         if isinstance(self.model, NeuralNet):
             with torch.no_grad():
                 if self.model.nn_type == "regression":

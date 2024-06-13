@@ -25,5 +25,6 @@
   "seed_data": 12,
   "seed_model": 12,
   "target": "age_months",
+  "test_mode": false,
   "train_size": 0.8
 }

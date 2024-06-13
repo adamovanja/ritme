@@ -36,11 +36,19 @@ class TestStaticSearchSpace(TestPluginBase):
         )
         self.assertEqual(
             data_eng_space["data_selection"],
-            tune.grid_search([None, "abundance_ith", "variance_ith"]),
+            tune.grid_search(
+                [
+                    None,
+                    "abundance_ith",
+                    "variance_ith",
+                    "abundance_topi",
+                    "variance_topi",
+                ]
+            ),
         )
         self.assertEqual(
             data_eng_space["data_selection_i"].categories,
-            [1, 3, 10],
+            [1, 3, 5, 10],
         )
         self.assertEqual(
             data_eng_space["data_transform"],
@@ -50,6 +58,12 @@ class TestStaticSearchSpace(TestPluginBase):
     def test_get_data_eng_space_empty_tax(self):
         data_eng_space = ss.get_data_eng_space(self.tax)
         self.assertEqual(data_eng_space["data_aggregation"], None)
+
+        # todo: add this test once test mode is more clearly defined
+        # def test_get_data_eng_space_test_mode(self):
+        #     data_eng_space = ss.get_data_eng_space(self.tax, True)
+        #     for key in ["data_aggregation", "data_selection", "data_transform"]:
+        #         self.assertEqual(data_eng_space[key], None)
 
     def test_get_linreg_space(self):
         linreg_space = ss.get_linreg_space(self.tax)

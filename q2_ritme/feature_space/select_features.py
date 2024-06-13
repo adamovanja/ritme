@@ -36,6 +36,44 @@ def find_features_to_group_by_variance_ith(
     return _find_features_to_group_ith(feature_table, i, measure_func=lambda x: x.var())
 
 
+def _find_features_to_group_topi(
+    feature_table: pd.DataFrame,
+    i: int,
+    measure_func: Callable[[pd.DataFrame], pd.Series],
+) -> List[str]:
+    """
+    Helper function to find features to group, excluding the top i features
+    based on the given measure. Returns the remaining features as a list.
+    """
+    sorted_values = measure_func(feature_table).sort_values(ascending=False)
+    features_to_group = sorted_values.index[i:].tolist()
+    return features_to_group
+
+
+def find_features_to_group_by_abundance_topi(
+    feature_table: pd.DataFrame, i: int
+) -> List[str]:
+    """
+    Finds features to sum, excluding the top i most abundant features. Returns
+    the remaining features as a list.
+    """
+    return _find_features_to_group_topi(
+        feature_table, i, measure_func=lambda x: x.sum()
+    )
+
+
+def find_features_to_group_by_variance_topi(
+    feature_table: pd.DataFrame, i: int
+) -> List[str]:
+    """
+    Finds features to sum, excluding the top i most variant features. Returns
+    the remaining features as a list.
+    """
+    return _find_features_to_group_topi(
+        feature_table, i, measure_func=lambda x: x.var()
+    )
+
+
 def select_microbial_features(feat, method, i, ft_prefix):
     if method is None:
         # return original feature table
@@ -47,14 +85,18 @@ def select_microbial_features(feat, method, i, ft_prefix):
             f"features. So it is set to the max. possible value: {len(feat.columns)}."
         )
         i = len(feat.columns)
-    # todo: add warning when all features are grouped! --> verify when this
-    # could happen
+    # todo: add warning when all features are grouped! --> verify when/if this
+    # todo: could happen
+    group_name = "_low_abun" if method.startswith("abundance") else "_low_var"
+
     if method == "abundance_ith":
         group_ft_ls = find_features_to_group_by_abundance_ith(feat, i)
-        group_name = "_low_abun"
     elif method == "variance_ith":
         group_ft_ls = find_features_to_group_by_variance_ith(feat, i)
-        group_name = "_low_var"
+    elif method == "abundance_topi":
+        group_ft_ls = find_features_to_group_by_abundance_topi(feat, i)
+    elif method == "variance_topi":
+        group_ft_ls = find_features_to_group_by_variance_topi(feat, i)
     else:
         raise ValueError(f"Unknown method: {method}.")
 

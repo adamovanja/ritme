@@ -1,7 +1,15 @@
 from ray import tune
 
 
-def get_data_eng_space(tax):
+def get_data_eng_space(tax, test_mode=False):
+    if test_mode:
+        # note: test mode can be adjusted to whatever one wants to test
+        return {
+            "data_aggregation": None,
+            "data_selection": tune.grid_search(["abundance_topi", "variance_topi"]),
+            "data_selection_i": tune.choice([1, 5]),
+            "data_transform": None,
+        }
     return {
         # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options w gridsearch * nb of model types
@@ -10,14 +18,17 @@ def get_data_eng_space(tax):
         )
         if not tax.empty
         else None,
-        "data_selection": tune.grid_search([None, "abundance_ith", "variance_ith"]),
-        "data_selection_i": tune.choice([1, 3, 10]),
+        "data_selection": tune.grid_search(
+            [None, "abundance_ith", "variance_ith", "abundance_topi", "variance_topi"]
+        ),
+        # todo: adjust the i range to more sophisticated quantities
+        "data_selection_i": tune.choice([1, 3, 5, 10]),
         "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
     }
 
 
-def get_linreg_space(tax):
-    data_eng_space = get_data_eng_space(tax)
+def get_linreg_space(tax, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     return dict(
         model="linreg",
         **data_eng_space,
@@ -32,8 +43,8 @@ def get_linreg_space(tax):
     )
 
 
-def get_rf_space(tax):
-    data_eng_space = get_data_eng_space(tax)
+def get_rf_space(tax, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     return dict(
         model="rf",
         **data_eng_space,
@@ -49,8 +60,8 @@ def get_rf_space(tax):
     )
 
 
-def get_nn_space(tax, model_name):
-    data_eng_space = get_data_eng_space(tax)
+def get_nn_space(tax, model_name, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     max_layers = 12
     nn_space = {
         # Sample random uniformly between [1,9] rounding to multiples of 3
@@ -66,8 +77,8 @@ def get_nn_space(tax, model_name):
     return dict(model=model_name, **data_eng_space, **nn_space)
 
 
-def get_xgb_space(tax):
-    data_eng_space = get_data_eng_space(tax)
+def get_xgb_space(tax, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     return dict(
         model="xgb",
         **data_eng_space,
@@ -85,7 +96,7 @@ def get_xgb_space(tax):
     )
 
 
-def get_trac_space(tax):
+def get_trac_space(tax, test_mode=False):
     # no feature_transformation to be used for trac
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
@@ -106,13 +117,13 @@ def get_trac_space(tax):
     )
 
 
-def get_search_space(tax):
+def get_search_space(tax, test_mode=False):
     return {
-        "xgb": get_xgb_space(tax),
-        "nn_reg": get_nn_space(tax, "nn_reg"),
-        "nn_class": get_nn_space(tax, "nn_class"),
-        "nn_corn": get_nn_space(tax, "nn_corn"),
-        "linreg": get_linreg_space(tax),
-        "rf": get_rf_space(tax),
-        "trac": get_trac_space(tax),
+        "xgb": get_xgb_space(tax, test_mode),
+        "nn_reg": get_nn_space(tax, "nn_reg", test_mode),
+        "nn_class": get_nn_space(tax, "nn_class", test_mode),
+        "nn_corn": get_nn_space(tax, "nn_corn", test_mode),
+        "linreg": get_linreg_space(tax, test_mode),
+        "rf": get_rf_space(tax, test_mode),
+        "trac": get_trac_space(tax, test_mode),
     }
