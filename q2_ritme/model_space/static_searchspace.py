@@ -137,10 +137,12 @@ def get_trac_space(tax, test_mode=False):
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
     data_eng_space_trac = {
-        "data_transform": None,
         "data_aggregation": None,
         "data_selection": None,
         "data_selection_i": None,
+        "data_selection_q": None,
+        "data_selection_t": None,
+        "data_transform": None,
     }
     return dict(
         model="trac",
