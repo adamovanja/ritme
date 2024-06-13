@@ -126,21 +126,46 @@ class TunedModel:
         self.data_config = data_config
         self.tax = tax
         self.path = path
+        self.train_selected_fts = []
 
     def aggregate(self, data):
         return aggregate_microbial_features(
             data, self.data_config["data_aggregation"], self.tax
         )
 
-    def select(self, data):
-        return select_microbial_features(
-            data,
-            self.data_config["data_selection"],
-            self.data_config["data_selection_i"],
-            self.data_config["data_selection_q"],
-            self.data_config["data_selection_t"],
-            "F",
-        )
+    def select(self, data, split):
+        # selection needs to be performed based on train set values -> not on
+        # test set!
+        ft_prefix = "F"
+
+        if split == "train":
+            # assign self.train_selected_fts to be able to run select on test set later
+            train_selected = select_microbial_features(
+                data,
+                self.data_config["data_selection"],
+                self.data_config["data_selection_i"],
+                self.data_config["data_selection_q"],
+                self.data_config["data_selection_t"],
+                ft_prefix,
+            )
+            self.train_selected_fts = train_selected.columns
+            return train_selected
+        elif len(self.train_selected_fts) == 0:
+            raise ValueError(
+                "To run tmodel.predict on the test set it has to be run on the train "
+                "set first."
+            )
+        # SPLIT = "test"
+        ft_to_sum = [x for x in data.columns if x not in self.train_selected_fts]
+        if len(ft_to_sum) > 0:
+            group_name = (
+                "_low_abun"
+                if self.data_config["data_selection"].startswith("abundance")
+                else "_low_var"
+            )
+            data[f"{ft_prefix}{group_name}"] = data[ft_to_sum].sum(axis=1)
+
+        return data[self.train_selected_fts]
 
     def transform(self, data):
         transformed = transform_microbial_features(
@@ -155,9 +180,10 @@ class TunedModel:
         else:
             return transformed.values
 
-    def predict(self, data):
+    def predict(self, data, split):
         aggregated = self.aggregate(data)
-        selected = self.select(aggregated)
+        # selection only possible if it was run on test set before!
+        selected = self.select(aggregated, split)
         transformed = self.transform(selected)
         if isinstance(self.model, NeuralNet):
             with torch.no_grad():
@@ -205,7 +231,7 @@ def get_predictions(data, tmodel, target, features, split=None):
     saved_pred = data[[target]].copy()
     saved_pred.rename(columns={target: "true"}, inplace=True)
     # pred, split
-    saved_pred["pred"] = tmodel.predict(data[features])
+    saved_pred["pred"] = tmodel.predict(data[features], split)
     saved_pred["split"] = split
     return saved_pred
 
