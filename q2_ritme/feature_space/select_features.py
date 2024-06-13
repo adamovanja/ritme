@@ -113,7 +113,41 @@ def find_features_to_group_by_variance_quantile(
     )
 
 
-def select_microbial_features(feat, method, i, q, ft_prefix):
+def _find_features_to_group_threshold(
+    feature_table: pd.DataFrame,
+    threshold: float,
+    measure_func: Callable[[pd.DataFrame], pd.Series],
+) -> List[str]:
+    measure_values = measure_func(feature_table)
+    features_to_group = measure_values[measure_values < threshold].index.tolist()
+    return features_to_group
+
+
+def find_features_to_group_by_abundance_threshold(
+    feature_table: pd.DataFrame, threshold: float
+) -> List[str]:
+    """
+    Finds features to sum based on a fixed threshold of abundance. Returns the
+    features with abundance lower than the specified threshold.
+    """
+    return _find_features_to_group_threshold(
+        feature_table, threshold, measure_func=lambda x: x.sum()
+    )
+
+
+def find_features_to_group_by_variance_threshold(
+    feature_table: pd.DataFrame, threshold: float
+) -> List[str]:
+    """
+    Finds features to sum based on a fixed threshold of variance. Returns the
+    features with variance lower than the specified threshold.
+    """
+    return _find_features_to_group_threshold(
+        feature_table, threshold, measure_func=lambda x: x.var()
+    )
+
+
+def select_microbial_features(feat, method, i, q, t, ft_prefix):
     if method is None:
         # return original feature table
         return feat.copy()
@@ -124,8 +158,7 @@ def select_microbial_features(feat, method, i, q, ft_prefix):
             f"features. So it is set to the max. possible value: {len(feat.columns)}."
         )
         i = len(feat.columns)
-    # todo: add warning when all features are grouped! --> verify when/if this
-    # todo: could happen
+
     group_name = "_low_abun" if method.startswith("abundance") else "_low_var"
 
     if method == "abundance_ith":
@@ -140,6 +173,10 @@ def select_microbial_features(feat, method, i, q, ft_prefix):
         group_ft_ls = find_features_to_group_by_abundance_quantile(feat, q)
     elif method == "variance_quantile":
         group_ft_ls = find_features_to_group_by_variance_quantile(feat, q)
+    elif method == "abundance_threshold":
+        group_ft_ls = find_features_to_group_by_abundance_threshold(feat, t)
+    elif method == "variance_threshold":
+        group_ft_ls = find_features_to_group_by_variance_threshold(feat, t)
     else:
         raise ValueError(f"Unknown method: {method}.")
 
@@ -149,7 +186,9 @@ def select_microbial_features(feat, method, i, q, ft_prefix):
             f"Returning original feature table."
         )
         return feat.copy()
-
+    # todo: add warning when all features are grouped! --> verify when/if this
+    # todo: could happen & if it's a problem
+    # elif len(group_ft_ls) == len(feat.columns):
     feat_selected = feat.copy()
     feat_selected[f"{ft_prefix}{group_name}"] = feat_selected[group_ft_ls].sum(axis=1)
     feat_selected.drop(columns=group_ft_ls, inplace=True)

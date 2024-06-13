@@ -4,6 +4,7 @@ from q2_ritme.feature_space.transform_features import (
     _find_most_nonzero_feature_idx,
     transform_microbial_features,
 )
+from q2_ritme.feature_space.utils import _update_config
 from q2_ritme.process_data import split_data_by_host
 
 
@@ -22,16 +23,15 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     print(f"Number of features after aggregation: {len(ft_agg.columns)}")
 
     # SELECT
-    # adjust used data_selection_i to actual None in case there is no selection
-    if config["data_selection"] is None:
-        config["data_selection_i"] = None
-        config["data_selection_q"] = None
+    # adjust data_selection config dependencies by main method selected
+    config = _update_config(config)
 
     ft_selected = select_microbial_features(
         ft_agg,
         config["data_selection"],
         config["data_selection_i"],
         config["data_selection_q"],
+        config["data_selection_t"],
         feat_prefix,
     )
     print(f"Number of features after selection: {len(ft_selected.columns)}")

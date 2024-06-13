@@ -138,6 +138,7 @@ class TunedModel:
             self.data_config["data_selection"],
             self.data_config["data_selection_i"],
             self.data_config["data_selection_q"],
+            self.data_config["data_selection_t"],
             "F",
         )
 

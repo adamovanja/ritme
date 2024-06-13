@@ -7,10 +7,21 @@ def get_data_eng_space(tax, test_mode=False):
         return {
             "data_aggregation": None,
             "data_selection": tune.grid_search(
-                ["abundance_quantile", "variance_quantile"]
+                [
+                    None,
+                    "abundance_ith",
+                    "variance_ith",
+                    "abundance_topi",
+                    "variance_topi",
+                    "abundance_quantile",
+                    "variance_quantile",
+                    "abundance_threshold",
+                    "variance_threshold",
+                ]
             ),
             "data_selection_i": tune.choice([1, 5]),
             "data_selection_q": tune.choice([0.5, 0.75]),
+            "data_selection_t": tune.choice([0.001, 0.0001]),
             "data_transform": None,
         }
     return {
@@ -30,11 +41,24 @@ def get_data_eng_space(tax, test_mode=False):
                 "variance_topi",
                 "abundance_quantile",
                 "variance_quantile",
+                "abundance_threshold",
+                "variance_threshold",
             ]
         ),
-        # todo: adjust the i and q ranges to more sophisticated quantities
+        # todo: adjust the i, q and t ranges to more sophisticated quantities
         "data_selection_i": tune.choice([1, 3, 5, 10]),
         "data_selection_q": tune.choice([0.5, 0.75, 0.9, 0.95]),
+        "data_selection_t": tune.choice(
+            [
+                0.01,
+                0.005,
+                0.001,
+                0.0005,
+                0.0001,
+                0.00005,
+                0.00001,
+            ]
+        ),
         "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
     }
 
