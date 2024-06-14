@@ -1,22 +1,70 @@
 from ray import tune
 
 
-def get_data_eng_space(train_val, tax):
+def get_data_eng_space(tax, test_mode=False):
+    if test_mode:
+        # note: test mode can be adjusted to whatever one wants to test
+        return {
+            "data_aggregation": None,
+            "data_selection": tune.grid_search(
+                [
+                    None,
+                    "abundance_ith",
+                    "variance_ith",
+                    "abundance_topi",
+                    "variance_topi",
+                    "abundance_quantile",
+                    "variance_quantile",
+                    "abundance_threshold",
+                    "variance_threshold",
+                ]
+            ),
+            "data_selection_i": tune.choice([1, 5]),
+            "data_selection_q": tune.choice([0.5, 0.75]),
+            "data_selection_t": tune.choice([0.001, 0.0001]),
+            "data_transform": None,
+        }
     return {
         # grid search specified here checks all options: so new nb_trials=
-        # num_trials * nb of options in data_transform * nb of model types
-        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
-        # if tax is not empty set data_aggregation options
+        # num_trials * nb of options w gridsearch * nb of model types
         "data_aggregation": tune.grid_search(
             [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
         )
         if not tax.empty
         else None,
+        "data_selection": tune.grid_search(
+            [
+                None,
+                "abundance_ith",
+                "variance_ith",
+                "abundance_topi",
+                "variance_topi",
+                "abundance_quantile",
+                "variance_quantile",
+                "abundance_threshold",
+                "variance_threshold",
+            ]
+        ),
+        # todo: adjust the i, q and t ranges to more sophisticated quantities
+        "data_selection_i": tune.choice([1, 3, 5, 10]),
+        "data_selection_q": tune.choice([0.5, 0.75, 0.9, 0.95]),
+        "data_selection_t": tune.choice(
+            [
+                0.01,
+                0.005,
+                0.001,
+                0.0005,
+                0.0001,
+                0.00005,
+                0.00001,
+            ]
+        ),
+        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
     }
 
 
-def get_linreg_space(train_val, tax):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_linreg_space(tax, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     return dict(
         model="linreg",
         **data_eng_space,
@@ -31,8 +79,8 @@ def get_linreg_space(train_val, tax):
     )
 
 
-def get_rf_space(train_val, tax):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_rf_space(tax, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     return dict(
         model="rf",
         **data_eng_space,
@@ -48,8 +96,8 @@ def get_rf_space(train_val, tax):
     )
 
 
-def get_nn_space(train_val, tax, model_name):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_nn_space(tax, model_name, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     max_layers = 12
     nn_space = {
         # Sample random uniformly between [1,9] rounding to multiples of 3
@@ -65,8 +113,8 @@ def get_nn_space(train_val, tax, model_name):
     return dict(model=model_name, **data_eng_space, **nn_space)
 
 
-def get_xgb_space(train_val, tax):
-    data_eng_space = get_data_eng_space(train_val, tax)
+def get_xgb_space(tax, test_mode=False):
+    data_eng_space = get_data_eng_space(tax, test_mode)
     return dict(
         model="xgb",
         **data_eng_space,
@@ -84,11 +132,18 @@ def get_xgb_space(train_val, tax):
     )
 
 
-def get_trac_space(train_val, tax):
+def get_trac_space(tax, test_mode=False):
     # no feature_transformation to be used for trac
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
-    data_eng_space_trac = {"data_transform": None, "data_aggregation": None}
+    data_eng_space_trac = {
+        "data_aggregation": None,
+        "data_selection": None,
+        "data_selection_i": None,
+        "data_selection_q": None,
+        "data_selection_t": None,
+        "data_transform": None,
+    }
     return dict(
         model="trac",
         **data_eng_space_trac,
@@ -100,13 +155,13 @@ def get_trac_space(train_val, tax):
     )
 
 
-def get_search_space(train_val, tax):
+def get_search_space(tax, test_mode=False):
     return {
-        "xgb": get_xgb_space(train_val, tax),
-        "nn_reg": get_nn_space(train_val, tax, "nn_reg"),
-        "nn_class": get_nn_space(train_val, tax, "nn_class"),
-        "nn_corn": get_nn_space(train_val, tax, "nn_corn"),
-        "linreg": get_linreg_space(train_val, tax),
-        "rf": get_rf_space(train_val, tax),
-        "trac": get_trac_space(train_val, tax),
+        "xgb": get_xgb_space(tax, test_mode),
+        "nn_reg": get_nn_space(tax, "nn_reg", test_mode),
+        "nn_class": get_nn_space(tax, "nn_class", test_mode),
+        "nn_corn": get_nn_space(tax, "nn_corn", test_mode),
+        "linreg": get_linreg_space(tax, test_mode),
+        "rf": get_rf_space(tax, test_mode),
+        "trac": get_trac_space(tax, test_mode),
     }

@@ -1,7 +1,7 @@
 [run]
 branch = True
 omit =
-    */tests*
+    q2_ritme/tests/*
     */__init__.py
     q2_ritme/_version.py
     versioneer.py
@@ -9,7 +9,7 @@ omit =
 [report]
 fail_under = 90
 omit =
-    */tests*
+    q2_ritme/tests/*
     */__init__.py
     q2_ritme/_version.py
     versioneer.py

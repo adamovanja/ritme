@@ -74,6 +74,7 @@ def run_n_eval_tune(config_path):
         config["num_trials"],
         model_types=config["ls_model_types"],
         fully_reproducible=False,
+        test_mode=config["test_mode"],
     )
 
     # ! Save run config
