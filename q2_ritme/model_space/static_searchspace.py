@@ -19,9 +19,9 @@ def get_data_eng_space(tax, test_mode=False):
                     "variance_threshold",
                 ]
             ),
-            "data_selection_i": tune.choice([1, 5]),
-            "data_selection_q": tune.choice([0.5, 0.75]),
-            "data_selection_t": tune.choice([0.001, 0.0001]),
+            "dsi_option": tune.choice([1, 5]),
+            "dsq_option": tune.choice([0.5, 0.75]),
+            "dst_option": tune.choice([0.001, 0.0001]),
             "data_transform": None,
         }
     return {
@@ -46,9 +46,9 @@ def get_data_eng_space(tax, test_mode=False):
             ]
         ),
         # todo: adjust the i, q and t ranges to more sophisticated quantities
-        "data_selection_i": tune.choice([1, 3, 5, 10]),
-        "data_selection_q": tune.choice([0.5, 0.75, 0.9, 0.95]),
-        "data_selection_t": tune.choice(
+        "dsi_option": tune.choice([1, 3, 5, 10]),
+        "dsq_option": tune.choice([0.5, 0.75, 0.9, 0.95]),
+        "dst_option": tune.choice(
             [
                 0.01,
                 0.005,

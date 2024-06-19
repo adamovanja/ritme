@@ -51,7 +51,7 @@ class TestStaticSearchSpace(TestPluginBase):
             ),
         )
         self.assertEqual(
-            data_eng_space["data_selection_i"].categories,
+            data_eng_space["dsi_option"].categories,
             [1, 3, 5, 10],
         )
         self.assertEqual(

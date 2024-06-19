@@ -77,12 +77,12 @@ class TestUtils(TestPluginBase):
     def test_update_config_i(self, method):
         config = {
             "data_selection": method,
-            "data_selection_i": 1,
-            "data_selection_q": 0.5,
-            "data_selection_t": 0.1,
+            "dsi_option": 1,
+            "dsq_option": 0.5,
+            "dst_option": 0.1,
         }
         expected_config = {
-            "data_selection": method,
+            **config,
             "data_selection_i": 1,
             "data_selection_q": None,
             "data_selection_t": None,
@@ -94,12 +94,12 @@ class TestUtils(TestPluginBase):
     def test_update_config_q(self, method):
         config = {
             "data_selection": method,
-            "data_selection_i": 1,
-            "data_selection_q": 0.5,
-            "data_selection_t": 0.1,
+            "dsi_option": 1,
+            "dsq_option": 0.5,
+            "dst_option": 0.1,
         }
         expected_config = {
-            "data_selection": method,
+            **config,
             "data_selection_i": None,
             "data_selection_q": 0.5,
             "data_selection_t": None,
@@ -111,12 +111,12 @@ class TestUtils(TestPluginBase):
     def test_update_config_t(self, method):
         config = {
             "data_selection": method,
-            "data_selection_i": 1,
-            "data_selection_q": 0.5,
-            "data_selection_t": 0.1,
+            "dsi_option": 1,
+            "dsq_option": 0.5,
+            "dst_option": 0.1,
         }
         expected_config = {
-            "data_selection": method,
+            **config,
             "data_selection_i": None,
             "data_selection_q": None,
             "data_selection_t": 0.1,
