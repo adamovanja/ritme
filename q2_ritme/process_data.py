@@ -1,3 +1,5 @@
+import warnings
+
 import pandas as pd
 import qiime2 as q2
 import skbio
@@ -148,6 +150,11 @@ def filter_merge_n_sort(
     Returns:
         pd.DataFrame: Merged and sorted data.
     """
+    # remove features that are all zero
+    drop_fts = ft.loc[:, ft.sum(axis=0) == 0.0].columns.tolist()
+    if len(drop_fts) > 0:
+        warnings.warn(f"Dropping these features with all zero values: {drop_fts}")
+        ft.drop(columns=drop_fts, inplace=True)
     # filter on metadata fields to include
     if filter_md_cols:
         md = md[filter_md_cols].copy()
