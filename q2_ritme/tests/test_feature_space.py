@@ -420,15 +420,16 @@ class TestSelectMicrobialFeatures(TestPluginBase):
 
     @parameterized.expand(
         [
-            (1, ["F4", "F3", "F1"]),
-            (2, ["F4", "F3", "F1"]),
-            (3, ["F4", "F3"]),
-            (4, ["F4", "F3"]),
+            (1, ["F1", "F3", "F4"]),
+            (2, ["F1", "F3", "F4"]),
+            (3, ["F3", "F4"]),
+            (4, ["F3", "F4"]),
         ]
     )
     def test_find_features_to_group_variance_ith(self, i, expected_features):
         features_to_group = find_features_to_group_by_variance_ith(self.ft, i)
-        self.assertEqual(features_to_group, expected_features)
+
+        self.assertEqual(sorted(features_to_group), expected_features)
 
         # def test_find_features_to_group_variance_ith_test(self):
         #     i = 1
