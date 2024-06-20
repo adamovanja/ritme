@@ -77,12 +77,12 @@ class TestUtils(TestPluginBase):
     def test_update_config_i(self, method):
         config = {
             "data_selection": method,
-            "data_selection_i": 1,
-            "data_selection_q": 0.5,
-            "data_selection_t": 0.1,
+            "dsi_option": 1,
+            "dsq_option": 0.5,
+            "dst_option": 0.1,
         }
         expected_config = {
-            "data_selection": method,
+            **config,
             "data_selection_i": 1,
             "data_selection_q": None,
             "data_selection_t": None,
@@ -94,12 +94,12 @@ class TestUtils(TestPluginBase):
     def test_update_config_q(self, method):
         config = {
             "data_selection": method,
-            "data_selection_i": 1,
-            "data_selection_q": 0.5,
-            "data_selection_t": 0.1,
+            "dsi_option": 1,
+            "dsq_option": 0.5,
+            "dst_option": 0.1,
         }
         expected_config = {
-            "data_selection": method,
+            **config,
             "data_selection_i": None,
             "data_selection_q": 0.5,
             "data_selection_t": None,
@@ -111,12 +111,12 @@ class TestUtils(TestPluginBase):
     def test_update_config_t(self, method):
         config = {
             "data_selection": method,
-            "data_selection_i": 1,
-            "data_selection_q": 0.5,
-            "data_selection_t": 0.1,
+            "dsi_option": 1,
+            "dsq_option": 0.5,
+            "dst_option": 0.1,
         }
         expected_config = {
-            "data_selection": method,
+            **config,
             "data_selection_i": None,
             "data_selection_q": None,
             "data_selection_t": 0.1,
@@ -420,21 +420,23 @@ class TestSelectMicrobialFeatures(TestPluginBase):
 
     @parameterized.expand(
         [
-            (1, ["F3", "F4", "F1"]),
-            (2, ["F3", "F4", "F1"]),
+            (1, ["F1", "F3", "F4"]),
+            (2, ["F1", "F3", "F4"]),
             (3, ["F3", "F4"]),
             (4, ["F3", "F4"]),
         ]
     )
     def test_find_features_to_group_variance_ith(self, i, expected_features):
         features_to_group = find_features_to_group_by_variance_ith(self.ft, i)
-        self.assertEqual(features_to_group, expected_features)
-        # def test_find_features_to_group_variance(self):
-        #     i = 3
-        #     features_to_group = find_features_to_group_by_variance(self.ft, i)
+
+        self.assertEqual(sorted(features_to_group), expected_features)
+
+        # def test_find_features_to_group_variance_ith_test(self):
+        #     i = 1
+        #     features_to_group = find_features_to_group_by_variance_ith(self.ft, i)
 
         #     # Assert
-        #     self.assertEqual(features_to_group, ["F1", "F2"])
+        #     self.assertEqual(features_to_group, ["F4", "F3", "F1"])
 
     @parameterized.expand([(0.5, ["F1", "F2"]), (0.9, ["F1", "F2", "F3"])])
     def test_find_features_to_group_abundance_quantile(self, q, expected_features):

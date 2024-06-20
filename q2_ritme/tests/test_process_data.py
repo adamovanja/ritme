@@ -142,6 +142,24 @@ class TestProcessData(TestPluginBase):
 
         pd.testing.assert_frame_equal(obs, exp)
 
+    def test_filter_merge_n_sort_zero_cols(self):
+        ft_df = self.ft_rel.copy()
+        ft_df["F3"] = [0.0, 0.0, 0.0, 0.0]
+
+        with self.assertWarnsRegex(
+            Warning, r"Dropping these features with all zero values: \['F3'\]"
+        ):
+            obs = filter_merge_n_sort(
+                self.md,
+                ft_df,
+                host_id="host_id",
+                target="supertarget",
+            )
+        exp = self.data_rel.sort_values(["host_id", "supertarget"])
+        exp = exp[["host_id", "supertarget", "covariate", "F0", "F1"]]
+
+        pd.testing.assert_frame_equal(obs, exp)
+
     def test_split_data_by_host(self):
         train_obs, test_obs = split_data_by_host(self.data_rel, "host_id", 0.5, 123)
 

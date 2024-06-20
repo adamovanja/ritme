@@ -3,7 +3,7 @@
 import os
 import pickle
 import random
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Union
 
 import joblib
 import numpy as np
@@ -15,8 +15,8 @@ import xgboost as xgb
 from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
-from pytorch_lightning import LightningModule, Trainer, seed_everything
-from pytorch_lightning.callbacks import ModelCheckpoint
+from lightning import LightningModule, Trainer, seed_everything
+from lightning.pytorch.callbacks import ModelCheckpoint
 from ray import train, tune
 from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
@@ -24,7 +24,7 @@ from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import ElasticNet
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
@@ -50,7 +50,7 @@ def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:
     float: The root mean squared error of the model's predictions.
     """
     y_pred = model.predict(X)
-    return mean_squared_error(y, y_pred, squared=False)
+    return root_mean_squared_error(y, y_pred)
 
 
 def _save_sklearn_model(model: BaseEstimator) -> str:
@@ -158,7 +158,7 @@ def train_linreg(
 
 def _predict_rmse_trac(alpha, log_geom_X, y):
     y_pred = log_geom_X.dot(alpha[1:]) + alpha[0]
-    return mean_squared_error(y, y_pred, squared=False)
+    return root_mean_squared_error(y, y_pred)
 
 
 def _report_results_manually_trac(
@@ -400,12 +400,15 @@ def load_data(X_train, y_train, X_val, y_val, y_type, config):
 class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
     def __init__(
         self,
-        metrics: Dict[str, str],
+        metrics: Optional[Union[str, List[str], Dict[str, str]]] = None,
         filename: str = "checkpoint",
-        on: str = "validation_end",
+        save_checkpoints: bool = True,
+        on: Union[str, List[str]] = "validation_end",
         nb_features: int = None,
     ):
-        super().__init__(metrics=metrics, filename=filename, on=on)
+        super().__init__(
+            metrics=metrics, filename=filename, save_checkpoints=save_checkpoints, on=on
+        )
         self.nb_features = nb_features
 
     def _handle(self, trainer: Trainer, pl_module: LightningModule):
@@ -481,7 +484,7 @@ def train_nn(
     _save_taxonomy(tax)
     # Callbacks
     checkpoint_dir = (
-        tune.get_trial_dir() if tune.is_session_enabled() else "checkpoints"
+        tune.get_trial_dir() if "TUNE_TRIAL_NAME" in os.environ else "checkpoints"
     )
     os.makedirs(checkpoint_dir, exist_ok=True)
 
