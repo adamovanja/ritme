@@ -1,6 +1,5 @@
 import pandas as pd
 from qiime2.plugin.testing import TestPluginBase
-from ray import tune
 
 from q2_ritme.model_space import static_searchspace as ss
 
@@ -29,34 +28,27 @@ class TestStaticSearchSpace(TestPluginBase):
 
         self.assertIsInstance(data_eng_space, dict)
         self.assertEqual(
-            data_eng_space["data_aggregation"],
-            tune.grid_search(
-                [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
-            ),
+            data_eng_space["data_aggregation"].categories,
+            [None, "tax_class", "tax_order", "tax_family", "tax_genus"],
         )
         self.assertEqual(
-            data_eng_space["data_selection"],
-            tune.grid_search(
-                [
-                    None,
-                    "abundance_ith",
-                    "variance_ith",
-                    "abundance_topi",
-                    "variance_topi",
-                    "abundance_quantile",
-                    "variance_quantile",
-                    "abundance_threshold",
-                    "variance_threshold",
-                ]
-            ),
+            data_eng_space["data_selection"].categories,
+            [
+                None,
+                "abundance_ith",
+                "variance_ith",
+                "abundance_topi",
+                "variance_topi",
+                "abundance_quantile",
+                "variance_quantile",
+                "abundance_threshold",
+                "variance_threshold",
+            ],
         )
+        self.assertEqual(data_eng_space["dsi_option"].domain_str, "(1, 20)")
         self.assertEqual(
-            data_eng_space["dsi_option"].categories,
-            [1, 3, 5, 10],
-        )
-        self.assertEqual(
-            data_eng_space["data_transform"],
-            tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
+            data_eng_space["data_transform"].categories,
+            [None, "clr", "ilr", "alr", "pa"],
         )
 
     def test_get_data_eng_space_empty_tax(self):
