@@ -13,12 +13,12 @@ build:
 
 requirements:
   host:
-    - python {{ python }}
-    - setuptools==69.5.1
+    - python
+    - setuptools
     - pip
 
   run:
-    - python {{ python }}
+    - python
     - importlib-metadata
     - qiime2 {{ qiime2_epoch }}.*
     - q2-feature-table {{ qiime2_epoch }}.*
@@ -38,8 +38,7 @@ requirements:
     - scipy
     - scikit-learn
     - scikit-bio
-    # needs to be pinned due to deprecation of pkg_resources in v70
-    - setuptools==69.5.1
+    - setuptools
     - torchvision
     - zipp
   # TODO: build package from GH or pypip

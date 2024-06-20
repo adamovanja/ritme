@@ -12,6 +12,8 @@ from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from q2_ritme.model_space import static_searchspace as ss
 from q2_ritme.model_space import static_trainables as st
 
+os.environ["TUNE_WARN_EXCESSIVE_EXPERIMENT_CHECKPOINT_SYNC_THRESHOLD_S"] = "0"
+
 model_trainables = {
     # model_type: trainable
     "xgb": st.train_xgb,
@@ -126,11 +128,12 @@ def run_trials(
         run_config=air.RunConfig(
             # complete experiment name with subfolders of trials within
             name=exp_name,
-            local_dir=storage_path,
+            storage_path=storage_path,
             # ! checkpoint: to store best model - is retrieved in
             # evaluate_models.py
             checkpoint_config=air.CheckpointConfig(
                 checkpoint_score_attribute="rmse_val",
+                checkpoint_score_order="min",
                 num_to_keep=3,
             ),
             # ! callback: executing specific tasks (e.g. logging) at specific
@@ -154,7 +157,8 @@ def run_trials(
             scheduler=scheduler,
             # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
-            max_concurrent_trials=max_concurrent_trials,
+            # # todo: remove below or change search_alg
+            # max_concurrent_trials=max_concurrent_trials,
             # ! set seed
             # todo: set advanced search algo -> here default random
             search_alg=tune.search.BasicVariantGenerator(),

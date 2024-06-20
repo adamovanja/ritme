@@ -92,4 +92,5 @@ def compare_trials(dic_trials_to_check, path_to_models, path_to_save):
 
     # display config differences
     config_df = pd.DataFrame(config_dic)
+    config_df = config_df.sort_index(ascending=False)
     config_df.to_csv(os.path.join(path_to_save, "best_trial_config.csv"), index=True)

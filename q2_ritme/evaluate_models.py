@@ -10,7 +10,7 @@ import xgboost as xgb
 from coral_pytorch.dataset import corn_label_from_logits
 from joblib import load
 from ray.air.result import Result
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 
 from q2_ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
@@ -240,8 +240,8 @@ def calculate_rmse(pred_df):
     rmse_scores = {}
     for split in pred_df["split"].unique():
         pred_split = pred_df[pred_df["split"] == split].copy()
-        rmse = mean_squared_error(
-            pred_split["true"].values, pred_split["pred"].values, squared=False
+        rmse = root_mean_squared_error(
+            pred_split["true"].values, pred_split["pred"].values
         )
         rmse_scores[split] = rmse
     return rmse_scores
