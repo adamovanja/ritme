@@ -16,11 +16,10 @@ make dev
 ```
 
 ## Model training locally
-To train models with a defined configuration in `q2_ritme/config.json` run:
+To train models with a defined configuration in `q2_ritme/config.json` run the below command.
 ````
-python q2_ritme/run_n_eval_tune.py --config q2_ritme/run_config.json
+./launch_local.sh q2_ritme/config.json
 ````
-
 Once you have trained some models, you can check the progress of the trained models by launching `mlflow ui --backend-store-uri experiments/mlruns`.
 
 To evaluate the best trial (trial < experiment) of all launched experiments, run:
@@ -31,7 +30,7 @@ python q2_ritme/eval_best_trial_overall.py --model_path "experiments/models"
 ## Model training on HPC with slurm:
 Edit file `launch_slurm_syn_cpu.sh` and then run
 ````
-sbatch launch_slurm_syn_cpu.sh
+sbatch launch_slurm_cpu.sh
 ````
 If you (or your collaborators) plan to launch multiple jobs on the same infrastructure you should set the variable `JOB_NB` in `launch_slurm_cpu.sh` accordingly. This variable makes sure that the assigned ports don't overlap (see [here](https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html#slurm-networking-caveats)).
 
