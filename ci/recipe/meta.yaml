@@ -31,6 +31,7 @@ requirements:
     - pandas
     - pip
     - pytorch
+    - python-dotenv
     - py-xgboost
     # todo: update ray to newest once Q2 has migrated to Python 3.10
     # note: currently ray is in v2.8.1 restricted by Q2
@@ -49,6 +50,7 @@ requirements:
       - c-lasso
       # grpcio pinned due to incompatibility with ray caused by c-lasso
       - grpcio==1.51.1
+      - wandb
 
 
 test:

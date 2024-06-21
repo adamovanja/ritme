@@ -38,6 +38,12 @@ If you are using SLURM and get the following error returned: "RuntimeError: can'
 it is probably caused by your hardware. Try decreasing the CPUs allocated to the job and/or decrease the variable `max_concurrent_trials` in `tune_models.py`.
 If you are using SLURM and your error message contains this: "The process is killed by SIGKILL by OOM killer due to high memory usage", you should increase the assigned memory per CPU (`--mem-per-cpu`).
 
+## Model tracking
+In the config file you can choose to track your trials with MLflow (tracking_uri=="mlruns") or with WandB (tracking_uri=="wandb"). In case of using WandB you need to store your `WANDB_API_KEY` & `WANDB_ENTITY` as a environment variable in `.env`. Make sure to ignore this file in version control (add to `.gitignore`).
+
+The `WANDB_ENTITY` is the project name you would like to store the results in. For more information on this parameter see the official webpage from WandB initialization [here](https://docs.wandb.ai/ref/python/init).
+
+
 ## Code test coverage
 To run test coverage with Code Gutters in VScode run:
 ````
