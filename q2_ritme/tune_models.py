@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import skbio
 import torch
-from ray import air, init, shutdown, tune
+from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from ray.tune.search.optuna import OptunaSearch
@@ -87,11 +87,11 @@ def run_trials(
     torch.manual_seed(seed_model)
 
     # Initialize Ray with the runtime environment
-    shutdown()
-    # todo: configure dashboard here - see "ray dashboard set up" online once
-    # todo: ray (Q2>Py) is updated
-    context = init(include_dashboard=False, ignore_reinit_error=True)
-    print(context.dashboard_url)
+    # todo: test if ray init from outside also works for multiple model runs on
+    # todo: HPC
+    # shutdown()
+    context = init(address="auto", ignore_reinit_error=True)
+    print(f"Ray dashboard is at: {context.dashboard_url}")
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
         metric = "rmse_val"
@@ -117,7 +117,7 @@ def run_trials(
         # ! currently it is 225 points which might need to be subsampled
         points_to_evaluate = ss.get_optuna_points_to_evaluate()
         if len(points_to_evaluate) > num_trials:
-            raise warnings.Warning(
+            warnings.warn(
                 f"Number of points to evaluate with optuna is larger than number of "
                 f"trials. Not all points can be evaluated. Consider increasing the "
                 f"number of trials to at least {len(points_to_evaluate)}."
