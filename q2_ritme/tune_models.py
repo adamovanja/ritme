@@ -1,5 +1,6 @@
 import os
 import random
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -38,7 +39,7 @@ def run_trials(
     mlflow_tracking_uri,  # MLflow with MLflowLoggerCallback
     exp_name,
     trainable,
-    search_space,
+    test_mode,
     train_val,
     target,
     host_id,
@@ -92,6 +93,8 @@ def run_trials(
     print(context.dashboard_url)
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
+        metric = "rmse_val"
+        mode = "min"
         # AsyncHyperBand enables aggressive early stopping of bad trials.
         # ! efficient & fast BUT
         # ! not fully reproducible with seeds (caused by system load, network
@@ -101,8 +104,24 @@ def run_trials(
             grace_period=scheduler_grace_period,
             # stopping trials after max_t iterations have passed
             max_t=scheduler_max_t,
+            metric=metric,
+            mode=mode,
         )
-        search_algo = OptunaSearch()
+        # partial function needed to pass additional parameters
+        define_search_space = partial(
+            ss.get_search_space, model_type=exp_name, tax=tax, test_mode=test_mode
+        )
+        search_algo = OptunaSearch(
+            space=define_search_space,
+            # todo: must add points to evaluate
+            # points_to_evaluate=,
+            metric=metric,
+            mode=mode,
+            seed=seed_model,
+        )
+        # todo: potentially add this
+        # search_algo = ConcurrencyLimiter(search_algo,
+        # max_concurrent=max_concurrent_trials)
     else:
         # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
@@ -155,17 +174,11 @@ def run_trials(
             ],
         ),
         # hyperparameter space: passes config used in trainables
-        param_space=search_space,
         tune_config=tune.TuneConfig(
-            metric="rmse_val",
-            mode="min",
+            search_alg=search_algo,
             scheduler=scheduler,
             # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
-            # # todo: remove below or change search_alg
-            # max_concurrent_trials=max_concurrent_trials,
-            # ! set seed
-            search_alg=search_algo,
         ),
     )
     # ResultGrid output
@@ -204,7 +217,6 @@ def run_all_trials(
     test_mode: bool = False,
 ) -> dict:
     results_all = {}
-    model_search_space = ss.get_search_space(tax, test_mode)
 
     # if tax + phylogeny empty we can't run trac
     if (tax.empty or tree_phylo.children == []) and "trac" in model_types:
@@ -222,7 +234,7 @@ def run_all_trials(
             mlflow_uri,
             model,
             model_trainables[model],
-            model_search_space[model],
+            test_mode,
             train_val,
             target,
             host_id,

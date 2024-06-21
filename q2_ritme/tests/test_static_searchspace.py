@@ -1,7 +1,25 @@
 import pandas as pd
+from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
 
 from q2_ritme.model_space import static_searchspace as ss
+
+
+class MockTrial:
+    def __init__(self):
+        self.params = {}
+
+    def suggest_categorical(self, name, categories):
+        self.params[name] = categories[0] if categories else None
+        return self.params[name]
+
+    def suggest_int(self, name, low, high, step=1):
+        self.params[name] = low
+        return low
+
+    def suggest_float(self, name, low, high, step=None, log=False):
+        self.params[name] = low
+        return low
 
 
 class TestStaticSearchSpace(TestPluginBase):
@@ -11,107 +29,125 @@ class TestStaticSearchSpace(TestPluginBase):
         super().setUp()
         self.tax = pd.DataFrame()
 
-    def test_get_search_space(self):
-        search_space = ss.get_search_space(self.tax)
+    @parameterized.expand(
+        [
+            ("abundance_ith", "i"),
+            ("variance_quantile", "q"),
+            ("abundance_threshold", "t"),
+        ]
+    )
+    def test_get_dependent_data_eng_space(self, data_selection, expected_non_none):
+        trial = MockTrial()
+        ss._get_dependent_data_eng_space(trial, data_selection)
 
-        self.assertIsInstance(search_space, dict)
-        self.assertIn("xgb", search_space)
-        self.assertIn("nn_reg", search_space)
-        self.assertIn("nn_class", search_space)
-        self.assertIn("nn_corn", search_space)
-        self.assertIn("linreg", search_space)
-        self.assertIn("rf", search_space)
+        expected_params = {"data_selection_i", "data_selection_q", "data_selection_t"}
+        self.assertTrue(expected_params.issubset(trial.params.keys()))
 
-    def test_get_data_eng_space_w_tax(self):
-        tax = pd.DataFrame({"Taxon": ["Bacteria", "Firmicutes", "Clostridia"]})
-        data_eng_space = ss.get_data_eng_space(tax)
+        for suffix in "iqt":
+            param = f"data_selection_{suffix}"
+            if suffix == expected_non_none:
+                self.assertIsNotNone(trial.params[param], f"{param} should not be None")
+            else:
+                self.assertIsNone(trial.params[param], f"{param} should be None")
 
-        self.assertIsInstance(data_eng_space, dict)
-        self.assertEqual(
-            data_eng_space["data_aggregation"].categories,
-            [None, "tax_class", "tax_order", "tax_family", "tax_genus"],
-        )
-        self.assertEqual(
-            data_eng_space["data_selection"].categories,
-            [
-                None,
-                "abundance_ith",
-                "variance_ith",
-                "abundance_topi",
-                "variance_topi",
-                "abundance_quantile",
-                "variance_quantile",
-                "abundance_threshold",
-                "variance_threshold",
-            ],
-        )
-        self.assertEqual(data_eng_space["dsi_option"].domain_str, "(1, 20)")
-        self.assertEqual(
-            data_eng_space["data_transform"].categories,
-            [None, "clr", "ilr", "alr", "pa"],
-        )
+    def test_get_data_eng_space_test_mode(self):
+        trial = MockTrial()
+        ss.get_data_eng_space(trial, self.tax, test_mode=True)
+        expected_params = {"data_selection", "data_aggregation", "data_transform"}
+        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        self.assertIn(trial.params["data_selection"], [None, "abundance_ith"])
+        self.assertEqual(trial.params["data_aggregation"], None)
+        self.assertEqual(trial.params["data_transform"], None)
 
-    def test_get_data_eng_space_empty_tax(self):
-        data_eng_space = ss.get_data_eng_space(self.tax)
-        self.assertEqual(data_eng_space["data_aggregation"], None)
-
-        # todo: add this test once test mode is more clearly defined
-        # def test_get_data_eng_space_test_mode(self):
-        #     data_eng_space = ss.get_data_eng_space(self.tax, True)
-        #     for key in ["data_aggregation", "data_selection", "data_transform"]:
-        #         self.assertEqual(data_eng_space[key], None)
+    def test_get_data_eng_space(self):
+        trial = MockTrial()
+        ss.get_data_eng_space(trial, self.tax)
+        expected_params = {"data_selection", "data_aggregation", "data_transform"}
+        self.assertTrue(expected_params.issubset(trial.params.keys()))
 
     def test_get_linreg_space(self):
-        linreg_space = ss.get_linreg_space(self.tax)
-
+        trial = MockTrial()
+        linreg_space = ss.get_linreg_space(trial, self.tax)
         self.assertIsInstance(linreg_space, dict)
         self.assertEqual(linreg_space["model"], "linreg")
-        self.assertIn("data_transform", linreg_space)
-        self.assertIn("fit_intercept", linreg_space)
-        self.assertIn("alpha", linreg_space)
-        self.assertIn("l1_ratio", linreg_space)
-
-    def test_get_trac_space(self):
-        trac_space = ss.get_trac_space(self.tax)
-
-        self.assertIsInstance(trac_space, dict)
-        self.assertEqual(trac_space["model"], "trac")
-        self.assertEqual(trac_space["data_transform"], None)
-        self.assertIn("lambda", trac_space)
+        expected_params = {"alpha", "l1_ratio"}
+        self.assertTrue(expected_params.issubset(trial.params.keys()))
 
     def test_get_rf_space(self):
-        rf_space = ss.get_rf_space(self.tax)
-
+        trial = MockTrial()
+        rf_space = ss.get_rf_space(trial, self.tax)
         self.assertIsInstance(rf_space, dict)
         self.assertEqual(rf_space["model"], "rf")
-        self.assertIn("data_transform", rf_space)
-        self.assertIn("n_estimators", rf_space)
-        self.assertIn("max_depth", rf_space)
-        self.assertIn("min_samples_split", rf_space)
-        self.assertIn("min_samples_leaf", rf_space)
-        self.assertIn("max_features", rf_space)
-        self.assertIn("min_impurity_decrease", rf_space)
-        self.assertIn("bootstrap", rf_space)
+        expected_params = {
+            "n_estimators",
+            "max_depth",
+            "min_samples_split",
+            "min_samples_leaf",
+            "max_features",
+            "min_impurity_decrease",
+            "bootstrap",
+        }
+        self.assertTrue(expected_params.issubset(trial.params.keys()))
 
-    def test_get_xgb_space(self):
-        xgb_space = ss.get_xgb_space(self.tax)
-
-        self.assertIsInstance(xgb_space, dict)
-        self.assertEqual(xgb_space["model"], "xgb")
-        self.assertIn("data_transform", xgb_space)
-        self.assertIn("objective", xgb_space)
-        self.assertIn("max_depth", xgb_space)
-        self.assertIn("min_child_weight", xgb_space)
-        self.assertIn("subsample", xgb_space)
-        self.assertIn("eta", xgb_space)
-
-    def test_get_nn_space(self):
-        nn_space = ss.get_nn_space(self.tax, "nn_reg")
+    @parameterized.expand(
+        [
+            ("nn_reg",),
+            ("nn_class",),
+            ("nn_corn",),
+        ]
+    )
+    def test_get_nn_space(self, model_type):
+        trial = MockTrial()
+        nn_space = ss.get_nn_space(trial, self.tax, model_type)
 
         self.assertIsInstance(nn_space, dict)
-        self.assertEqual(nn_space["model"], "nn_reg")
-        self.assertIn("data_transform", nn_space)
-        self.assertIn("n_hidden_layers", nn_space)
-        self.assertIn("learning_rate", nn_space)
-        self.assertIn("batch_size", nn_space)
-        self.assertIn("epochs", nn_space)
+        self.assertEqual(nn_space["model"], model_type)
+
+        expected_params = {"n_hidden_layers", "learning_rate", "batch_size", "epochs"}
+        self.assertTrue(expected_params.issubset(trial.params.keys()))
+
+        self.assertTrue(any(f"n_units_hl{i}" in trial.params for i in range(30)))
+
+    def test_get_xgb_space(self):
+        trial = MockTrial()
+        xgb_space = ss.get_xgb_space(trial, self.tax)
+        self.assertIsInstance(xgb_space, dict)
+        self.assertEqual(xgb_space["model"], "xgb")
+        expected_params = {
+            "max_depth",
+            "min_child_weight",
+            "subsample",
+            "eta",
+            "n_estimators",
+        }
+        self.assertTrue(expected_params.issubset(trial.params.keys()))
+
+    def test_get_trac_space(self):
+        trial = MockTrial()
+        trac_space = ss.get_trac_space(trial, self.tax)
+        self.assertIsInstance(trac_space, dict)
+        self.assertEqual(trac_space["model"], "trac")
+        self.assertIn("lambda", trial.params)
+
+    @parameterized.expand(
+        [
+            ("xgb",),
+            ("nn_reg",),
+            ("nn_class",),
+            ("nn_corn",),
+            ("linreg",),
+            ("rf",),
+            ("trac",),
+        ]
+    )
+    def test_get_search_space(self, model_type):
+        trial = MockTrial()
+        search_space = ss.get_search_space(trial, model_type, self.tax)
+        self.assertIsInstance(search_space, dict)
+        self.assertEqual(search_space["model"], model_type)
+
+    def test_get_search_space_model_not_supported(self):
+        model_type = "FakeModel"
+        trial = MockTrial()
+        with self.assertRaisesRegex(ValueError, "Model type FakeModel not supported."):
+            ss.get_search_space(trial, model_type, self.tax)

@@ -149,7 +149,7 @@ def train_linreg(
     linreg = ElasticNet(
         alpha=config["alpha"],
         l1_ratio=config["l1_ratio"],
-        fit_intercept=config["fit_intercept"],
+        fit_intercept=True,
     )
     linreg.fit(X_train, y_train)
 
@@ -624,6 +624,8 @@ def train_xgb(
         ),
     )
     # todo: add test set here to be tracked as well
+
+    config["objective"] = "reg:squarederror"
 
     xgb.train(
         config,

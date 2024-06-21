@@ -43,7 +43,7 @@ from q2_ritme.feature_space.transform_features import (
     presence_absence,
     transform_microbial_features,
 )
-from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom, _update_config
+from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
 
 
 class TestUtils(TestPluginBase):
@@ -70,76 +70,6 @@ class TestUtils(TestPluginBase):
     def test_df_to_biom(self):
         obs_biom_table = _df_to_biom(self.true_df)
         assert obs_biom_table == self.true_biom_table
-
-    @parameterized.expand(
-        ["abundance_ith", "variance_ith", "abundance_topi", "variance_topi"]
-    )
-    def test_update_config_i(self, method):
-        config = {
-            "data_selection": method,
-            "dsi_option": 1,
-            "dsq_option": 0.5,
-            "dst_option": 0.1,
-        }
-        expected_config = {
-            **config,
-            "data_selection_i": 1,
-            "data_selection_q": None,
-            "data_selection_t": None,
-        }
-        obs_config = _update_config(config)
-        self.assertDictEqual(expected_config, obs_config)
-
-    @parameterized.expand(["abundance_quantile", "variance_quantile"])
-    def test_update_config_q(self, method):
-        config = {
-            "data_selection": method,
-            "dsi_option": 1,
-            "dsq_option": 0.5,
-            "dst_option": 0.1,
-        }
-        expected_config = {
-            **config,
-            "data_selection_i": None,
-            "data_selection_q": 0.5,
-            "data_selection_t": None,
-        }
-        obs_config = _update_config(config)
-        self.assertDictEqual(expected_config, obs_config)
-
-    @parameterized.expand(["abundance_threshold", "variance_threshold"])
-    def test_update_config_t(self, method):
-        config = {
-            "data_selection": method,
-            "dsi_option": 1,
-            "dsq_option": 0.5,
-            "dst_option": 0.1,
-        }
-        expected_config = {
-            **config,
-            "data_selection_i": None,
-            "data_selection_q": None,
-            "data_selection_t": 0.1,
-        }
-        obs_config = _update_config(config)
-        self.assertDictEqual(expected_config, obs_config)
-
-    def test_update_config_none(self):
-        method = None
-        config = {
-            "data_selection": method,
-            "data_selection_i": 1,
-            "data_selection_q": 0.5,
-            "data_selection_t": 0.1,
-        }
-        expected_config = {
-            "data_selection": method,
-            "data_selection_i": None,
-            "data_selection_q": None,
-            "data_selection_t": None,
-        }
-        obs_config = _update_config(config)
-        self.assertDictEqual(expected_config, obs_config)
 
 
 class TestTransformMicrobialFeatures(TestPluginBase):
@@ -612,6 +542,9 @@ class TestProcessTrain(TestPluginBase):
             "data_transform": None,
             "data_aggregation": None,
             "data_selection": None,
+            "data_selection_i": None,
+            "data_selection_q": None,
+            "data_selection_t": None,
         }
         self.train_val = pd.DataFrame(
             {
