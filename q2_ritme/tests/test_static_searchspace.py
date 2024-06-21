@@ -118,7 +118,7 @@ class TestStaticSearchSpace(TestPluginBase):
             "min_child_weight",
             "subsample",
             "eta",
-            "n_estimators",
+            "num_parallel_tree",
         }
         self.assertTrue(expected_params.issubset(trial.params.keys()))
 

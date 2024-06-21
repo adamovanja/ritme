@@ -131,7 +131,7 @@ def get_xgb_space(trial, tax, test_mode: bool = False) -> Dict[str, Any]:
     trial.suggest_int("min_child_weight", 0, 4)
     trial.suggest_categorical("subsample", [0.7, 0.8, 0.9, 1.0])
     trial.suggest_categorical("eta", [0.01, 0.05, 0.1, 0.2, 0.3])
-    trial.suggest_int("n_estimators", 10, 100, step=10)
+    trial.suggest_int("num_parallel_tree", 1, 3, step=1)
 
     return {"model": "xgb"}
 
