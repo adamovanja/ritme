@@ -151,3 +151,7 @@ class TestStaticSearchSpace(TestPluginBase):
         trial = MockTrial()
         with self.assertRaisesRegex(ValueError, "Model type FakeModel not supported."):
             ss.get_search_space(trial, model_type, self.tax)
+
+    def test_get_optuna_points_to_evaluate(self):
+        params_ls = ss.get_optuna_points_to_evaluate()
+        self.assertEqual(len(params_ls), 225)

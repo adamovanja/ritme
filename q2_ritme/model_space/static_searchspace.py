@@ -1,3 +1,4 @@
+import itertools
 from typing import Any, Dict, Optional
 
 
@@ -170,3 +171,37 @@ def get_search_space(
         return get_nn_space(trial, tax, model_type, test_mode)
     else:
         raise ValueError(f"Model type {model_type} not supported.")
+
+
+def get_optuna_points_to_evaluate():
+    """
+    define a set of search_space options to evaluate for sure before
+    continuing with optimal search of optuna
+    """
+    data_selection_options = [
+        None,
+        "abundance_ith",
+        "variance_ith",
+        "abundance_topi",
+        "variance_topi",
+        "abundance_quantile",
+        "variance_quantile",
+        "abundance_threshold",
+        "variance_threshold",
+    ]
+    data_aggregation_options = [
+        None,
+        "tax_class",
+        "tax_order",
+        "tax_family",
+        "tax_genus",
+    ]
+    data_transform_options = [None, "clr", "ilr", "alr", "pa"]
+
+    points_to_evaluate = [
+        {"data_selection": ds, "data_aggregation": da, "data_transform": dt}
+        for ds, da, dt in itertools.product(
+            data_selection_options, data_aggregation_options, data_transform_options
+        )
+    ]
+    return points_to_evaluate

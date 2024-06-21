@@ -1,5 +1,6 @@
 import os
 import random
+import warnings
 from functools import partial
 
 import numpy as np
@@ -111,14 +112,24 @@ def run_trials(
         define_search_space = partial(
             ss.get_search_space, model_type=exp_name, tax=tax, test_mode=test_mode
         )
+        # define a set of search_space options to evaluate for sure before
+        # continuing with optimal search of optuna
+        # ! currently it is 225 points which might need to be subsampled
+        points_to_evaluate = ss.get_optuna_points_to_evaluate()
+        if len(points_to_evaluate) > num_trials:
+            raise warnings.Warning(
+                f"Number of points to evaluate with optuna is larger than number of "
+                f"trials. Not all points can be evaluated. Consider increasing the "
+                f"number of trials to at least {len(points_to_evaluate)}."
+            )
         search_algo = OptunaSearch(
             space=define_search_space,
-            # todo: must add points to evaluate
-            # points_to_evaluate=,
+            points_to_evaluate=points_to_evaluate,
             metric=metric,
             mode=mode,
             seed=seed_model,
         )
+
         # todo: potentially add this
         # search_algo = ConcurrencyLimiter(search_algo,
         # max_concurrent=max_concurrent_trials)
@@ -131,6 +142,9 @@ def run_trials(
         # BasicVariantGenerator: tries out all hyperparams in search space as
         # they are defined
         search_algo = tune.search.BasicVariantGenerator()
+        # ! requires different definition of search space - more like in github
+        # commit 2874c70
+        raise ValueError("Fully reproducible mode is no longer implemented.")
 
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)
