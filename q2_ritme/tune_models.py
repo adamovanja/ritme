@@ -12,6 +12,7 @@ from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
+from ray.tune.search import ConcurrencyLimiter
 from ray.tune.search.optuna import OptunaSearch
 
 from q2_ritme.model_space import static_searchspace as ss
@@ -129,9 +130,9 @@ def run_trials(
             seed=seed_model,
         )
 
-        # todo: potentially add this
-        # search_algo = ConcurrencyLimiter(search_algo,
-        # max_concurrent=max_concurrent_trials)
+        search_algo = ConcurrencyLimiter(
+            search_algo, max_concurrent=max_concurrent_trials
+        )
     else:
         # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
