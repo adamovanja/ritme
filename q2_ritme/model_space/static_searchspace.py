@@ -3,21 +3,26 @@ from typing import Any, Dict, Optional
 
 
 def _get_dependent_data_eng_space(trial, data_selection: str) -> None:
+    # since same hyperparams need to maintain same type: setting none values as
+    # negative values
+    none_value_i = -1
+    none_value_q_n_t = -1.0
+
     if data_selection is None:
-        trial.suggest_categorical("data_selection_i", [None])
-        trial.suggest_categorical("data_selection_q", [None])
-        trial.suggest_categorical("data_selection_t", [None])
+        trial.suggest_int("data_selection_i", none_value_i, none_value_i)
+        trial.suggest_float("data_selection_q", none_value_q_n_t, none_value_q_n_t)
+        trial.suggest_float("data_selection_t", none_value_q_n_t, none_value_q_n_t)
     elif data_selection.endswith("_ith"):
         trial.suggest_int("data_selection_i", 1, 20)
-        trial.suggest_categorical("data_selection_q", [None])
-        trial.suggest_categorical("data_selection_t", [None])
+        trial.suggest_float("data_selection_q", none_value_q_n_t, none_value_q_n_t)
+        trial.suggest_float("data_selection_t", none_value_q_n_t, none_value_q_n_t)
     elif data_selection.endswith("_quantile"):
-        trial.suggest_categorical("data_selection_i", [None])
+        trial.suggest_int("data_selection_i", none_value_i, none_value_i)
         trial.suggest_float("data_selection_q", 0.5, 0.9, step=0.1)
-        trial.suggest_categorical("data_selection_t", [None])
+        trial.suggest_float("data_selection_t", none_value_q_n_t, none_value_q_n_t)
     elif data_selection.endswith("_threshold"):
-        trial.suggest_categorical("data_selection_i", [None])
-        trial.suggest_categorical("data_selection_q", [None])
+        trial.suggest_int("data_selection_i", none_value_i, none_value_i)
+        trial.suggest_float("data_selection_q", none_value_q_n_t, none_value_q_n_t)
         trial.suggest_float("data_selection_t", 0.00001, 0.01, log=True)
 
 
