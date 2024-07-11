@@ -50,6 +50,8 @@ requirements:
       - c-lasso
       # grpcio pinned due to incompatibility with ray caused by c-lasso
       - grpcio==1.51.1
+      # to enable insights in ray dashboard
+      - py-spy
       - wandb
 
 

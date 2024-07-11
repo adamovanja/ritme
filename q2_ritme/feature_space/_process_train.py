@@ -24,10 +24,7 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     # SELECT
     ft_selected = select_microbial_features(
         ft_agg,
-        config["data_selection"],
-        config["data_selection_i"],
-        config["data_selection_q"],
-        config["data_selection_t"],
+        config,
         feat_prefix,
     )
     print(f"Number of features after selection: {len(ft_selected.columns)}")

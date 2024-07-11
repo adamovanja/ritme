@@ -142,10 +142,7 @@ class TunedModel:
             # assign self.train_selected_fts to be able to run select on test set later
             train_selected = select_microbial_features(
                 data,
-                self.data_config["data_selection"],
-                self.data_config["data_selection_i"],
-                self.data_config["data_selection_q"],
-                self.data_config["data_selection_t"],
+                self.data_config,
                 ft_prefix,
             )
             self.train_selected_fts = train_selected.columns
