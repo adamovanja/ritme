@@ -389,25 +389,27 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         self.assertEqual(features_to_group, expected_features)
 
     def test_select_microbial_features_method_none(self):
-        obs_ft = select_microbial_features(self.ft, None, None, None, None, "F")
+        config = {"data_selection": None}
+        obs_ft = select_microbial_features(self.ft, config, "F")
         assert_frame_equal(self.ft, obs_ft)
 
     def test_select_microbial_features_none_grouped(self):
         with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
-            obs_ft = select_microbial_features(
-                self.ft, "abundance_ith", 4, None, None, "F"
-            )
+            config = {"data_selection": "abundance_ith", "data_selection_i": 4}
+            obs_ft = select_microbial_features(self.ft, config, "F")
         assert_frame_equal(self.ft, obs_ft)
 
     def test_select_microbial_features_i_too_large(self):
         with self.assertWarnsRegex(
             Warning, r"Selected i=1000 is larger than number of features.*"
         ):
-            select_microbial_features(self.ft, "abundance_ith", 1000, None, None, "F")
+            config = {"data_selection": "abundance_ith", "data_selection_i": 1000}
+            select_microbial_features(self.ft, config, "F")
 
     def test_select_microbial_features_unknown_method(self):
         with self.assertRaisesRegex(ValueError, r"Unknown method: FancyMethod."):
-            select_microbial_features(self.ft, "FancyMethod", 1, None, None, "F")
+            config = {"data_selection": "FancyMethod"}
+            select_microbial_features(self.ft, config, "F")
 
     def test_select_microbial_features_abundance_ith(self):
         # expected
@@ -416,7 +418,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=["F1", "F2"], inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "abundance_ith", 2, None, None, "F")
+        config = {"data_selection": "abundance_ith", "data_selection_i": 2}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -429,7 +432,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "variance_ith", 1, None, None, "F")
+        config = {"data_selection": "variance_ith", "data_selection_i": 1}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -441,9 +445,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(
-            self.ft, "abundance_topi", 2, None, None, "F"
-        )
+        config = {"data_selection": "abundance_topi", "data_selection_i": 2}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -456,7 +459,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(self.ft, "variance_topi", 1, None, None, "F")
+        config = {"data_selection": "variance_topi", "data_selection_i": 1}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -468,9 +472,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(
-            self.ft, "abundance_quantile", None, 0.5, None, "F"
-        )
+        config = {"data_selection": "abundance_quantile", "data_selection_q": 0.5}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -483,9 +486,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(
-            self.ft, "variance_quantile", None, 0.5, None, "F"
-        )
+        config = {"data_selection": "variance_quantile", "data_selection_q": 0.5}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -497,9 +499,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(
-            self.ft, "abundance_threshold", None, None, 10, "F"
-        )
+        config = {"data_selection": "abundance_threshold", "data_selection_t": 10}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -511,9 +512,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(
-            self.ft, "abundance_threshold", None, None, 100, "F"
-        )
+        config = {"data_selection": "abundance_threshold", "data_selection_t": 100}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -526,9 +526,8 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         exp_ft.drop(columns=ls_group, inplace=True)
 
         # observed
-        obs_ft = select_microbial_features(
-            self.ft, "variance_threshold", None, None, 3, "F"
-        )
+        config = {"data_selection": "variance_threshold", "data_selection_t": 3}
+        obs_ft = select_microbial_features(self.ft, config, "F")
 
         assert_frame_equal(exp_ft, obs_ft)
 
@@ -602,9 +601,7 @@ class TestProcessTrain(TestPluginBase):
 
         # Assert
         self._assert_called_with_df(mock_aggregate_features, ft, None, self.tax)
-        self._assert_called_with_df(
-            mock_select_features, ft, None, None, None, None, "F"
-        )
+        self._assert_called_with_df(mock_select_features, ft, self.config, "F")
         self._assert_called_with_df(mock_transform_features, ft, None)
         self._assert_called_with_df(
             mock_split_data_by_host,

@@ -210,7 +210,8 @@ class TunedModel:
 def retrieve_best_models(result_dic):
     best_model_dic = {}
     for model_type, result_grid in result_dic.items():
-        best_result = result_grid.get_best_result()
+        # todo: for classification - metric/mode needs to be stored in variable
+        best_result = result_grid.get_best_result(metric="rmse_val", mode="min")
 
         best_model = get_model(model_type, best_result)
         best_data_proc = get_data_processing(best_result)
@@ -324,7 +325,8 @@ def get_best_model_metrics_and_config(
     tuple: A tuple containing a DataFrame of metrics and a dictionary of the
     best model's configuration.
     """
-    best_result = trial_result.get_best_result()
+    # todo: for classification - metric/mode needs to be stored in variable
+    best_result = trial_result.get_best_result(metric="rmse_val", mode="min")
     config = best_result.config
     metrics_ser = best_result.metrics_dataframe[metric_ls].iloc[-1]
     metrics_df = pd.DataFrame(metrics_ser).transpose()

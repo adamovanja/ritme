@@ -31,26 +31,18 @@ class TestStaticSearchSpace(TestPluginBase):
 
     @parameterized.expand(
         [
-            ("abundance_ith", "i", -1),
-            ("variance_quantile", "q", -1.0),
-            ("abundance_threshold", "t", -1.0),
+            ("abundance_ith", "i"),
+            ("variance_quantile", "q"),
+            ("abundance_threshold", "t"),
         ]
     )
-    def test_get_dependent_data_eng_space(
-        self, data_selection, expected_non_none, none_value
-    ):
+    def test_get_dependent_data_eng_space(self, data_selection, expected_suffix):
         trial = MockTrial()
         ss._get_dependent_data_eng_space(trial, data_selection)
 
-        expected_params = {"data_selection_i", "data_selection_q", "data_selection_t"}
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
-
-        for suffix in "iqt":
-            param = f"data_selection_{suffix}"
-            if suffix == expected_non_none:
-                self.assertIsNotNone(trial.params[param])
-            else:
-                self.assertEqual(trial.params[param], none_value)
+        hyperparam = f"data_selection_{expected_suffix}"
+        self.assertIn(hyperparam, trial.params)
+        self.assertIsNotNone(trial.params[hyperparam])
 
     def test_get_data_eng_space_test_mode(self):
         trial = MockTrial()

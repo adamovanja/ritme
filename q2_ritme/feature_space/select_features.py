@@ -154,6 +154,7 @@ def _reset_i_too_large(i: int, feat: pd.DataFrame):
             f"features. So it is set to the max. possible value: {len(feat.columns)}."
         )
         return len(feat.columns)
+    return i
 
 
 def select_microbial_features(feat, config, ft_prefix):

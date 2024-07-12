@@ -112,16 +112,23 @@ def run_trials(
         define_search_space = partial(
             ss.get_search_space, model_type=exp_name, tax=tax, test_mode=test_mode
         )
-        # define a set of search_space options to evaluate for sure before
-        # continuing with optimal search of optuna
-        # ! currently it is 225 points which might need to be subsampled
-        points_to_evaluate = ss.get_optuna_points_to_evaluate()
-        if len(points_to_evaluate) > num_trials:
-            warnings.warn(
-                f"Number of points to evaluate with optuna is larger than number of "
-                f"trials. Not all points can be evaluated. Consider increasing the "
-                f"number of trials to at least {len(points_to_evaluate)}."
-            )
+
+        if test_mode:
+            points_to_evaluate = None
+        else:
+            # # define a set of search_space options to evaluate for sure before
+            # # continuing with optimal search of optuna
+            # # ! currently it is 225 points which might need to be subsampled
+            points_to_evaluate = ss.get_optuna_points_to_evaluate()
+            if len(points_to_evaluate) > num_trials:
+                warnings.warn(
+                    f"Number of points to evaluate with optuna is larger than number "
+                    f"of trials. Not all points can be evaluated. Consider increasing "
+                    f"the number of trials to at least {len(points_to_evaluate)}."
+                )
+                random.seed(seed_model)
+                points_to_evaluate = random.sample(points_to_evaluate, num_trials)
+
         search_algo = OptunaSearch(
             space=define_search_space,
             points_to_evaluate=points_to_evaluate,
