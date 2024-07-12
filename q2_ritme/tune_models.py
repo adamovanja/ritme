@@ -182,7 +182,7 @@ def run_trials(
                 api_key=api_key,
                 entity=entity,
                 project=exp_name,
-                tags={"experiment_tag": experiment_tag},
+                tags={experiment_tag},
             )
         ]
     analysis = tune.Tuner(

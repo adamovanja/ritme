@@ -15,7 +15,7 @@ def get_data_eng_space(trial, tax, test_mode: bool = False) -> None:
     if test_mode:
         # note: test mode can be adjusted to whatever one wants to test
         data_selection = trial.suggest_categorical(
-            "data_selection", [None, "abundance_ith"]
+            "data_selection", ["abundance_ith", "variance_threshold"]
         )
         if data_selection is not None:
             _get_dependent_data_eng_space(trial, data_selection)
