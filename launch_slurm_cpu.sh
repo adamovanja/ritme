@@ -21,6 +21,10 @@ CONFIG="q2_ritme/run_config.json"
 # -> only these values are allowed: 1, 2, 3 - since below ports are
 # -> otherwise taken or not allowed
 JOB_NB=1
+
+# if your number of threads are limited increase as needed
+ulimit -u 60000
+ulimit -n 524288
 # ! USER END __________
 
 # __doc_head_address_start__
@@ -55,6 +59,7 @@ ray_client_server_port=$((1 + JOB_NB * 10000))
 redis_shard_ports=$((6602 + JOB_NB * 100))
 min_worker_port=$((2 + JOB_NB * 10000))
 max_worker_port=$((9999 + JOB_NB * 10000))
+dashboard_port=$((8265 + JOB_NB))
 
 ip_head=$head_node_ip:$port
 export ip_head
@@ -70,6 +75,7 @@ srun --nodes=1 --ntasks=1 -w "$head_node" \
     --redis-shard-ports=$redis_shard_ports \
     --min-worker-port=$min_worker_port \
     --max-worker-port=$max_worker_port \
+    --dashboard-port=$dashboard_port \
     --num-cpus "${SLURM_CPUS_PER_TASK}" --num-gpus "${SLURM_GPUS_PER_TASK:-0}" --block &
 # __doc_head_ray_end__
 
@@ -90,6 +96,10 @@ for ((i = 1; i <= worker_num; i++)); do
 done
 # __doc_worker_ray_end__
 
+# Output the dashboard URL
+dashboard_url="http://${head_node_ip}:${dashboard_port}"
+export RAY_DASHBOARD_URL="$dashboard_url"
+echo "Ray Dashboard URL: $RAY_DASHBOARD_URL"
 
 # __doc_script_start__
 python -u q2_ritme/run_n_eval_tune.py --config $CONFIG

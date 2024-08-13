@@ -10,7 +10,6 @@
     "nn_corn",
     "rf"
   ],
-  "mlflow_tracking_uri": "mlruns",
   "models_to_evaluate_separately": [
     "xgb",
     "nn_reg",
@@ -26,5 +25,6 @@
   "seed_model": 12,
   "target": "age_months",
   "test_mode": false,
+  "tracking_uri": "wandb",
   "train_size": 0.8
 }

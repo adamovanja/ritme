@@ -42,8 +42,15 @@ def run_n_eval_tune(config_path):
             f"This experiment tag already exists: {config['experiment_tag']}."
             "Please use another one."
         )
-
-    path_mlflow = os.path.join("experiments", config["mlflow_tracking_uri"])
+    if config["tracking_uri"] == "mlruns":
+        path_tracker = os.path.join("experiments", config["tracking_uri"])
+    elif config["tracking_uri"] == "wandb":
+        path_tracker = "wandb"
+    else:
+        raise ValueError(
+            f"Invalid tracking_uri: {config['tracking_uri']}. Must be "
+            f"'mlruns' or 'wandb'."
+        )
     path_exp = os.path.join(base_path, config["experiment_tag"])
 
     # ! Load and split data
@@ -67,7 +74,7 @@ def run_n_eval_tune(config_path):
         config["seed_model"],
         tax,
         tree_phylo,
-        path_mlflow,
+        path_tracker,
         path_exp,
         # number of trials to run per model type * grid_search parameters in
         # @_static_searchspace
