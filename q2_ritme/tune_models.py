@@ -134,7 +134,7 @@ def run_trials(
             WandbLoggerCallback(
                 api_key=api_key,
                 entity=entity,
-                project=exp_name,
+                project=experiment_tag,
                 tags={experiment_tag},
             )
         ]
