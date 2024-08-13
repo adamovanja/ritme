@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import skbio
 import torch
-from ray import air, init, tune
+from ray import air, init, shutdown, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
@@ -86,11 +86,13 @@ def run_trials(
     np.random.seed(seed_model)
     torch.manual_seed(seed_model)
 
-    # Initialize Ray with the runtime environment
+    # Initialize Ray with a local runtime environment
     # todo: test if ray init from outside also works for multiple model runs on
     # todo: HPC
-    # shutdown()
-    context = init(address="auto", ignore_reinit_error=True)
+    shutdown()
+    # local forces ray to start new local runtime env instead of trying to
+    # connect to existing cluster
+    context = init(address="local", include_dashboard=False, ignore_reinit_error=True)
     print(f"Ray dashboard is at: {context.dashboard_url}")
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
