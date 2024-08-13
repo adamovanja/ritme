@@ -1,12 +1,14 @@
 import os
 import random
 
+import dotenv
 import numpy as np
 import pandas as pd
 import skbio
 import torch
 from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
+from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
 from q2_ritme.model_space import static_searchspace as ss
@@ -34,7 +36,7 @@ def get_slurm_resource(resource_name, default_value=0):
 
 
 def run_trials(
-    mlflow_tracking_uri,  # MLflow with MLflowLoggerCallback
+    tracking_uri,
     exp_name,
     trainable,
     search_space,
@@ -75,9 +77,6 @@ def run_trials(
     # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU
     #   support
 
-    if not os.path.exists(mlflow_tracking_uri):
-        os.makedirs(mlflow_tracking_uri)
-
     # set seed for search algorithms/schedulers
     random.seed(seed_model)
     np.random.seed(seed_model)
@@ -110,6 +109,36 @@ def run_trials(
 
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)
+    # define callbacks
+    if tracking_uri.endswith("mlruns"):
+        if not os.path.exists(tracking_uri):
+            os.makedirs(tracking_uri)
+        callbacks = [
+            MLflowLoggerCallback(
+                tracking_uri=tracking_uri,
+                experiment_name=exp_name,
+                # below would be double saving: local_dir as artifact here
+                # save_artifact=True,
+                tags={"experiment_tag": experiment_tag},
+            )
+        ]
+    elif tracking_uri == "wandb":
+        # load wandb API key from .env file
+        dotenv.load_dotenv()
+        api_key = os.getenv("WANDB_API_KEY")
+        entity = os.getenv("WANDB_ENTITY")
+        if api_key is None:
+            raise ValueError("No WANDB_API_KEY found in .env file.")
+        if entity is None:
+            raise ValueError("No WANDB_ENTITY found in .env file.")
+        callbacks = [
+            WandbLoggerCallback(
+                api_key=api_key,
+                entity=entity,
+                project=exp_name,
+                tags={experiment_tag},
+            )
+        ]
     analysis = tune.Tuner(
         # trainable with input parameters passed and set resources
         tune.with_resources(
@@ -137,17 +166,7 @@ def run_trials(
                 checkpoint_score_order="min",
                 num_to_keep=3,
             ),
-            # ! callback: executing specific tasks (e.g. logging) at specific
-            # points in training - used in MLflow browser interface
-            callbacks=[
-                MLflowLoggerCallback(
-                    tracking_uri=mlflow_tracking_uri,
-                    experiment_name=exp_name,
-                    # below would be double saving: local_dir as artifact here
-                    # save_artifact=True,
-                    tags={"experiment_tag": experiment_tag},
-                ),
-            ],
+            callbacks=callbacks,
         ),
         # hyperparameter space: passes config used in trainables
         param_space=search_space,
