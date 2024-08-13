@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import skbio
 import torch
-from ray import air, init, shutdown, tune
+from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 
@@ -84,10 +84,11 @@ def run_trials(
     torch.manual_seed(seed_model)
 
     # Initialize Ray with the runtime environment
-    shutdown()
+    # shutdown()  #can't be used when launching on HPC with externally started
+    # ray instance
     # todo: configure dashboard here - see "ray dashboard set up" online once
     # todo: ray (Q2>Py) is updated
-    context = init(include_dashboard=False, ignore_reinit_error=True)
+    context = init(address="auto", include_dashboard=False, ignore_reinit_error=True)
     print(context.dashboard_url)
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:

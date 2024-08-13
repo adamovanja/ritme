@@ -16,12 +16,22 @@ echo "SLURM_GPUS_PER_TASK: $SLURM_GPUS_PER_TASK"
 
 # ! USER SETTINGS HERE
 # -> config file to use
-CONFIG="q2_ritme/run_config.json"
+CONFIG="q2_ritme/r_main.json"
 # -> count of this concurrent job launched on same infrastructure
 # -> only these values are allowed: 1, 2, 3 - since below ports are
 # -> otherwise taken or not allowed
 JOB_NB=1
 # ! USER END __________
+
+# Cleanup function to be called on exit
+cleanup() {
+    echo "Cleaning up Ray cluster..."
+    for node in "${nodes_array[@]}"; do
+        srun --nodes=1 --ntasks=1 -w "$node" ray stop
+    done
+    echo "Ray cluster stopped."
+}
+trap cleanup EXIT
 
 # __doc_head_address_start__
 # script was edited from:
@@ -98,3 +108,5 @@ sstat -j $SLURM_JOB_ID
 # get elapsed time of job
 echo "TIME COUNTER:"
 sacct -j $SLURM_JOB_ID --format=elapsed --allocations
+
+# The cleanup function will be called automatically when the script exits
