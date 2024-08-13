@@ -108,5 +108,3 @@ sstat -j $SLURM_JOB_ID
 # get elapsed time of job
 echo "TIME COUNTER:"
 sacct -j $SLURM_JOB_ID --format=elapsed --allocations
-
-# The cleanup function will be called automatically when the script exits
