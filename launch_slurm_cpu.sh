@@ -21,6 +21,10 @@ CONFIG="q2_ritme/run_config.json"
 # -> only these values are allowed: 1, 2, 3 - since below ports are
 # -> otherwise taken or not allowed
 JOB_NB=1
+
+# if your number of threads are limited increase as needed
+ulimit -u 60000
+ulimit -n 524288
 # ! USER END __________
 
 # __doc_head_address_start__

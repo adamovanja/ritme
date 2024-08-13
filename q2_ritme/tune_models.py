@@ -54,9 +54,8 @@ def run_trials(
     scheduler_max_t=100,
     resources=None,
 ):
-    # todo: this 10 is imposed by my HPC system - should be made flexible (20
-    # could also be possible)
-    max_concurrent_trials = 10
+    # since each trial starts it own threads - this should not be set to highly
+    max_concurrent_trials = min(num_trials, 5)
     if resources is None:
         # if not a slurm process: default values are used
         all_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
