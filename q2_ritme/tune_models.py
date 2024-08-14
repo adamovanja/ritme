@@ -119,6 +119,7 @@ def run_trials(
             points_to_evaluate = random.sample(points_to_evaluate, num_trials)
 
         search_algo = OptunaSearch(
+            space=search_space,
             points_to_evaluate=points_to_evaluate,
             seed=seed_model,
         )
