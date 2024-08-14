@@ -20,6 +20,27 @@ The model configuration is defined in `q2_ritme/run_config.json`. If you want to
 
 Once you have trained some models, you can check the progress of the trained models in the tracking software you selected (see section #model-tracking).
 
+To define a suitable model configuration, please find the description of each variable in `q2_ritme/run_config.json` here:
+
+| Parameter | Description |
+|-----------|-------------|
+| experiment_tag | Name of the experiment. |
+| host_id | Column name for unique host_id in the metadata. |
+| target | Column name of the target variable in the metadata. |
+| ls_model_types | List of model types to explore sequentially - options include "linreg", "trac", "xgb", "nn_reg", "nn_class", "nn_corn" and "rf". |
+| models_to_evaluate_separately | List of models to evaluate separately during iterative learning - only possible for "xgb", "nn_reg", "nn_class" and "nn_corn". |
+| num_trials | Total number of trials to try per model type: the larger this value the more space of the complete search space can be searched. |
+| max_cuncurrent_trials | Maximal number of concurrent trials to run. |
+| path_to_ft | Path to the feature table file. |
+| path_to_md | Path to the metadata file. |
+| path_to_phylo | Path to the phylogenetic tree file. |
+| path_to_tax | Path to the taxonomy file. |
+| seed_data | Seed for data-related random operations. |
+| seed_model | Seed for model-related random operations. |
+| test_mode | Boolean flag to indicate if running in test mode. |
+| tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  #model-tracking for set-up instructions. |
+| train_size | Fraction of data to use for training (e.g., 0.8 for 80% train, 20% test split). |
+
 ### Local training
 To locally train models with a defined configuration in `q2_ritme/config.json` run:
 ````

@@ -1,6 +1,6 @@
+import logging
 import os
 import random
-import warnings
 
 import dotenv
 import numpy as np
@@ -90,7 +90,13 @@ def run_trials(
     # ray instance
     # todo: configure dashboard here - see "ray dashboard set up" online once
     # todo: ray (Q2>Py) is updated
-    context = init(address="auto", include_dashboard=False, ignore_reinit_error=True)
+    context = init(
+        address="auto",
+        include_dashboard=False,
+        ignore_reinit_error=True,
+        logging_level=logging.DEBUG,
+        log_to_driver=True,
+    )
     print(context.dashboard_url)
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
@@ -105,25 +111,7 @@ def run_trials(
             max_t=scheduler_max_t,
         )
 
-        # define a set of search_space options to evaluate for sure before
-        # continuing with optimal search of optuna
-        # ! currently it is 225 points which might need to be subsampled
-        points_to_evaluate = ss.get_optuna_points_to_evaluate()
-        if len(points_to_evaluate) > num_trials:
-            warnings.warn(
-                f"Number of points to evaluate with optuna is larger than number "
-                f"of trials. Not all points can be evaluated. Consider increasing "
-                f"the number of trials to at least {len(points_to_evaluate)}."
-            )
-            random.seed(seed_model)
-            points_to_evaluate = random.sample(points_to_evaluate, num_trials)
-
-        search_algo = OptunaSearch(
-            space=search_space,
-            points_to_evaluate=points_to_evaluate,
-            seed=seed_model,
-        )
-
+        search_algo = OptunaSearch(seed=seed_model)
         search_algo = ConcurrencyLimiter(
             search_algo, max_concurrent=max_concurrent_trials
         )
