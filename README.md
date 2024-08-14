@@ -44,7 +44,7 @@ To define a suitable model configuration, please find the description of each va
 ### Local training
 To locally train models with a defined configuration in `q2_ritme/config.json` run:
 ````
-python q2_ritme/run_n_eval_tune.py --config q2_ritme/run_config.json
+./launch_local.sh q2_ritme/config.json
 ````
 
 To evaluate the best trial (trial < experiment) of all launched experiments locally, run:

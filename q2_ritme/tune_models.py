@@ -1,5 +1,6 @@
 import os
 import random
+from functools import partial
 
 import dotenv
 import numpy as np
@@ -41,7 +42,7 @@ def run_trials(
     tracking_uri,
     exp_name,
     trainable,
-    search_space,
+    test_mode,
     train_val,
     target,
     host_id,
@@ -53,7 +54,7 @@ def run_trials(
     num_trials,
     max_concurrent_trials,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
-    scheduler_grace_period=5,
+    scheduler_grace_period=10,
     scheduler_max_t=100,
     resources=None,
 ):
@@ -98,6 +99,12 @@ def run_trials(
     )
     print(f"Ray cluster resources: {ray.cluster_resources()}")
     print(f"Dashboard URL at: {context.dashboard_url}")
+
+    # define metric and mode to optimize
+    metric = "rmse_val"
+    mode = "min"
+
+    # define schedulers:
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
         # AsyncHyperBand enables aggressive early stopping of bad trials.
@@ -110,19 +117,21 @@ def run_trials(
             # stopping trials after max_t iterations have passed
             max_t=scheduler_max_t,
         )
-
-        search_algo = OptunaSearch(seed=seed_model)
     else:
         # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
         # ! are evaluated in the same order.
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
 
-        # BasicVariantGenerator: tries out all hyperparams in search space as
-        # they are defined
-        # search_algo = tune.search.BasicVariantGenerator()
+    # define search algorithm
+    # partial function needed to pass additional parameters
+    define_search_space = partial(
+        ss.get_search_space, model_type=exp_name, tax=tax, test_mode=test_mode
+    )
 
-        search_algo = OptunaSearch(seed=seed_model)
+    search_algo = OptunaSearch(
+        space=define_search_space, seed=seed_model, metric=metric, mode=mode
+    )
 
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)
@@ -179,24 +188,22 @@ def run_trials(
             # ! checkpoint: to store best model - is retrieved in
             # evaluate_models.py
             checkpoint_config=air.CheckpointConfig(
-                checkpoint_score_attribute="rmse_val",
-                checkpoint_score_order="min",
+                checkpoint_score_attribute=metric,
+                checkpoint_score_order=mode,
                 num_to_keep=3,
             ),
             callbacks=callbacks,
         ),
-        # hyperparameter space: passes config used in trainables
-        param_space=search_space,
         tune_config=tune.TuneConfig(
-            metric="rmse_val",
-            mode="min",
+            metric=metric,
+            mode=mode,
             # define the scheduler
             scheduler=scheduler,
             # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
             # set max concurrent trials to launch
             max_concurrent_trials=max_concurrent_trials,
-            # ! set seed
+            # define search algorithm
             search_alg=search_algo,
         ),
     )
@@ -237,7 +244,6 @@ def run_all_trials(
     test_mode: bool = False,
 ) -> dict:
     results_all = {}
-    model_search_space = ss.get_search_space(tax, test_mode)
 
     # if tax + phylogeny empty we can't run trac
     if (tax.empty or tree_phylo.children == []) and "trac" in model_types:
@@ -255,7 +261,7 @@ def run_all_trials(
             mlflow_uri,
             model,
             model_trainables[model],
-            model_search_space[model],
+            test_mode,
             train_val,
             target,
             host_id,
