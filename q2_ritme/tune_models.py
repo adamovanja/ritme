@@ -1,17 +1,16 @@
-import logging
 import os
 import random
 
 import dotenv
 import numpy as np
 import pandas as pd
+import ray
 import skbio
 import torch
 from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
-from ray.tune.search import ConcurrencyLimiter
 from ray.tune.search.optuna import OptunaSearch
 
 from q2_ritme.model_space import static_searchspace as ss
@@ -91,13 +90,14 @@ def run_trials(
     # todo: configure dashboard here - see "ray dashboard set up" online once
     # todo: ray (Q2>Py) is updated
     context = init(
-        address="auto",
+        address="local",
         include_dashboard=False,
         ignore_reinit_error=True,
-        logging_level=logging.DEBUG,
-        log_to_driver=True,
+        # logging_level=logging.DEBUG,
+        # log_to_driver=True,
     )
-    print(context.dashboard_url)
+    print(f"Ray cluster resources: {ray.cluster_resources()}")
+    print(f"Dashboard URL at: {context.dashboard_url}")
     # note: both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
         # AsyncHyperBand enables aggressive early stopping of bad trials.
@@ -112,9 +112,9 @@ def run_trials(
         )
 
         search_algo = OptunaSearch(seed=seed_model)
-        search_algo = ConcurrencyLimiter(
-            search_algo, max_concurrent=max_concurrent_trials
-        )
+        # search_algo = ConcurrencyLimiter(
+        #     search_algo, max_concurrent=max_concurrent_trials
+        # )
     else:
         # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
@@ -195,8 +195,8 @@ def run_trials(
             scheduler=scheduler,
             # number of trials to run - schedulers might decide to run more trials
             num_samples=num_trials,
-            # # todo: remove below or change search_alg
-            # max_concurrent_trials=max_concurrent_trials,
+            # set max concurrent trials to launch
+            max_concurrent_trials=max_concurrent_trials,
             # ! set seed
             search_alg=search_algo,
         ),
