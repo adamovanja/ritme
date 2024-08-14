@@ -1,5 +1,6 @@
 import os
 import random
+import warnings
 
 import dotenv
 import numpy as np
@@ -10,6 +11,7 @@ from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
+from ray.tune.search import ConcurrencyLimiter
 from ray.tune.search.optuna import OptunaSearch
 
 from q2_ritme.model_space import static_searchspace as ss
@@ -50,13 +52,14 @@ def run_trials(
     tree_phylo,
     path2exp,
     num_trials,
+    max_concurrent_trials,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
     scheduler_grace_period=5,
     scheduler_max_t=100,
     resources=None,
 ):
     # since each trial starts it own threads - this should not be set to highly
-    max_concurrent_trials = min(num_trials, 5)
+    max_concurrent_trials = min(num_trials, max_concurrent_trials)
     if resources is None:
         # if not a slurm process: default values are used
         all_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
@@ -101,7 +104,28 @@ def run_trials(
             # stopping trials after max_t iterations have passed
             max_t=scheduler_max_t,
         )
-        search_algo = OptunaSearch()
+
+        # define a set of search_space options to evaluate for sure before
+        # continuing with optimal search of optuna
+        # ! currently it is 225 points which might need to be subsampled
+        points_to_evaluate = ss.get_optuna_points_to_evaluate()
+        if len(points_to_evaluate) > num_trials:
+            warnings.warn(
+                f"Number of points to evaluate with optuna is larger than number "
+                f"of trials. Not all points can be evaluated. Consider increasing "
+                f"the number of trials to at least {len(points_to_evaluate)}."
+            )
+            random.seed(seed_model)
+            points_to_evaluate = random.sample(points_to_evaluate, num_trials)
+
+        search_algo = OptunaSearch(
+            points_to_evaluate=points_to_evaluate,
+            seed=seed_model,
+        )
+
+        search_algo = ConcurrencyLimiter(
+            search_algo, max_concurrent=max_concurrent_trials
+        )
     else:
         # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
@@ -211,6 +235,7 @@ def run_all_trials(
     mlflow_uri: str,
     path_exp: str,
     num_trials: int,
+    max_concurrent_trials: int,
     model_types: list = [
         "xgb",
         "nn_reg",
@@ -252,6 +277,7 @@ def run_all_trials(
             tree_phylo,
             path_exp,
             num_trials,
+            max_concurrent_trials,
             fully_reproducible=fully_reproducible,
         )
         results_all[model] = result
