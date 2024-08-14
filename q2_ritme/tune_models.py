@@ -112,9 +112,6 @@ def run_trials(
         )
 
         search_algo = OptunaSearch(seed=seed_model)
-        # search_algo = ConcurrencyLimiter(
-        #     search_algo, max_concurrent=max_concurrent_trials
-        # )
     else:
         # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
@@ -123,7 +120,9 @@ def run_trials(
 
         # BasicVariantGenerator: tries out all hyperparams in search space as
         # they are defined
-        search_algo = tune.search.BasicVariantGenerator()
+        # search_algo = tune.search.BasicVariantGenerator()
+
+        search_algo = OptunaSearch(seed=seed_model)
 
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)

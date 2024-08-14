@@ -24,7 +24,8 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
 
     # SELECT
     # adjust data_selection config dependencies by main method selected
-    # ! parameters are switched to metrics if they are changed during process_train!
+    # Relevant for MLflow: parameters are switched to metrics if they are
+    # changed during process_train!
     config = _update_config(config)
 
     ft_selected = select_microbial_features(
