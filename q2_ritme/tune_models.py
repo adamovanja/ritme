@@ -10,6 +10,7 @@ from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
+from ray.tune.search.optuna import OptunaSearch
 
 from q2_ritme.model_space import static_searchspace as ss
 from q2_ritme.model_space import static_trainables as st
@@ -100,11 +101,16 @@ def run_trials(
             # stopping trials after max_t iterations have passed
             max_t=scheduler_max_t,
         )
+        search_algo = OptunaSearch()
     else:
-        # ! slower BUT
+        # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
         # ! are evaluated in the same order.
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
+
+        # BasicVariantGenerator: tries out all hyperparams in search space as
+        # they are defined
+        search_algo = tune.search.BasicVariantGenerator()
 
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)
@@ -179,8 +185,7 @@ def run_trials(
             # # todo: remove below or change search_alg
             # max_concurrent_trials=max_concurrent_trials,
             # ! set seed
-            # todo: set advanced search algo -> here default random
-            search_alg=tune.search.BasicVariantGenerator(),
+            search_alg=search_algo,
         ),
     )
     # ResultGrid output

@@ -6,33 +6,23 @@ def get_data_eng_space(tax, test_mode=False):
         # note: test mode can be adjusted to whatever one wants to test
         return {
             "data_aggregation": None,
-            "data_selection": tune.grid_search(
-                [
-                    None,
-                    "abundance_ith",
-                    # "variance_ith",
-                    # "abundance_topi",
-                    # "variance_topi",
-                    # "abundance_quantile",
-                    # "variance_quantile",
-                    # "abundance_threshold",
-                    # "variance_threshold",
-                ]
+            "data_selection": tune.choice([None, "abundance_ith"]),
+            "dsi_option": tune.randint(1, 20),
+            "dsq_option": tune.quniform(0.5, 0.9, 0.1),
+            "dst_option": tune.choice(
+                [0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001]
             ),
-            "dsi_option": tune.choice([1, 5]),
-            "dsq_option": tune.choice([0.5, 0.75]),
-            "dst_option": tune.choice([0.001, 0.0001]),
             "data_transform": None,
         }
     return {
         # grid search specified here checks all options: so new nb_trials=
         # num_trials * nb of options w gridsearch * nb of model types
-        "data_aggregation": tune.grid_search(
+        "data_aggregation": tune.choice(
             [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
         )
         if not tax.empty
         else None,
-        "data_selection": tune.grid_search(
+        "data_selection": tune.choice(
             [
                 None,
                 "abundance_ith",
@@ -45,21 +35,15 @@ def get_data_eng_space(tax, test_mode=False):
                 "variance_threshold",
             ]
         ),
-        # todo: adjust the i, q and t ranges to more sophisticated quantities
-        "dsi_option": tune.choice([1, 3, 5, 10]),
-        "dsq_option": tune.choice([0.5, 0.75, 0.9, 0.95]),
+        # top i and ith values
+        "dsi_option": tune.randint(1, 20),
+        # quantile:
+        "dsq_option": tune.quniform(0.5, 0.9, 0.1),
+        # threshold:
         "dst_option": tune.choice(
-            [
-                0.01,
-                0.005,
-                0.001,
-                0.0005,
-                0.0001,
-                0.00005,
-                0.00001,
-            ]
+            [0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001]
         ),
-        "data_transform": tune.grid_search([None, "clr", "ilr", "alr", "pa"]),
+        "data_transform": tune.choice([None, "clr", "ilr", "alr", "pa"]),
     }
 
 
@@ -72,7 +56,7 @@ def get_linreg_space(tax, test_mode=False):
             "fit_intercept": True,
             # alpha controls overall regularization strength, alpha = 0 is equivalent to
             # an ordinary least square. large alpha -> more regularization
-            "alpha": tune.loguniform(1e-5, 1.0),
+            "alpha": tune.uniform(0, 1),
             # balance between L1 and L2 reg., when =0 -> L2, when =1 -> L1
             "l1_ratio": tune.uniform(0, 1),
         },
@@ -85,12 +69,22 @@ def get_rf_space(tax, test_mode=False):
         model="rf",
         **data_eng_space,
         **{
+            # number of trees in orest: the more the higher computational costs
             "n_estimators": tune.randint(50, 300),
-            "max_depth": tune.randint(2, 32),
-            "min_samples_split": tune.choice([0.001, 0.01, 0.1]),
-            "min_samples_leaf": tune.choice([0.0001, 0.001]),
-            "max_features": tune.choice([None, "sqrt", "log2", 0.1, 0.2, 0.5, 0.8]),
-            "min_impurity_decrease": tune.choice([0.0001, 0.001, 0.01]),
+            # max depths of the tree: the higher the higher probab of overfitting
+            "max_depth": tune.randint(5, 50),
+            # min number of samples requires to split internal node: small
+            # values higher probab of overfitting
+            "min_samples_split": tune.quniform(0.01, 0.1, 0.01),
+            # min # samples requires at leaf node: small values higher probab
+            # of overfitting
+            "min_samples_leaf": tune.choice([0.005, 0.01, 0.05, 0.1]),
+            # max # features to consider when looking for best split: small can
+            # reduce overfitting
+            "max_features": tune.choice([None, "sqrt", "log2", 0.1, 0.2, 0.5]),
+            # node split occurs if impurity is >= to this value: large values
+            # prevent overfitting
+            "min_impurity_decrease": tune.quniform(0.01, 0.1, 0.01),
             "bootstrap": tune.choice([True, False]),
         },
     )
@@ -98,18 +92,19 @@ def get_rf_space(tax, test_mode=False):
 
 def get_nn_space(tax, model_name, test_mode=False):
     data_eng_space = get_data_eng_space(tax, test_mode)
-    max_layers = 12
+    max_layers = 30
     nn_space = {
-        # Sample random uniformly between [1,9] rounding to multiples of 3
-        "n_hidden_layers": tune.qrandint(1, max_layers, 3),
-        "learning_rate": tune.loguniform(1e-5, 1e-1),
-        "batch_size": tune.choice([32, 64, 128]),
+        # Sample random uniformly between [1,max_layers] rounding to multiples of 5
+        "n_hidden_layers": tune.qrandint(1, max_layers, 5),
+        "learning_rate": tune.choice(
+            [0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001]
+        ),
+        "batch_size": tune.choice([32, 64, 128, 256]),
         "epochs": tune.choice([10, 50, 100, 200]),
     }
     # first and last layer are fixed by shape of features and target
     for i in range(0, max_layers):
-        # todo: increase!
-        nn_space[f"n_units_hl{i}"] = tune.randint(3, 64)
+        nn_space[f"n_units_hl{i}"] = tune.choice([32, 64, 128, 256, 512])
     return dict(model=model_name, **data_eng_space, **nn_space)
 
 
@@ -121,13 +116,12 @@ def get_xgb_space(tax, test_mode=False):
         **{
             "objective": "reg:squarederror",
             # value between 2 and 6 is often a good starting point
-            "max_depth": tune.randint(3, 10),
+            "max_depth": tune.randint(2, 10),
             # depends on sample size: 0 - 2% # todo make depends on sample number
             "min_child_weight": tune.randint(0, 4),
             "subsample": tune.choice([0.7, 0.8, 0.9, 1.0]),
             "eta": tune.choice([0.01, 0.05, 0.1, 0.2, 0.3]),
-            # "n_estimators": tune.choice([5, 10, 20, 50])
-            # todo add: nb gradient boosted trees
+            "n_estimators": tune.qrandint(10, 100, 10),
         },
     )
 
