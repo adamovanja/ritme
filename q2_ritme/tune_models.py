@@ -123,7 +123,7 @@ def run_trials(
         # ! are evaluated in the same order.
         scheduler = HyperBandScheduler(max_t=scheduler_max_t)
 
-    # define search algorithm
+    # define search algorithm with search space
     # partial function needed to pass additional parameters
     define_search_space = partial(
         ss.get_search_space, model_type=exp_name, tax=tax, test_mode=test_mode
