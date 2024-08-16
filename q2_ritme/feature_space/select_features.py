@@ -147,19 +147,29 @@ def find_features_to_group_by_variance_threshold(
     )
 
 
-def select_microbial_features(feat, method, i, q, t, ft_prefix):
-    if method is None:
-        # return original feature table
-        return feat.copy()
-    # if i larger than max index of feat.columns raise warning
-    if i is not None and i > len(feat.columns):
+def _reset_i_too_large(i: int, feat: pd.DataFrame):
+    if i > len(feat.columns):
         warnings.warn(
             f"Selected i={i} is larger than number of "
             f"features. So it is set to the max. possible value: {len(feat.columns)}."
         )
-        i = len(feat.columns)
+        return len(feat.columns)
+    return i
+
+
+def select_microbial_features(feat, config, ft_prefix):
+    method = config["data_selection"]
+
+    if method is None:
+        # return original feature table
+        return feat.copy()
 
     group_name = "_low_abun" if method.startswith("abundance") else "_low_var"
+
+    if method.endswith("_ith") or method.endswith("_topi"):
+        # ! HOTFIX: should be done more elegantly such that Optuna knows about
+        # ! this
+        i = _reset_i_too_large(config["data_selection_i"], feat)
 
     if method == "abundance_ith":
         group_ft_ls = find_features_to_group_by_abundance_ith(feat, i)
@@ -170,13 +180,21 @@ def select_microbial_features(feat, method, i, q, t, ft_prefix):
     elif method == "variance_topi":
         group_ft_ls = find_features_to_group_by_variance_topi(feat, i)
     elif method == "abundance_quantile":
-        group_ft_ls = find_features_to_group_by_abundance_quantile(feat, q)
+        group_ft_ls = find_features_to_group_by_abundance_quantile(
+            feat, config["data_selection_q"]
+        )
     elif method == "variance_quantile":
-        group_ft_ls = find_features_to_group_by_variance_quantile(feat, q)
+        group_ft_ls = find_features_to_group_by_variance_quantile(
+            feat, config["data_selection_q"]
+        )
     elif method == "abundance_threshold":
-        group_ft_ls = find_features_to_group_by_abundance_threshold(feat, t)
+        group_ft_ls = find_features_to_group_by_abundance_threshold(
+            feat, config["data_selection_t"]
+        )
     elif method == "variance_threshold":
-        group_ft_ls = find_features_to_group_by_variance_threshold(feat, t)
+        group_ft_ls = find_features_to_group_by_variance_threshold(
+            feat, config["data_selection_t"]
+        )
     else:
         raise ValueError(f"Unknown method: {method}.")
 

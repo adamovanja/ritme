@@ -1,7 +1,7 @@
 #!/bin/bash
 
-#SBATCH --job-name="run_config"
-#SBATCH -A partition_name
+#SBATCH --job-name="r_optuna_own_ss_rf"
+#SBATCH -A es_bokulich
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=100
 #SBATCH --time=119:59:59
@@ -16,7 +16,7 @@ echo "SLURM_GPUS_PER_TASK: $SLURM_GPUS_PER_TASK"
 
 # ! USER SETTINGS HERE
 # -> config file to use
-CONFIG="q2_ritme/run_config.json"
+CONFIG="q2_ritme/r_optuna_own_ss_rf.json"
 
 # if your number of threads are limited increase as needed
 ulimit -u 60000
