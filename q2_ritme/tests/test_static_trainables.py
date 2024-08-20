@@ -10,7 +10,7 @@ import skbio
 import torch
 from qiime2.plugin.testing import TestPluginBase
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import root_mean_squared_error
+from sklearn.metrics import r2_score, root_mean_squared_error
 
 from q2_ritme.model_space import static_trainables as st
 
@@ -28,9 +28,11 @@ class TestHelperFunctions(TestPluginBase):
         self.tax = pd.DataFrame()
 
     def test_predict_rmse(self):
-        expected = root_mean_squared_error(self.y, self.model.predict(self.X))
-        result = st._predict_rmse(self.model, self.X, self.y)
-        self.assertEqual(result, expected)
+        exp_rmse = root_mean_squared_error(self.y, self.model.predict(self.X))
+        exp_r2 = r2_score(self.y, self.model.predict(self.X))
+        obs_rmse, obs_r2 = st._predict_rmse_r2(self.model, self.X, self.y)
+        self.assertEqual(obs_rmse, exp_rmse)
+        self.assertEqual(obs_r2, exp_r2)
 
     @patch("ray.train.get_context")
     def test_save_sklearn_model(self, mock_get_context):

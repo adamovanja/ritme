@@ -41,6 +41,7 @@ requirements:
     - scikit-learn
     - scikit-bio
     - setuptools
+    - torchmetrics
     - torchvision
     - zipp
   # TODO: build package from GH or pypip
