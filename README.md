@@ -42,9 +42,9 @@ To define a suitable model configuration, please find the description of each va
 | train_size | Fraction of data to use for training (e.g., 0.8 for 80% train, 20% test split). |
 
 ### Local training
-To locally train models with a defined configuration in `q2_ritme/config.json` run:
+To locally train models with a defined configuration in `q2_ritme/run_config.json` run:
 ````
-./launch_local.sh q2_ritme/config.json
+./launch_local.sh q2_ritme/run_config.json
 ````
 
 To evaluate the best trial (trial < experiment) of all launched experiments locally, run:

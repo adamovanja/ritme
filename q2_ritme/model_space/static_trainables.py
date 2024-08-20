@@ -3,7 +3,7 @@
 import os
 import pickle
 import random
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import joblib
 import numpy as np
@@ -11,6 +11,7 @@ import pandas as pd
 import ray
 import skbio
 import torch
+import torchmetrics
 import xgboost as xgb
 from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
@@ -24,7 +25,7 @@ from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import ElasticNet
-from sklearn.metrics import root_mean_squared_error
+from sklearn.metrics import r2_score, root_mean_squared_error
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
@@ -37,9 +38,9 @@ from q2_ritme.feature_space._process_train import process_train
 from q2_ritme.model_space._model_trac_calc import min_least_squares_solution
 
 
-def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:
+def _predict_rmse_r2(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tuple:
     """
-    Compute the root mean squared error of the model's predictions.
+    Compute the root mean squared error and R2 score of the model's predictions.
 
     Parameters:
     model (BaseEstimator): The trained model.
@@ -47,10 +48,10 @@ def _predict_rmse(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> float:
     y (np.ndarray): The target values.
 
     Returns:
-    float: The root mean squared error of the model's predictions.
+    tuple: The root mean squared error and R2 score of the model's predictions.
     """
     y_pred = model.predict(X)
-    return root_mean_squared_error(y, y_pred)
+    return root_mean_squared_error(y, y_pred), r2_score(y, y_pred)
 
 
 def _save_sklearn_model(model: BaseEstimator) -> str:
@@ -101,13 +102,15 @@ def _report_results_manually(
 
     _save_taxonomy(tax)
 
-    score_train = _predict_rmse(model, X_train, y_train)
-    score_val = _predict_rmse(model, X_val, y_val)
+    rmse_train, r2_train = _predict_rmse_r2(model, X_train, y_train)
+    rmse_val, r2_val = _predict_rmse_r2(model, X_val, y_val)
 
     session.report(
         metrics={
-            "rmse_val": score_val,
-            "rmse_train": score_train,
+            "rmse_val": rmse_val,
+            "rmse_train": rmse_train,
+            "r2_val": r2_val,
+            "r2_train": r2_train,
             "model_path": model_path,
             "nb_features": X_train.shape[1],
         }
@@ -156,9 +159,9 @@ def train_linreg(
     _report_results_manually(linreg, X_train, y_train, X_val, y_val, tax)
 
 
-def _predict_rmse_trac(alpha, log_geom_X, y):
+def _predict_rmse_r2_trac(alpha, log_geom_X, y):
     y_pred = log_geom_X.dot(alpha[1:]) + alpha[0]
-    return root_mean_squared_error(y, y_pred)
+    return root_mean_squared_error(y, y_pred), r2_score(y, y_pred)
 
 
 def _report_results_manually_trac(
@@ -176,16 +179,18 @@ def _report_results_manually_trac(
     with open(model_path, "wb") as file:
         pickle.dump(model, file)
 
-    # calculate RMSE
-    score_train = _predict_rmse_trac(alpha, log_geom_train, y_train)
-    score_val = _predict_rmse_trac(alpha, log_geom_val, y_val)
+    # calculate RMSE and R2
+    rmse_train, r2_train = _predict_rmse_r2_trac(alpha, log_geom_train, y_train)
+    rmse_val, r2_val = _predict_rmse_r2_trac(alpha, log_geom_val, y_val)
 
     # taxonomy
     _save_taxonomy(tax)
     session.report(
         metrics={
-            "rmse_val": score_val,
-            "rmse_train": score_train,
+            "rmse_val": rmse_val,
+            "rmse_train": rmse_train,
+            "r2_val": r2_val,
+            "r2_train": r2_train,
             "model_path": model_path,
             "nb_features": df_alpha_with_labels[
                 df_alpha_with_labels["alpha"] != 0.0
@@ -323,13 +328,22 @@ class NeuralNet(LightningModule):
         return x
 
     def _prepare_predictions(self, predictions):
-        # todo: add ordinal regression option
         if self.nn_type == "regression":
             return predictions
         elif self.nn_type == "classification":
             return torch.argmax(predictions, dim=1).float()
         elif self.nn_type == "ordinal_regression":
             return corn_label_from_logits(predictions).float()
+
+    def _calculate_metrics(self, predictions, targets):
+        preds = self._prepare_predictions(predictions)
+
+        rmse = torch.sqrt(nn.functional.mse_loss(preds, targets))
+
+        r2score = torchmetrics.regression.R2Score()
+        r2 = r2score(preds, targets)
+
+        return rmse, r2
 
     def training_step(self, batch, batch_idx):
         inputs, targets = batch
@@ -339,18 +353,19 @@ class NeuralNet(LightningModule):
         # todo: clean up and remove redundancy with val step
         if self.nn_type == "ordinal_regression":
             loss = corn_loss(predictions, targets, self.num_classes)
-            # loss = self.loss_fn(predictions, targets, self.num_classes)
         else:
             loss = self.loss_fn(predictions, targets)
         self.log(
             "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
 
-        # rmse
-        pred_rmse = self._prepare_predictions(predictions)
-        rmse = torch.sqrt(nn.functional.mse_loss(pred_rmse, targets))
+        # rmse and r2
+        rmse, r2 = self._calculate_metrics(predictions, targets)
         self.log(
             "train_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        )
+        self.log(
+            "train_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
 
         return loss
@@ -362,19 +377,18 @@ class NeuralNet(LightningModule):
         # loss: corn_loss, cross-entropy or mse
         if self.nn_type == "ordinal_regression":
             loss = corn_loss(predictions, targets, self.num_classes)
-            # loss = self.loss_fn(predictions, targets, self.num_classes)
         else:
             loss = self.loss_fn(predictions, targets)
         self.log(
             "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
 
-        # rmse
-        pred_rmse = self._prepare_predictions(predictions)
-        rmse = torch.sqrt(nn.functional.mse_loss(pred_rmse, targets))
+        # rmse and r2
+        rmse, r2 = self._calculate_metrics(predictions, targets)
         self.log(
             "val_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
+        self.log("val_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
     def configure_optimizers(self):
         optimizer = Adam(self.parameters(), lr=self.learning_rate)
@@ -501,6 +515,8 @@ def train_nn(
             metrics={
                 "rmse_val": "val_rmse",
                 "rmse_train": "train_rmse",
+                "r2_val": "val_r2",
+                "r2_train": "train_r2",
                 "loss_val": "val_loss",
                 "loss_train": "train_loss",
             },
@@ -572,6 +588,23 @@ def add_nb_features_to_results(results, nb_features):
     return results
 
 
+def custom_xgb_metric(
+    predt: np.ndarray, dtrain: xgb.DMatrix
+) -> List[Tuple[str, float]]:
+    """
+    Custom metric function for XGBoost to calculate RMSE and R2 score.
+
+    Parameters:
+    predt (np.ndarray): Predictions.
+    dtrain (xgb.DMatrix): DMatrix containing the labels.
+
+    Returns:
+    List[Tuple[str, float]]: List of tuples containing metric names and values.
+    """
+    y = dtrain.get_label()
+    return [("rmse", np.sqrt(np.mean((predt - y) ** 2))), ("r2", r2_score(y, predt))]
+
+
 def train_xgb(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -592,6 +625,8 @@ def train_xgb(
     host_id (str): The host ID.
     seed_data (int): The seed for the data.
     seed_model (int): The seed for the model.
+    tax (pd.DataFrame): Taxonomy data.
+    tree_phylo (skbio.TreeNode): Phylogenetic tree.
 
     Returns:
     None
@@ -617,6 +652,8 @@ def train_xgb(
         metrics={
             "rmse_train": "train-rmse",
             "rmse_val": "val-rmse",
+            "r2_train": "train-r2",
+            "r2_val": "val-r2",
         },
         filename="checkpoint",
         results_postprocessing_fn=lambda results: add_nb_features_to_results(
@@ -630,4 +667,7 @@ def train_xgb(
         dtrain,
         evals=[(dtrain, "train"), (dval, "val")],
         callbacks=[checkpoint_callback],
+        custom_metric=custom_xgb_metric,
     )
+
+    # TODO: add test set here to be tracked as well

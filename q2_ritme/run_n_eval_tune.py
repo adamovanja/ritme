@@ -91,6 +91,7 @@ def run_n_eval_tune(config_path):
 
     # ! Evaluate best models of this experiment
     # Eval1: train_val vs. test -> performance
+    # TODO: move THIS eval1 part to model training
     best_model_dic = retrieve_best_models(result_dic)
     # todo: allow for more flexibility -> see _process_train.py
     features = [x for x in train_val if x.startswith("F")]
@@ -107,21 +108,26 @@ def run_n_eval_tune(config_path):
         path2save = os.path.join(tmodel.path, "predictions.csv")
         all_pred.to_csv(path2save, index=True)
         preds_dic[model_type] = all_pred
+    # TODO END: move THIS eval1 part to model training
 
+    # TODO: eval2 could be done post training for particular usecases if not
+    # TODO: already possible in WandB/MLflow
+    # remove: redundant to model tracker
     plot_rmse_over_experiments(preds_dic, exp_comparison_output)
-
+    # remove here - but keep for age prediction
     plot_rmse_over_time(preds_dic, config["ls_model_types"], exp_comparison_output)
 
     # Eval2: train vs. val -> performance and config
+    # remove: redundant to model tracker
     metrics_all, best_configs = aggregate_best_models_metrics_and_configs(result_dic)
-
-    plot_best_models_comparison(metrics_all, exp_comparison_output)
-
     best_configs.to_csv(
         os.path.join(exp_comparison_output, "best_trial_config.csv"), index=True
     )
+    # remove: but keep plotting code for later use
+    plot_best_models_comparison(metrics_all, exp_comparison_output)
 
     # ! Evaluate one model over training iterations
+    # remove: redundant to model tracker
     for m in config["models_to_evaluate_separately"]:
         plot_model_training_over_iterations(
             m, result_dic, labels=["data_transform"], save_loc=exp_comparison_output
