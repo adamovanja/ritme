@@ -70,6 +70,10 @@ If you are using SLURM and ...
 ## Model tracking
 In the config file you can choose to track your trials with MLflow (tracking_uri=="mlruns") or with WandB (tracking_uri=="wandb").
 
+### Choice between MLflow & WandB
+WandB stores aggregate metrics on their servers. The way *ritme* is set up no sample-specific information is stored remotely. This information is stored on your local machine.
+To choose which tracking set-up works best for you, it is best to review the respective services.
+
 ### MLflow
 In case of using MLflow you can view your models with `mlflow ui --backend-store-uri experiments/mlruns`. For more information check out the [official MLflow documentation](https://mlflow.org/docs/latest/index.html).
 
