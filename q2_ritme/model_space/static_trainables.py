@@ -118,6 +118,60 @@ def _report_results_manually(
     return None
 
 
+def _predict_from_engineered_x(model, model_type, X):
+    """Use model of model_type to create predictions from engineered X"""
+    print(f"MODEL_TYPE: {model_type}")
+    print(f"type(model): {type(model)}")
+    if isinstance(model, NeuralNet):
+        with torch.no_grad():
+            X_t = torch.tensor(X.values, dtype=torch.float32)
+
+            if model_type == "regression":
+                predicted = model(X_t).numpy().flatten()
+            # if classification predicted class needs to be transformed from
+            # logit
+            elif model_type == "classification":
+                logits = model(X_t)
+                predicted = torch.argmax(logits, dim=1).numpy()
+            elif model_type == "ordinal_regression":
+                logits = model(X_t)
+                predicted = corn_label_from_logits(logits).numpy()
+    elif isinstance(model, dict):
+        # trac model
+        log_geom, _ = _preprocess_taxonomy_aggregation(X, model["matrix_a"].values)
+        alpha = model["model"].values
+        predicted = log_geom.dot(alpha[1:]) + alpha[0]
+        predicted = predicted.flatten()
+    elif isinstance(model, xgb.core.Booster):
+        X_t = xgb.DMatrix(X)
+        predicted = model.predict(X_t).flatten()
+    else:
+        predicted = model.predict(X).flatten()
+    return predicted
+
+
+def get_n_save_predictions(
+    model, model_type, X_train, y_train, idx_train, X_val, y_val, idx_val
+):
+    split_dic = {
+        "train": (X_train, y_train, idx_train),
+        "val": (X_val, y_val, idx_val),
+    }
+    pred_ls = []
+    for split, data in split_dic.items():
+        X, y, idx = data
+        y_pred = _predict_from_engineered_x(model, model_type, X)
+        pred_df = pd.DataFrame({"true": y, "pred": y_pred}, index=idx)
+        pred_df["split"] = split
+        pred_ls.append(pred_df)
+    all_pred = pd.concat(pred_ls)
+    trial_path = train.get_context().get_trial_dir()
+    # todo: once you removed the former predictions -> rename to no suffix
+    path2save = os.path.join(trial_path, "predictions_new.csv")
+    all_pred.to_csv(path2save, index=True)
+    return all_pred
+
+
 def train_linreg(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -143,10 +197,11 @@ def train_linreg(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    # todo: maybe group X,y,idx into pandas?
+    X_train, y_train, idx_train, X_val, y_val, idx_val, ft_col = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
-
+    # todo: add X_test, y_test here - with inferred feature engineering à la TunedModel
     # ! model
     np.random.seed(seed_model)
     linreg = ElasticNet(
@@ -156,6 +211,11 @@ def train_linreg(
     )
     linreg.fit(X_train, y_train)
 
+    # ! save predictions
+    _ = get_n_save_predictions(
+        linreg, "linreg", X_train, y_train, idx_train, X_val, y_val, idx_val
+    )
+
     _report_results_manually(linreg, X_train, y_train, X_val, y_val, tax)
 
 
@@ -164,15 +224,18 @@ def _predict_rmse_r2_trac(alpha, log_geom_X, y):
     return root_mean_squared_error(y, y_pred), r2_score(y, y_pred)
 
 
-def _report_results_manually_trac(
-    alpha, A_df, log_geom_train, y_train, log_geom_val, y_val, tax
-):
-    # save coefficients w labels & matrix A with labels -> model_path
+def _bundle_trac_model(alpha, A_df):
+    # get coefficients w labels & matrix A with labels
     idx_alpha = ["intercept"] + A_df.columns.tolist()
     df_alpha_with_labels = pd.DataFrame(alpha, columns=["alpha"], index=idx_alpha)
 
     model = {"model": df_alpha_with_labels, "matrix_a": A_df}
+    return model
 
+
+def _report_results_manually_trac(
+    model, log_geom_train, y_train, log_geom_val, y_val, tax
+):
     # save model
     path_to_save = ray.train.get_context().get_trial_dir()
     model_path = os.path.join(path_to_save, "model.pkl")
@@ -180,6 +243,8 @@ def _report_results_manually_trac(
         pickle.dump(model, file)
 
     # calculate RMSE and R2
+    df_alpha_with_labels = model["model"]
+    alpha = model["model"]["alpha"].values
     rmse_train, r2_train = _predict_rmse_r2_trac(alpha, log_geom_train, y_train)
     rmse_val, r2_val = _predict_rmse_r2_trac(alpha, log_geom_val, y_val)
 
@@ -225,7 +290,7 @@ def train_trac(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, idx_train, X_val, y_val, idx_val, ft_col = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
     # ! derive matrix A
@@ -252,8 +317,14 @@ def train_trac(
         matrices_train, selected_param, intercept=intercept
     )
 
+    # ! save predictions
+    model = _bundle_trac_model(alpha, a_df)
+    _ = get_n_save_predictions(
+        model, "trac", X_train, y_train, idx_train, X_val, y_val, idx_val
+    )
+
     _report_results_manually_trac(
-        alpha, a_df, log_geom_train, y_train, log_geom_val, y_val, tax
+        model, log_geom_train, y_train, log_geom_val, y_val, tax
     )
 
 
@@ -282,7 +353,7 @@ def train_rf(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, idx_train, X_val, y_val, idx_val, ft_col = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -298,11 +369,14 @@ def train_rf(
     )
     rf.fit(X_train, y_train)
 
+    # ! save predictions
+    _ = get_n_save_predictions(
+        rf, "rf", X_train, y_train, idx_train, X_val, y_val, idx_val
+    )
     _report_results_manually(rf, X_train, y_train, X_val, y_val, tax)
 
 
 class NeuralNet(LightningModule):
-    # TODO: adjust to have option of NNcorn also within
     def __init__(self, n_units, learning_rate, nn_type="regression"):
         super(NeuralNet, self).__init__()
         self.save_hyperparameters()  # This saves all passed arguments to self.hparams
@@ -426,7 +500,6 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
         self.nb_features = nb_features
 
     def _handle(self, trainer: Trainer, pl_module: LightningModule):
-        # CUSTOM: includes also nb_features in report
         if trainer.sanity_checking:
             return
 
@@ -453,7 +526,7 @@ def train_nn(
     seed_everything(seed_model, workers=True)
 
     # Process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, idx_train, X_val, y_val, idx_val, ft_col = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -535,6 +608,14 @@ def train_nn(
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+    # ! save predictions
+    # TODO: fix any line after trainer.fit is ignored here
+    _ = get_n_save_predictions(
+        model, nn_type, X_train, y_train, idx_train, X_val, y_val, idx_val
+    )
+    trainer.test(model, test_dataloaders=val_loader)
+    print(f"NEW Model checkpoint path: {callbacks[0].best_model_path}")
 
 
 def train_nn_reg(
@@ -632,7 +713,7 @@ def train_xgb(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, idx_train, X_val, y_val, idx_val, ft_col = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
     # Set seeds
@@ -662,12 +743,14 @@ def train_xgb(
     )
     # todo: add test set here to be tracked as well
 
-    xgb.train(
+    xgb_model = xgb.train(
         config,
         dtrain,
         evals=[(dtrain, "train"), (dval, "val")],
         callbacks=[checkpoint_callback],
         custom_metric=custom_xgb_metric,
     )
-
-    # TODO: add test set here to be tracked as well
+    # ! save predictions
+    _ = get_n_save_predictions(
+        xgb_model, "xgb", X_train, y_train, idx_train, X_val, y_val, idx_val
+    )
