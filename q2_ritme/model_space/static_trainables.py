@@ -389,12 +389,10 @@ class NeuralNet(LightningModule):
         self.learning_rate = learning_rate
         self.nn_type = nn_type
         self.num_classes = n_units[-1]
-        if self.nn_type == "regression":
-            self.loss_fn = nn.MSELoss()
-        elif self.nn_type == "classification":
-            self.loss_fn = nn.CrossEntropyLoss()
-        elif self.nn_type == "ordinal_regression":
-            self.loss_fn = None
+        self.train_predictions = []
+        self.train_targets = []
+        self.validation_predictions = []
+        self.validation_targets = []
 
     def forward(self, x):
         for layer in self.layers:
@@ -419,30 +417,44 @@ class NeuralNet(LightningModule):
 
         return rmse, r2
 
+    def _calculate_loss(self, predictions, targets):
+        # loss: corn_loss, cross-entropy or mse
+        # calculated on rounded classes as targets for ordinal regression and
+        # classification
+        targets_rounded = torch.round(targets).long()
+        if self.nn_type == "ordinal_regression":
+            return corn_loss(predictions, targets_rounded, self.num_classes)
+        elif self.nn_type == "classification":
+            loss_fn = nn.CrossEntropyLoss()
+            return loss_fn(predictions, targets_rounded)
+        loss_fn = nn.MSELoss()
+        return loss_fn(predictions, targets)
+
     def training_step(self, batch, batch_idx):
         inputs, targets = batch
         predictions = self(inputs).squeeze()
 
-        # loss: corn_loss, cross-entropy or mse
-        # todo: clean up and remove redundancy with val step
-        if self.nn_type == "ordinal_regression":
-            loss = corn_loss(predictions, targets, self.num_classes)
-        else:
-            loss = self.loss_fn(predictions, targets)
-        self.log(
-            "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        )
+        # Store predictions and targets
+        self.train_predictions.append(predictions.detach())
+        self.train_targets.append(targets.detach())
 
-        # rmse and r2
-        rmse, r2 = self._calculate_metrics(predictions, targets)
-        self.log(
-            "train_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        )
-        self.log(
-            "train_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        )
-        # nb_features log
-        self.log("nb_features", inputs.shape[1], on_step=True, on_epoch=True)
+        loss = self._calculate_loss(predictions, targets)
+        # self.log(
+        #     "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
+        #     logger=True
+        # )
+
+        # # rmse and r2 - calculated on true continuouos targets for all models
+        # rmse, r2 = self._calculate_metrics(predictions, targets)
+        # self.log(
+        #     "train_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True,
+        #     logger=True
+        # )
+        # self.log(
+        #     "train_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        # )
+        # # nb_features log
+        # self.log("nb_features", inputs.shape[1], on_step=True, on_epoch=True)
 
         return loss
 
@@ -450,38 +462,67 @@ class NeuralNet(LightningModule):
         inputs, targets = batch
         predictions = self(inputs).squeeze()
 
-        # loss: corn_loss, cross-entropy or mse
-        if self.nn_type == "ordinal_regression":
-            loss = corn_loss(predictions, targets, self.num_classes)
-        else:
-            loss = self.loss_fn(predictions, targets)
-        self.log(
-            "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        )
+        # loss = self._calculate_loss(predictions, targets)
+        # self.log(
+        #     "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
+        # )
+        self.validation_predictions.append(predictions.detach())
+        self.validation_targets.append(targets.detach())
 
-        # rmse and r2
-        rmse, r2 = self._calculate_metrics(predictions, targets)
-        self.log(
-            "val_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        )
-        self.log("val_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        # # rmse and r2
+        # rmse, r2 = self._calculate_metrics(predictions, targets)
+        # self.log(
+        #     "val_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True,
+        #     logger=True
+        # )
+        # self.log("val_r2", r2, on_step=True, on_epoch=True, prog_bar=True,
+        # logger=True)
 
         # nb_features log
         self.log("nb_features", inputs.shape[1], on_step=True, on_epoch=True)
+
+    def on_train_epoch_end(self):
+        all_preds = torch.cat(self.train_predictions)
+        all_targets = torch.cat(self.train_targets)
+        loss = self._calculate_loss(all_preds, all_targets)
+        self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
+
+        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
+        self.log("train_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
+        self.log("train_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+        self.train_predictions.clear()
+        self.train_targets.clear()
+
+    def on_validation_epoch_end(self):
+        # make use of all outputs from each validation_step()
+        all_preds = torch.cat(self.validation_predictions)
+        all_targets = torch.cat(self.validation_targets)
+
+        # do something with all preds and targets
+        loss = self._calculate_loss(all_preds, all_targets)
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
+
+        # rmse and r2
+        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
+        self.log("val_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
+        self.log("val_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+
+        self.validation_predictions.clear()
+        self.validation_targets.clear()
 
     def configure_optimizers(self):
         optimizer = Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
 
 
-def load_data(X_train, y_train, X_val, y_val, y_type, config):
+def load_data(X_train, y_train, X_val, y_val, config):
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.float32),
-        torch.tensor(y_train, dtype=y_type),
+        torch.tensor(y_train, dtype=torch.float32),
     )
     val_dataset = TensorDataset(
         torch.tensor(X_val, dtype=torch.float32),
-        torch.tensor(y_val, dtype=y_type),
+        torch.tensor(y_val, dtype=torch.float32),
     )
     train_loader = DataLoader(
         train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=2
@@ -501,7 +542,7 @@ class PostTrainingCallback(Callback):
         self.y_val = y_val
         self.idx_val = idx_val
 
-    def on_validation_end(self, trainer, pl_module):
+    def on_validation_epoch_end(self, trainer, pl_module):
         # Your post-training logic here
         print("We are HERE!")
         _ = get_n_save_predictions(
@@ -521,13 +562,13 @@ class CustomTuneReportCallback(TuneReportCheckpointCallback):
         super().__init__(*args, **kwargs)
         self.post_training_callback = post_training_callback
 
-    def on_validation_end(self, trainer, pl_module):
+    def on_validation_epoch_end(self, trainer, pl_module):
         # this ensures that the predictions are saved before
         # TuneReportCheckpointCallback is called and tune is getting the signal
         # to stop the trial
         if self.post_training_callback:
-            self.post_training_callback.on_validation_end(trainer, pl_module)
-        super().on_validation_end(trainer, pl_module)
+            self.post_training_callback.on_validation_epoch_end(trainer, pl_module)
+        super().on_validation_epoch_end(trainer, pl_module)
 
 
 def train_nn(
@@ -548,30 +589,19 @@ def train_nn(
         config, train_val, target, host_id, tax, seed_data
     )
 
-    # round target to monthly classes in case of ordinal regression and load
-    # data with data loaders
-    if nn_type in ["ordinal_regression", "classification"]:
-        y_train = np.round(y_train)
-        y_val = np.round(y_val)
-        train_loader, val_loader = load_data(
-            X_train, y_train, X_val, y_val, torch.long, config
-        )
-
-    else:
-        train_loader, val_loader = load_data(
-            X_train, y_train, X_val, y_val, torch.float32, config
-        )
+    train_loader, val_loader = load_data(X_train, y_train, X_val, y_val, config)
 
     # Model
     n_layers = config["n_hidden_layers"]
     # output layer defined by target
-    n_target_classes = len(np.unique(y_train))
     if nn_type == "regression":
         output_layer = [1]
     elif nn_type == "classification":
+        n_target_classes = len(np.unique(np.round(y_train)))
         output_layer = [n_target_classes]
     elif nn_type == "ordinal_regression":
         # CORN reduces number of classes by 1
+        n_target_classes = len(np.unique(np.round(y_train)))
         output_layer = [n_target_classes - 1]
 
     n_units = (
