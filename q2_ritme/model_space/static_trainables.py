@@ -3,7 +3,7 @@
 import os
 import pickle
 import random
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Tuple
 
 import joblib
 import numpy as np
@@ -16,7 +16,7 @@ import xgboost as xgb
 from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
-from lightning import LightningModule, Trainer, seed_everything
+from lightning import Callback, LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from ray import train, tune
 from ray.air import session
@@ -124,7 +124,7 @@ def _predict_from_engineered_x(model, model_type, X):
     print(f"type(model): {type(model)}")
     if isinstance(model, NeuralNet):
         with torch.no_grad():
-            X_t = torch.tensor(X.values, dtype=torch.float32)
+            X_t = torch.tensor(X, dtype=torch.float32)
 
             if model_type == "regression":
                 predicted = model(X_t).numpy().flatten()
@@ -441,6 +441,8 @@ class NeuralNet(LightningModule):
         self.log(
             "train_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True
         )
+        # nb_features log
+        self.log("nb_features", inputs.shape[1], on_step=True, on_epoch=True)
 
         return loss
 
@@ -464,6 +466,9 @@ class NeuralNet(LightningModule):
         )
         self.log("val_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
+        # nb_features log
+        self.log("nb_features", inputs.shape[1], on_step=True, on_epoch=True)
+
     def configure_optimizers(self):
         optimizer = Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
@@ -485,31 +490,44 @@ def load_data(X_train, y_train, X_val, y_val, y_type, config):
     return train_loader, val_loader
 
 
-class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
-    def __init__(
-        self,
-        metrics: Optional[Union[str, List[str], Dict[str, str]]] = None,
-        filename: str = "checkpoint",
-        save_checkpoints: bool = True,
-        on: Union[str, List[str]] = "validation_end",
-        nb_features: int = None,
-    ):
-        super().__init__(
-            metrics=metrics, filename=filename, save_checkpoints=save_checkpoints, on=on
+class PostTrainingCallback(Callback):
+    def __init__(self, nn_type, X_train, y_train, idx_train, X_val, y_val, idx_val):
+        super().__init__()
+        self.nn_type = nn_type
+        self.X_train = X_train
+        self.y_train = y_train
+        self.idx_train = idx_train
+        self.X_val = X_val
+        self.y_val = y_val
+        self.idx_val = idx_val
+
+    def on_validation_end(self, trainer, pl_module):
+        # Your post-training logic here
+        print("We are HERE!")
+        _ = get_n_save_predictions(
+            pl_module,
+            self.nn_type,
+            self.X_train,
+            self.y_train,
+            self.idx_train,
+            self.X_val,
+            self.y_val,
+            self.idx_val,
         )
-        self.nb_features = nb_features
 
-    def _handle(self, trainer: Trainer, pl_module: LightningModule):
-        if trainer.sanity_checking:
-            return
 
-        report_dict = self._get_report_dict(trainer, pl_module)
-        report_dict["nb_features"] = self.nb_features
-        if not report_dict:
-            return
+class CustomTuneReportCallback(TuneReportCheckpointCallback):
+    def __init__(self, *args, post_training_callback=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.post_training_callback = post_training_callback
 
-        with self._get_checkpoint(trainer) as checkpoint:
-            train.report(report_dict, checkpoint=checkpoint)
+    def on_validation_end(self, trainer, pl_module):
+        # this ensures that the predictions are saved before
+        # TuneReportCheckpointCallback is called and tune is getting the signal
+        # to stop the trial
+        if self.post_training_callback:
+            self.post_training_callback.on_validation_end(trainer, pl_module)
+        super().on_validation_end(trainer, pl_module)
 
 
 def train_nn(
@@ -575,6 +593,15 @@ def train_nn(
     )
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    post_training_callback = PostTrainingCallback(
+        nn_type=nn_type,
+        X_train=X_train,
+        y_train=y_train,
+        idx_train=idx_train,
+        X_val=X_val,
+        y_val=y_val,
+        idx_val=idx_val,
+    )
     callbacks = [
         ModelCheckpoint(
             monitor="val_rmse",
@@ -584,7 +611,9 @@ def train_nn(
             dirpath=checkpoint_dir,  # Automatically set dirpath
             filename="{epoch}-{val_rmse:.2f}",
         ),
-        NNTuneReportCheckpointCallback(
+        # the below callback signals to ray tune that the trainable is finished
+        # - hence post_training_callback must be set to store predictions
+        CustomTuneReportCallback(
             metrics={
                 "rmse_val": "val_rmse",
                 "rmse_train": "train_rmse",
@@ -592,10 +621,11 @@ def train_nn(
                 "r2_train": "train_r2",
                 "loss_val": "val_loss",
                 "loss_train": "train_loss",
+                "nb_features": "nb_features",
             },
             filename="checkpoint",
             on="validation_end",
-            nb_features=X_train.shape[1],
+            post_training_callback=post_training_callback,
         ),
     ]
 
@@ -608,14 +638,6 @@ def train_nn(
     )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-
-    # ! save predictions
-    # TODO: fix any line after trainer.fit is ignored here
-    _ = get_n_save_predictions(
-        model, nn_type, X_train, y_train, idx_train, X_val, y_val, idx_val
-    )
-    trainer.test(model, test_dataloaders=val_loader)
-    print(f"NEW Model checkpoint path: {callbacks[0].best_model_path}")
 
 
 def train_nn_reg(
