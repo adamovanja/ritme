@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
-from coral_pytorch.dataset import corn_label_from_logits
 from joblib import load
 from ray.air.result import Result
 from sklearn.metrics import root_mean_squared_error
@@ -184,17 +183,9 @@ class TunedModel:
         transformed = self.transform(selected)
         if isinstance(self.model, NeuralNet):
             with torch.no_grad():
-                if self.model.nn_type == "regression":
-                    predicted = self.model(transformed).numpy().flatten()
-
-                # if classification predicted class needs to be transformed from
-                # logit
-                elif self.model.nn_type == "classification":
-                    logits = self.model(transformed)
-                    predicted = torch.argmax(logits, dim=1).numpy()
-                elif self.model.nn_type == "ordinal_regression":
-                    logits = self.model(transformed)
-                    predicted = corn_label_from_logits(logits).numpy()
+                X_t = torch.tensor(transformed.values, dtype=torch.float32)
+                predicted = self.model(X_t)
+                predicted = self.model._prepare_predictions(predicted)
         elif isinstance(self.model, dict):
             # trac model
             log_geom, _ = _preprocess_taxonomy_aggregation(
@@ -210,7 +201,7 @@ class TunedModel:
 def retrieve_best_models(result_dic):
     best_model_dic = {}
     for model_type, result_grid in result_dic.items():
-        best_result = result_grid.get_best_result()
+        best_result = result_grid.get_best_result(scope="all")
 
         best_model = get_model(model_type, best_result)
         best_data_proc = get_data_processing(best_result)
@@ -324,7 +315,7 @@ def get_best_model_metrics_and_config(
     tuple: A tuple containing a DataFrame of metrics and a dictionary of the
     best model's configuration.
     """
-    best_result = trial_result.get_best_result()
+    best_result = trial_result.get_best_result(scope="all")
     config = best_result.config
     metrics_ser = best_result.metrics_dataframe[metric_ls].iloc[-1]
     metrics_df = pd.DataFrame(metrics_ser).transpose()

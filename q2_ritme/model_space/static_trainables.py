@@ -18,7 +18,7 @@ from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from lightning import Callback, LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
-from ray import train, tune
+from ray import train
 from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
@@ -120,22 +120,11 @@ def _report_results_manually(
 
 def _predict_from_engineered_x(model, model_type, X):
     """Use model of model_type to create predictions from engineered X"""
-    print(f"MODEL_TYPE: {model_type}")
-    print(f"type(model): {type(model)}")
     if isinstance(model, NeuralNet):
         with torch.no_grad():
             X_t = torch.tensor(X, dtype=torch.float32)
-
-            if model_type == "regression":
-                predicted = model(X_t).numpy().flatten()
-            # if classification predicted class needs to be transformed from
-            # logit
-            elif model_type == "classification":
-                logits = model(X_t)
-                predicted = torch.argmax(logits, dim=1).numpy()
-            elif model_type == "ordinal_regression":
-                logits = model(X_t)
-                predicted = corn_label_from_logits(logits).numpy()
+            predicted = model(X_t)
+            predicted = model._prepare_predictions(predicted)
     elif isinstance(model, dict):
         # trac model
         log_geom, _ = _preprocess_taxonomy_aggregation(X, model["matrix_a"].values)
@@ -423,73 +412,50 @@ class NeuralNet(LightningModule):
         # classification
         targets_rounded = torch.round(targets).long()
         if self.nn_type == "ordinal_regression":
+            # predictions = logits
             return corn_loss(predictions, targets_rounded, self.num_classes)
         elif self.nn_type == "classification":
             loss_fn = nn.CrossEntropyLoss()
+            # predictions = logits
             return loss_fn(predictions, targets_rounded)
         loss_fn = nn.MSELoss()
         return loss_fn(predictions, targets)
 
     def training_step(self, batch, batch_idx):
         inputs, targets = batch
-        predictions = self(inputs).squeeze()
+        predictions = self.forward(inputs)
 
         # Store predictions and targets
         self.train_predictions.append(predictions.detach())
         self.train_targets.append(targets.detach())
 
         loss = self._calculate_loss(predictions, targets)
-        # self.log(
-        #     "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
-        #     logger=True
-        # )
-
-        # # rmse and r2 - calculated on true continuouos targets for all models
-        # rmse, r2 = self._calculate_metrics(predictions, targets)
-        # self.log(
-        #     "train_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True,
-        #     logger=True
-        # )
-        # self.log(
-        #     "train_r2", r2, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        # )
-        # # nb_features log
-        # self.log("nb_features", inputs.shape[1], on_step=True, on_epoch=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         inputs, targets = batch
-        predictions = self(inputs).squeeze()
+        predictions = self.forward(inputs)
 
-        # loss = self._calculate_loss(predictions, targets)
-        # self.log(
-        #     "val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True
-        # )
         self.validation_predictions.append(predictions.detach())
         self.validation_targets.append(targets.detach())
 
-        # # rmse and r2
-        # rmse, r2 = self._calculate_metrics(predictions, targets)
-        # self.log(
-        #     "val_rmse", rmse, on_step=True, on_epoch=True, prog_bar=True,
-        #     logger=True
-        # )
-        # self.log("val_r2", r2, on_step=True, on_epoch=True, prog_bar=True,
-        # logger=True)
-
+        loss = self._calculate_loss(predictions, targets)
         # nb_features log
-        self.log("nb_features", inputs.shape[1], on_step=True, on_epoch=True)
+        self.log("nb_features", inputs.shape[1], on_epoch=True, logger=True)
+        return {"val_loss": loss}
 
     def on_train_epoch_end(self):
         all_preds = torch.cat(self.train_predictions)
         all_targets = torch.cat(self.train_targets)
-        loss = self._calculate_loss(all_preds, all_targets)
-        self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
         rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("train_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
-        self.log("train_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+        self.log("train_rmse", rmse, on_epoch=True, logger=True)
+        self.log("train_r2", r2, on_epoch=True, logger=True)
+
+        loss = self._calculate_loss(all_preds, all_targets)
+        self.log("train_loss", loss, on_epoch=True, logger=True)
+
         self.train_predictions.clear()
         self.train_targets.clear()
 
@@ -498,14 +464,12 @@ class NeuralNet(LightningModule):
         all_preds = torch.cat(self.validation_predictions)
         all_targets = torch.cat(self.validation_targets)
 
-        # do something with all preds and targets
-        loss = self._calculate_loss(all_preds, all_targets)
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
-
-        # rmse and r2
         rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("val_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+        self.log("val_rmse", rmse, on_epoch=True, logger=True)
+        self.log("val_r2", r2, on_epoch=True, logger=True)
+
+        loss = self._calculate_loss(all_preds, all_targets)
+        self.log("val_loss", loss, on_epoch=True, logger=True)
 
         self.validation_predictions.clear()
         self.validation_targets.clear()
@@ -618,9 +582,8 @@ def train_nn(
     )
     _save_taxonomy(tax)
     # Callbacks
-    checkpoint_dir = (
-        tune.get_trial_dir() if "TUNE_TRIAL_NAME" in os.environ else "checkpoints"
-    )
+    checkpoint_dir = ray.train.get_context().get_trial_dir()
+
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     post_training_callback = PostTrainingCallback(

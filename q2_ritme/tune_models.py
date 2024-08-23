@@ -55,7 +55,7 @@ def run_trials(
     max_concurrent_trials,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
     scheduler_grace_period=10,
-    scheduler_max_t=100,
+    scheduler_max_t=81,
     resources=None,
 ):
     # since each trial starts it own threads - this should not be set to highly
@@ -114,7 +114,6 @@ def run_trials(
         scheduler = AsyncHyperBandScheduler(
             # stop trials at least this old in time (measured in training iteration)
             grace_period=scheduler_grace_period,
-            # stopping trials after max_t iterations have passed
             max_t=scheduler_max_t,
         )
     else:
