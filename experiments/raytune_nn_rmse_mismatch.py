@@ -100,15 +100,15 @@ def train_nn(config, train_data, val_data):
             TuneReportCheckpointCallback(
                 metrics={
                     "loss": "val_loss",
-                    "rmse_train": "rmse_train",
-                    "train_log_count": "train_log_count",
                     "rmse_val": "rmse_val",
+                    "rmse_train": "rmse_train",
                     "val_log_count": "val_log_count",
+                    "train_log_count": "train_log_count",
                 },
                 filename="checkpoint",
                 on="validation_end",
                 save_checkpoints=True,
-            )
+            ),
         ],
         deterministic=True,
     )
@@ -116,54 +116,65 @@ def train_nn(config, train_data, val_data):
     trainer.fit(model, train_loader, val_loader)
 
 
-config = {"lr": tune.loguniform(1e-4, 1e-1), "hidden_size": tune.choice([32, 64, 128])}
+def main():
+    config = {
+        "lr": tune.loguniform(1e-4, 1e-1),
+        "hidden_size": tune.choice([32, 64, 128]),
+    }
 
-context = init(
-    address="local",
-    include_dashboard=False,
-    ignore_reinit_error=True,
-)
+    init(
+        address="local",
+        include_dashboard=False,
+        ignore_reinit_error=True,
+    )
 
-torch.manual_seed(42)
-X = torch.randn(1000, 10)
-y = torch.sum(X, dim=1, keepdim=True)
-X_train, y_train = X[:800], y[:800]
-X_val, y_val = X[800:], y[800:]
+    torch.manual_seed(42)
+    X = torch.randn(1000, 10)
+    y = torch.sum(X, dim=1, keepdim=True)
+    X_train, y_train = X[:800], y[:800]
+    X_val, y_val = X[800:], y[800:]
 
-train_data = TensorDataset(X_train, y_train)
-val_data = TensorDataset(X_val, y_val)
+    train_data = TensorDataset(X_train, y_train)
+    val_data = TensorDataset(X_val, y_val)
 
-tuner = tune.Tuner(
-    tune.with_parameters(train_nn, train_data=train_data, val_data=val_data),
-    tune_config=tune.TuneConfig(metric="rmse_val", mode="min", num_samples=2),
-    param_space=config,
-)
+    tuner = tune.Tuner(
+        tune.with_parameters(train_nn, train_data=train_data, val_data=val_data),
+        tune_config=tune.TuneConfig(metric="rmse_val", mode="min", num_samples=2),
+        param_space=config,
+    )
 
-results = tuner.fit()
+    results = tuner.fit()
+
+    # get best ray result
+    best_result = results.get_best_result("rmse_val", "min", scope="all")
+    best_rmse_train = best_result.metrics["rmse_train"]
+    best_rmse_val = best_result.metrics["rmse_val"]
+    print(f"Best trial final train rmse: {best_rmse_train}")
+    print(f"Best trial final validation rmse: {best_rmse_val}")
+
+    # get best model checkpoint
+    checkpoint_dir = best_result.checkpoint.path
+    checkpoint_path = os.path.join(checkpoint_dir, "checkpoint")
+
+    # load model
+    model = SimpleNN.load_from_checkpoint(checkpoint_path)
+
+    # recalculate rmse_train
+    rmse_train_recalc = torch.sqrt(
+        nn.functional.mse_loss(model(X_train), y_train)
+    ).item()
+    print(f"rmse_train_recalc: {rmse_train_recalc}")
+
+    # recalculate rmse_val
+    rmse_val_recalc = torch.sqrt(nn.functional.mse_loss(model(X_val), y_val)).item()
+    print(f"rmse_val_recalc: {rmse_val_recalc}")
+
+    # assertions
+    if not best_rmse_val == rmse_val_recalc:
+        raise ValueError("best_rmse_val != rmse_val_recalc")
+    if not best_rmse_train == rmse_train_recalc:
+        raise ValueError("best_rmse_train != rmse_train_recalc")
 
 
-# get best ray result
-best_result = results.get_best_result("rmse_val", "min", scope="all")
-best_rmse_train = best_result.metrics["rmse_train"]
-best_rmse_val = best_result.metrics["rmse_val"]
-print(f"Best trial final train rmse: {best_rmse_train}")
-print(f"Best trial final validation rmse: {best_rmse_val}")
-
-# get best model checkpoint
-checkpoint_dir = best_result.checkpoint.path
-checkpoint_path = os.path.join(checkpoint_dir, "checkpoint")
-
-# load model
-model = SimpleNN.load_from_checkpoint(checkpoint_path)
-
-# recalculate rmse_train
-rmse_train_recalc = torch.sqrt(nn.functional.mse_loss(model(X_train), y_train)).item()
-print(f"rmse_train_recalc: {rmse_train_recalc}")
-
-# recalculate rmse_val
-rmse_val_recalc = torch.sqrt(nn.functional.mse_loss(model(X_val), y_val)).item()
-print(f"rmse_val_recalc: {rmse_val_recalc}")
-
-# assert
-assert best_rmse_val == rmse_val_recalc
-assert best_rmse_train == rmse_train_recalc
+if __name__ == "__main__":
+    main()

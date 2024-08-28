@@ -81,7 +81,7 @@ def run_n_eval_tune(config_path):
         config["num_trials"],
         config["max_cuncurrent_trials"],
         model_types=config["ls_model_types"],
-        fully_reproducible=True,
+        fully_reproducible=False,
         test_mode=config["test_mode"],
     )
 
