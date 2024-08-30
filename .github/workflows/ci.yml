@@ -23,8 +23,8 @@ jobs:
       run: |
         pip install -q ruff
 
-    - name: Lint
-      run: make lint
+    - name: Ruff
+      uses: chartboost/ruff-action@v1
 
   build-and-test:
     needs: lint
