@@ -156,7 +156,7 @@ def get_n_save_predictions(
     all_pred = pd.concat(pred_ls)
     trial_path = train.get_context().get_trial_dir()
     # todo: once you removed the former predictions -> rename to no suffix
-    path2save = os.path.join(trial_path, "predictions_new.csv")
+    path2save = os.path.join(trial_path, "debug_last_log_vs_preds.csv")
     all_pred.to_csv(path2save, index=True)
     return all_pred
 
@@ -378,6 +378,8 @@ class NeuralNet(LightningModule):
         self.learning_rate = learning_rate
         self.nn_type = nn_type
         self.num_classes = n_units[-1]
+        self.train_loss = 0
+        self.val_loss = 0
         self.train_predictions = []
         self.train_targets = []
         self.validation_predictions = []
@@ -423,15 +425,15 @@ class NeuralNet(LightningModule):
 
     def training_step(self, batch, batch_idx):
         inputs, targets = batch
-        predictions = self.forward(inputs)
+        predictions = self.forward(inputs).squeeze()
 
         # Store predictions and targets
         self.train_predictions.append(predictions.detach())
         self.train_targets.append(targets.detach())
 
-        loss = self._calculate_loss(predictions, targets)
+        self.train_loss = self._calculate_loss(predictions, targets)
 
-        return loss
+        return self.train_loss
 
     def validation_step(self, batch, batch_idx):
         inputs, targets = batch
@@ -440,22 +442,20 @@ class NeuralNet(LightningModule):
         self.validation_predictions.append(predictions.detach())
         self.validation_targets.append(targets.detach())
 
-        loss = self._calculate_loss(predictions, targets)
+        self.val_loss = self._calculate_loss(predictions, targets)
         # nb_features log
-        self.log("nb_features", inputs.shape[1], on_epoch=True, logger=True)
-        return {"val_loss": loss}
+        self.log("nb_features", inputs.shape[1])
+        return {"val_loss": self.val_loss}
 
     def on_train_epoch_end(self):
         all_preds = torch.cat(self.train_predictions)
         all_targets = torch.cat(self.train_targets)
+        loss = self._calculate_loss(all_preds, all_targets)
+        self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
         rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("train_rmse", rmse, on_epoch=True, logger=True)
-        self.log("train_r2", r2, on_epoch=True, logger=True)
-
-        loss = self._calculate_loss(all_preds, all_targets)
-        self.log("train_loss", loss, on_epoch=True, logger=True)
-
+        self.log("train_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
+        self.log("train_r2", r2, on_epoch=True, prog_bar=True, logger=True)
         self.train_predictions.clear()
         self.train_targets.clear()
 
@@ -464,12 +464,14 @@ class NeuralNet(LightningModule):
         all_preds = torch.cat(self.validation_predictions)
         all_targets = torch.cat(self.validation_targets)
 
-        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("val_rmse", rmse, on_epoch=True, logger=True)
-        self.log("val_r2", r2, on_epoch=True, logger=True)
-
+        # do something with all preds and targets
         loss = self._calculate_loss(all_preds, all_targets)
-        self.log("val_loss", loss, on_epoch=True, logger=True)
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
+
+        # rmse and r2
+        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
+        self.log("val_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
+        self.log("val_r2", r2, on_epoch=True, prog_bar=True, logger=True)
 
         self.validation_predictions.clear()
         self.validation_targets.clear()
@@ -614,10 +616,11 @@ def train_nn(
                 "r2_train": "train_r2",
                 "loss_val": "val_loss",
                 "loss_train": "train_loss",
-                "nb_features": "nb_features",
+                # "nb_features": "nb_features",
             },
             filename="checkpoint",
             on="validation_end",
+            save_checkpoints=True,
             post_training_callback=post_training_callback,
         ),
     ]

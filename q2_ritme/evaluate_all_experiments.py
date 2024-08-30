@@ -29,7 +29,7 @@ def best_trial_name(analyses_ls, metric_to_evaluate, mode="min"):
 
     for analysis in analyses_ls:
         # Get the best trial for the current analysis based on the metric
-        best_trial = analysis.get_best_trial(metric_to_evaluate, mode, "last")
+        best_trial = analysis.get_best_trial(metric_to_evaluate, mode, "all")
 
         # Retrieve the best metric for this trial
         best_trial_metric = best_trial.metric_analysis[metric_to_evaluate][mode]
