@@ -18,7 +18,7 @@ from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from lightning import LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
-from ray import train, tune
+from ray import train
 from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
@@ -164,15 +164,18 @@ def _predict_rmse_r2_trac(alpha, log_geom_X, y):
     return root_mean_squared_error(y, y_pred), r2_score(y, y_pred)
 
 
-def _report_results_manually_trac(
-    alpha, A_df, log_geom_train, y_train, log_geom_val, y_val, tax
-):
-    # save coefficients w labels & matrix A with labels -> model_path
+def _bundle_trac_model(alpha, A_df):
+    # get coefficients w labels & matrix A with labels
     idx_alpha = ["intercept"] + A_df.columns.tolist()
     df_alpha_with_labels = pd.DataFrame(alpha, columns=["alpha"], index=idx_alpha)
 
     model = {"model": df_alpha_with_labels, "matrix_a": A_df}
+    return model
 
+
+def _report_results_manually_trac(
+    model, log_geom_train, y_train, log_geom_val, y_val, tax
+):
     # save model
     path_to_save = ray.train.get_context().get_trial_dir()
     model_path = os.path.join(path_to_save, "model.pkl")
@@ -180,6 +183,8 @@ def _report_results_manually_trac(
         pickle.dump(model, file)
 
     # calculate RMSE and R2
+    df_alpha_with_labels = model["model"]
+    alpha = model["model"]["alpha"].values
     rmse_train, r2_train = _predict_rmse_r2_trac(alpha, log_geom_train, y_train)
     rmse_val, r2_val = _predict_rmse_r2_trac(alpha, log_geom_val, y_val)
 
@@ -252,8 +257,10 @@ def train_trac(
         matrices_train, selected_param, intercept=intercept
     )
 
+    model = _bundle_trac_model(alpha, a_df)
+
     _report_results_manually_trac(
-        alpha, a_df, log_geom_train, y_train, log_geom_val, y_val, tax
+        model, log_geom_train, y_train, log_geom_val, y_val, tax
     )
 
 
@@ -497,9 +504,8 @@ def train_nn(
     )
     _save_taxonomy(tax)
     # Callbacks
-    checkpoint_dir = (
-        tune.get_trial_dir() if "TUNE_TRIAL_NAME" in os.environ else "checkpoints"
-    )
+    checkpoint_dir = ray.train.get_context().get_trial_dir()
+
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     callbacks = [

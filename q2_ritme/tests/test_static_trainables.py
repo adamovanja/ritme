@@ -8,11 +8,22 @@ import numpy as np
 import pandas as pd
 import skbio
 import torch
+from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
+from ray import tune
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, root_mean_squared_error
+from sklearn.metrics import mean_squared_error, r2_score, root_mean_squared_error
 
+from q2_ritme.evaluate_models import (
+    TunedModel,
+    get_data_processing,
+    get_model,
+    get_predictions,
+    get_taxonomy,
+)
 from q2_ritme.model_space import static_trainables as st
+from q2_ritme.process_data import split_data_by_host
+from q2_ritme.tune_models import check_for_errors_in_trials, model_trainables
 
 
 class TestHelperFunctions(TestPluginBase):
@@ -131,13 +142,15 @@ class TestTrainables(TestPluginBase):
         # Arrange
         config = {"lambda": 0.1}
         mock_process_train.return_value = (None, None, None, None, None)
-        mock_create_matrix.return_value = pd.DataFrame()
+        mock_create_matrix.return_value = pd.DataFrame(
+            {"F1": [1, 0], "F2": [0, 1]}, index=["F1", "F2"]
+        )
         mock_preprocess_taxonomy.side_effect = [
             (np.array([[1, 2], [3, 4]]), 2),
             (np.array([[5, 6], [7, 8]]), 2),
         ]
-        mock_classo.return_value = np.array([0.1, 0.2])
-        mock_min_least_squares.return_value = np.array([0.1, 0.2])
+        mock_classo.return_value = np.array([0.1, 0.1, 0.2])
+        mock_min_least_squares.return_value = np.array([0.1, 0.1, 0.2])
 
         # Act
         st.train_trac(
@@ -277,8 +290,10 @@ class TestTrainables(TestPluginBase):
     @patch("q2_ritme.model_space.static_trainables.load_data")
     @patch("q2_ritme.model_space.static_trainables.NeuralNet")
     @patch("q2_ritme.model_space.static_trainables.Trainer")
+    @patch("ray.train.get_context")
     def test_train_nn(
         self,
+        mock_get_context,
         mock_trainer,
         mock_neural_net,
         mock_load_data,
@@ -296,7 +311,7 @@ class TestTrainables(TestPluginBase):
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
         mock_trainer_instance = mock_trainer.return_value
-
+        mock_get_context.return_value.get_trial_dir.return_value = tempfile.mkdtemp()
         # Define dummy config and parameters
         config = {
             "n_hidden_layers": 2,
@@ -325,3 +340,104 @@ class TestTrainables(TestPluginBase):
             n_units=[5, 10, 5, 1], learning_rate=0.01, nn_type="regression"
         )
         mock_trainer_instance.fit.assert_called()
+
+
+class TestTrainableLogging(TestPluginBase):
+    package = "q2_ritme.tests"
+
+    def setUp(self):
+        super().setUp()
+        np.random.seed(42)
+        self.X = np.random.randn(1000, 10)
+        self.y = np.sum(self.X, axis=1) + np.random.randn(1000) * 0.1
+        self.features = [f"F{i}" for i in range(10)]
+        self.train_val = pd.DataFrame(self.X, columns=[f"F{i}" for i in range(10)])
+        self.train_val["target"] = self.y
+        self.train_val["host_id"] = np.random.randint(0, 5, 1000)
+        self.seed_data = 42
+        self.seed_model = 42
+        self.host_id = "host_id"
+        self.target = "target"
+        self.tax = pd.DataFrame([])
+        self.tree_phylo = skbio.TreeNode()
+
+    def _create_tuned_model(self, model_type, best_result):
+        model = get_model(model_type, best_result)
+        return TunedModel(
+            model,
+            get_data_processing(best_result),
+            get_taxonomy(best_result),
+            best_result.path,
+        )
+
+    @parameterized.expand(
+        [
+            ("linreg",),
+            ("xgb",),
+            ("nn_reg",),
+        ]
+    )
+    def test_logged_vs_bestresult_rmse(self, model_type):
+        """
+        Verify that logged rmse values are identical to metrics obtained with
+        best result's checkpoint. This is intentionally tested for one model of
+        each type of checkpoint callbacks, namely manual reporting (linreg
+        representative for trac, rf), and each of the own checkpoint_callbacks
+        (xgb and nn_reg representative for all NNs).
+
+        """
+        # todo: make it run for nn_reg too (currently failing)
+        # fit model
+        search_space = {
+            "data_selection": None,
+            "data_aggregation": None,
+            "data_transform": None,
+            "data_alr_denom_idx": None,
+            "alpha": 0.1,
+            "l1_ratio": 0.5,
+            "batch_size": 64,
+            "n_hidden_layers": 1,
+            "epochs": 1,
+            "learning_rate": 0.01,
+        }
+        # todo: make max_layers configurable parameter!
+        for i in range(30):
+            search_space[f"n_units_hl{i}"] = 2
+        metric = "rmse_val"
+        mode = "min"
+        tuner = tune.Tuner(
+            tune.with_parameters(
+                model_trainables[model_type],
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+            ),
+            param_space=search_space,
+            tune_config=tune.TuneConfig(metric=metric, mode=mode, num_samples=1),
+        )
+        results = tuner.fit()
+        check_for_errors_in_trials(results)
+
+        # get logs
+        best_result = results.get_best_result("rmse_val", "min", "all")
+        logged_rmse = {
+            "train": best_result.metrics["rmse_train"],
+            "val": best_result.metrics["rmse_val"],
+        }
+        # get recreated predictions & assert
+        tuned_model = self._create_tuned_model(model_type, best_result)
+        # split data with same split as during training - ensures with self.seed_data
+        train, val = split_data_by_host(
+            self.train_val, self.host_id, 0.8, self.seed_data
+        )
+
+        for split, data in [("train", train), ("val", val)]:
+            preds = get_predictions(
+                data, tuned_model, self.target, self.features, split=split
+            )
+            calculated_rmse = np.sqrt(mean_squared_error(preds["pred"], preds["true"]))
+            self.assertAlmostEqual(logged_rmse[split], calculated_rmse, places=6)

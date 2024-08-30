@@ -38,6 +38,13 @@ def get_slurm_resource(resource_name, default_value=0):
         return default_value
 
 
+def check_for_errors_in_trials(result):
+    if result.num_errors > 0:
+        raise RuntimeError(
+            "Some trials encountered errors see above for reported ray tune errors"
+        )
+
+
 def run_trials(
     tracking_uri,
     exp_name,
@@ -211,10 +218,7 @@ def run_trials(
     result = analysis.fit()
 
     # Check all trials & check for error status
-    if result.num_errors > 0:
-        raise RuntimeError(
-            "Some trials encountered errors see above for reported ray tune errors"
-        )
+    check_for_errors_in_trials(result)
 
     return result
 
