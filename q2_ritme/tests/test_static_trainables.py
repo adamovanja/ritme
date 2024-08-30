@@ -386,7 +386,9 @@ class TestTrainableLogging(TestPluginBase):
         (xgb and nn_reg representative for all NNs).
 
         """
-        # todo: make it run for nn_reg too (currently failing)
+        # todo: make it run for nn_reg too (currently failing: see issue here:
+        # https://github.com/ray-project/ray/issues/47333)
+
         # fit model
         search_space = {
             "data_selection": None,
@@ -397,7 +399,7 @@ class TestTrainableLogging(TestPluginBase):
             "l1_ratio": 0.5,
             "batch_size": 64,
             "n_hidden_layers": 1,
-            "epochs": 1,
+            "epochs": 2,
             "learning_rate": 0.01,
         }
         # todo: make max_layers configurable parameter!
