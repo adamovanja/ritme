@@ -5,7 +5,7 @@ PYTHON ?= python
 all: ;
 
 lint:
-	flake8
+	ruff check
 
 test: all
 	py.test
