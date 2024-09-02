@@ -97,6 +97,7 @@ def get_nn_space(
     trial, tax, model_name: str, test_mode: bool = False
 ) -> Dict[str, str]:
     get_data_eng_space(trial, tax, test_mode)
+    # todo: make max_layers configurable parameter!
     max_layers = 30
     # Sample random uniformly between [1,max_layers] rounding to multiples of 5
     trial.suggest_int("n_hidden_layers", 1, max_layers, step=5)
