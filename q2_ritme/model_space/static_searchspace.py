@@ -68,26 +68,36 @@ def get_rf_space(trial, tax, test_mode: bool = False) -> Dict[str, str]:
     get_data_eng_space(trial, tax, test_mode)
 
     # number of trees in forest: the more the higher computational costs
-    trial.suggest_int("n_estimators", 50, 300)
+    trial.suggest_int("n_estimators", 40, 200, step=20)
 
     # max depths of the tree: the higher the higher probab of overfitting
-    trial.suggest_int("max_depth", 5, 50)
+    # ! 4, 8, 16, None
+    trial.suggest_categorical("max_depth", [4, 8, 16, 32, None])
+
     # min number of samples requires to split internal node: small
     # values higher probab of overfitting
-    trial.suggest_float("min_samples_split", 0.01, 0.1, step=0.01)
+    # ! 0.001, 0.01, 0.1
+    trial.suggest_float("min_samples_split", 0.001, 0.1, log=True)
+
+    # a leaf should have at least this fraction of samples within - larger
+    # values can help reduce overfitting
+    # ! 0.0001, 0.001, 0.01
+    trial.suggest_float("min_weight_fraction_leaf", 0.0001, 0.01, log=True)
 
     # min # samples requires at leaf node: small values higher probab
     # of overfitting
-    trial.suggest_categorical("min_samples_leaf", [0.005, 0.01, 0.05, 0.1])
+    trial.suggest_float("min_samples_leaf", 0.001, 0.1, log=True)
 
     # max # features to consider when looking for best split: small can
     # reduce overfitting
+    # ! None, "sqrt", "log2", 0.1
     trial.suggest_categorical("max_features", [None, "sqrt", "log2", 0.1, 0.2, 0.5])
 
     # node split occurs if impurity is >= to this value: large values
     # prevent overfitting
-    trial.suggest_float("min_impurity_decrease", 0.01, 0.1, step=0.01)
+    trial.suggest_float("min_impurity_decrease", 0.001, 0.5, log=True)
 
+    # ! True, False
     trial.suggest_categorical("bootstrap", [True, False])
 
     return {"model": "rf"}
