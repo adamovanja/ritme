@@ -302,6 +302,8 @@ def train_rf(
         # ray tune uses joblib for parallelization - so this makes sure all
         # available resources are used
         n_jobs=None,
+        # set randomness
+        random_state=seed_model,
     )
     rf.fit(X_train, y_train)
 
