@@ -1,0 +1,164 @@
+{
+  "experiment_tag": "run_config",
+  "host_id": "host_id",
+  "ls_model_types": [
+    "linreg",
+    "trac",
+    "xgb",
+    "nn_reg",
+    "nn_class",
+    "nn_corn",
+    "rf"
+  ],
+  "max_cuncurrent_trials": 5,
+  "model_hyperparameters": {
+    "linreg": {
+      "alpha": {
+        "max": 1,
+        "min": 0
+      },
+      "l1_ratio": {
+        "max": 1,
+        "min": 0
+      }
+    },
+    "nn_all_types": {
+      "batch_size": [
+        32,
+        64,
+        128,
+        256
+      ],
+      "epochs": [
+        10,
+        50,
+        100,
+        200
+      ],
+      "learning_rate": [
+        0.01,
+        0.005,
+        0.001,
+        0.0005,
+        0.0001,
+        5e-05,
+        1e-05
+      ],
+      "max_layers": {
+        "max": 30,
+        "min": 5,
+        "step": 5
+      },
+      "n_hidden_layers": {
+        "max": 30,
+        "min": 1,
+        "step": 5
+      },
+      "n_units_hl": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ]
+    },
+    "rf": {
+      "bootstrap": [
+        true,
+        false
+      ],
+      "max_depth": [
+        4,
+        8,
+        16,
+        32,
+        null
+      ],
+      "max_features": [
+        null,
+        "sqrt",
+        "log2",
+        0.1,
+        0.2,
+        0.5
+      ],
+      "min_impurity_decrease": {
+        "log": true,
+        "max": 0.5,
+        "min": 0.001
+      },
+      "min_samples_leaf": {
+        "log": true,
+        "max": 0.1,
+        "min": 0.001
+      },
+      "min_samples_split": {
+        "log": true,
+        "max": 0.1,
+        "min": 0.001
+      },
+      "min_weight_fraction_leaf": {
+        "log": true,
+        "max": 0.01,
+        "min": 0.0001
+      },
+      "n_estimators": {
+        "max": 200,
+        "min": 40,
+        "step": 20
+      }
+    },
+    "trac": {
+      "lambda": {
+        "log": true,
+        "max": 1.0,
+        "min": 0.001
+      }
+    },
+    "xgb": {
+      "eta": [
+        0.01,
+        0.05,
+        0.1,
+        0.2,
+        0.3
+      ],
+      "max_depth": {
+        "max": 10,
+        "min": 2
+      },
+      "min_child_weight": {
+        "max": 4,
+        "min": 0
+      },
+      "num_parallel_tree": {
+        "max": 3,
+        "min": 1,
+        "step": 1
+      },
+      "subsample": [
+        0.7,
+        0.8,
+        0.9,
+        1.0
+      ]
+    }
+  },
+  "models_to_evaluate_separately": [
+    "xgb",
+    "nn_reg",
+    "nn_class",
+    "nn_corn"
+  ],
+  "num_trials": 500,
+  "path_to_ft": "experiments/data/all_otu_table_filt.qza",
+  "path_to_md": "experiments/data/metadata_proc_v20240323_r0_r3_le_2yrs.tsv",
+  "path_to_phylo": "experiments/data/silva-138-99-rooted-tree.qza",
+  "path_to_tax": "experiments/data/otu_taxonomy_all.qza",
+  "seed_data": 12,
+  "seed_model": 12,
+  "target": "age_months",
+  "test_mode": false,
+  "tracking_uri": "wandb",
+  "train_size": 0.8
+}

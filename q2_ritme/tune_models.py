@@ -61,6 +61,7 @@ def run_trials(
     num_trials,
     max_concurrent_trials,
     fully_reproducible=False,  # if True hyperband instead of ASHA scheduler is used
+    model_hyperparameters={},
     scheduler_grace_period=10,
     scheduler_max_t=100,
     resources=None,
@@ -133,7 +134,11 @@ def run_trials(
     # define search algorithm with search space
     # partial function needed to pass additional parameters
     define_search_space = partial(
-        ss.get_search_space, model_type=exp_name, tax=tax, test_mode=test_mode
+        ss.get_search_space,
+        model_type=exp_name,
+        tax=tax,
+        test_mode=test_mode,
+        model_hyperparameters=model_hyperparameters,
     )
 
     search_algo = OptunaSearch(
@@ -246,6 +251,7 @@ def run_all_trials(
     ],
     fully_reproducible: bool = False,
     test_mode: bool = False,
+    model_hyperparameters: dict = {},
 ) -> dict:
     results_all = {}
 
@@ -261,6 +267,13 @@ def run_all_trials(
         if not os.path.exists(path_exp):
             os.makedirs(path_exp)
         print(f"Ray tune training of: {model}...")
+
+        # if there are any, get the range of hyperparameters to check
+        if model.startswith("nn"):
+            model_hparams_type = model_hyperparameters.get("nn_all_types", {})
+        else:
+            model_hparams_type = model_hyperparameters.get(model, {})
+
         result = run_trials(
             mlflow_uri,
             model,
@@ -277,6 +290,7 @@ def run_all_trials(
             num_trials,
             max_concurrent_trials,
             fully_reproducible=fully_reproducible,
+            model_hyperparameters=model_hparams_type,
         )
         results_all[model] = result
     return results_all
