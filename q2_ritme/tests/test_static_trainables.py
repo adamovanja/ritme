@@ -216,6 +216,7 @@ class TestTrainables(TestPluginBase):
             n_estimators=config["n_estimators"],
             max_depth=config["max_depth"],
             n_jobs=None,
+            random_state=0,
         )
         mock_rf_instance.fit.assert_called_once()
         mock_report.assert_called_once()
