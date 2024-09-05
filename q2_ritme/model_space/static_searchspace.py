@@ -59,12 +59,14 @@ def get_linreg_space(
 
     # alpha controls overall regularization strength, alpha = 0 is equivalent to
     # an ordinary least square. large alpha -> more regularization
-    alpha = model_hyperparameters.get("alpha", {"min": 0, "max": 1})
-    trial.suggest_float("alpha", alpha["min"], alpha["max"])
+    alpha = model_hyperparameters.get(
+        "alpha", {"min": 0.00001, "max": 100, "log": True}
+    )
+    trial.suggest_float("alpha", alpha["min"], alpha["max"], log=alpha["log"])
 
     # balance between L1 and L2 reg., when =0 -> L2, when =1 -> L1
-    l1_ratio = model_hyperparameters.get("l1_ratio", {"min": 0, "max": 1})
-    trial.suggest_float("l1_ratio", l1_ratio["min"], l1_ratio["max"])
+    l1_ratio = model_hyperparameters.get("l1_ratio", {"min": 0, "max": 1, "step": 0.1})
+    trial.suggest_float("l1_ratio", l1_ratio["min"], l1_ratio["max"], l1_ratio["step"])
 
     return {"model": "linreg"}
 
