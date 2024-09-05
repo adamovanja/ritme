@@ -246,7 +246,10 @@ class TestStaticSearchSpace(TestPluginBase):
         [
             (
                 "linreg",
-                {"alpha": {"min": 0, "max": 1}, "l1_ratio": {"min": 0, "max": 1}},
+                {
+                    "alpha": {"min": 0.00001, "max": 100, "log": True},
+                    "l1_ratio": {"min": 0, "max": 1, "step": 0.1},
+                },
             ),
             (
                 "rf",

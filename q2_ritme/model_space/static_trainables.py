@@ -146,6 +146,8 @@ def train_linreg(
     X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
+    # todo: Use StandardScaler before fitting ElasticNet - store train values to
+    # todo: refit later on
 
     # ! model
     np.random.seed(seed_model)
