@@ -512,7 +512,6 @@ class PostTrainingCallback(Callback):
 
     def on_validation_epoch_end(self, trainer, pl_module):
         # Your post-training logic here
-        print("We are HERE!")
         _ = get_n_save_predictions(
             pl_module,
             self.nn_type,
