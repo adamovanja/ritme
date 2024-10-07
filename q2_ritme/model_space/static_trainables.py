@@ -124,7 +124,7 @@ def _predict_from_engineered_x(model, model_type, X):
         with torch.no_grad():
             X_t = torch.tensor(X, dtype=torch.float32)
             predicted = model(X_t)
-            predicted = model._prepare_predictions(predicted)
+            predicted = model._prepare_predictions(predicted).values
     elif isinstance(model, dict):
         # trac model
         log_geom, _ = _preprocess_taxonomy_aggregation(X, model["matrix_a"].values)
@@ -439,7 +439,7 @@ class NeuralNet(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         inputs, targets = batch
-        predictions = self.forward(inputs)
+        predictions = self.forward(inputs).squeeze()
 
         self.validation_predictions.append(predictions.detach())
         self.validation_targets.append(targets.detach())
