@@ -162,3 +162,4 @@ x_*
 # all but one json config file
 *.json
 !run_config.json
+!run_config_whparams.json

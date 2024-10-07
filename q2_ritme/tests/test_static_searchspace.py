@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pandas as pd
 from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
@@ -145,3 +147,161 @@ class TestStaticSearchSpace(TestPluginBase):
         trial = MockTrial()
         with self.assertRaisesRegex(ValueError, "Model type FakeModel not supported."):
             ss.get_search_space(trial, model_type, self.tax)
+
+    @parameterized.expand(
+        [
+            (
+                "linreg",
+                {
+                    "alpha": {"min": 0.1, "max": 0.9},
+                    "l1_ratio": {"min": 0.2, "max": 0.8},
+                },
+            ),
+            (
+                "rf",
+                {
+                    "n_estimators": {"min": 50, "max": 150, "step": 10},
+                    "max_depth": [5, 10, 15, None],
+                    "min_samples_split": {"min": 0.01, "max": 0.05, "log": True},
+                    "min_weight_fraction_leaf": {
+                        "min": 0.0005,
+                        "max": 0.005,
+                        "log": True,
+                    },
+                    "min_samples_leaf": {"min": 0.01, "max": 0.05, "log": True},
+                    "max_features": [None, "sqrt", "log2", 0.2],
+                    "min_impurity_decrease": {"min": 0.01, "max": 0.1, "log": True},
+                    "bootstrap": [True, False],
+                },
+            ),
+            (
+                "xgb",
+                {
+                    "max_depth": {"min": 3, "max": 7},
+                    "min_child_weight": {"min": 1, "max": 3},
+                    "subsample": {"min": 0.8, "max": 1.0},
+                    "eta": {"min": 0.05, "max": 0.2, "log": True},
+                    "num_parallel_tree": {"min": 2, "max": 4, "step": 1},
+                },
+            ),
+            (
+                "nn_reg",
+                {
+                    "max_layers": {"min": 100, "max": 120, "step": 10},
+                    "n_hidden_layers": {"min": 2, "max": 10, "step": 2},
+                    "learning_rate": [0.01, 0.001, 0.0001],
+                    "batch_size": [64, 128],
+                    "epochs": [50, 100],
+                    "n_units_hl": [64, 128, 256],
+                },
+            ),
+        ]
+    )
+    @patch("q2_ritme.model_space.static_searchspace.get_search_space")
+    def test_hyperparameter_passing_different_than_default(
+        self, model_type, hyperparameters, mock_get_search_space
+    ):
+        trial = MockTrial()
+        ss.get_search_space(
+            trial,
+            model_type,
+            self.tax,
+            test_mode=False,
+            model_hyperparameters=hyperparameters,
+        )
+
+        # Verify that the get_search_space function was called with the correct
+        # hyperparameters
+        mock_get_search_space.assert_called_once_with(
+            trial,
+            model_type,
+            self.tax,
+            test_mode=False,
+            model_hyperparameters=hyperparameters,
+        )
+
+    def _verify_trial_params(self, trial, expected_defaults):
+        for param, config in expected_defaults.items():
+            if param == "n_units_hl":
+                self._verify_n_units_hl(trial, config)
+            else:
+                self._verify_param(trial, param, config)
+
+    def _verify_param(self, trial, param, config):
+        self.assertIn(param, trial.params)
+        if isinstance(config, dict):
+            self.assertGreaterEqual(trial.params[param], config["min"])
+            self.assertLessEqual(trial.params[param], config["max"])
+        else:
+            self.assertIn(trial.params[param], config)
+
+    def _verify_n_units_hl(self, trial, config):
+        max_layers_selected = trial.params["max_layers"]
+        for i in range(max_layers_selected):
+            param_name = f"n_units_hl{i}"
+            self.assertIn(param_name, trial.params)
+            self.assertIn(trial.params[param_name], config)
+
+    @parameterized.expand(
+        [
+            (
+                "linreg",
+                {"alpha": {"min": 0, "max": 1}, "l1_ratio": {"min": 0, "max": 1}},
+            ),
+            (
+                "rf",
+                {
+                    "n_estimators": {"min": 40, "max": 200, "step": 20},
+                    "max_depth": [4, 8, 16, 32, None],
+                    "min_samples_split": {"min": 0.001, "max": 0.1, "log": True},
+                    "min_weight_fraction_leaf": {
+                        "min": 0.0001,
+                        "max": 0.01,
+                        "log": True,
+                    },
+                    "min_samples_leaf": {"min": 0.001, "max": 0.1, "log": True},
+                    "max_features": [None, "sqrt", "log2", 0.1, 0.2, 0.5],
+                    "min_impurity_decrease": {"min": 0.001, "max": 0.5, "log": True},
+                    "bootstrap": [True, False],
+                },
+            ),
+            (
+                "xgb",
+                {
+                    "max_depth": {"min": 2, "max": 10},
+                    "min_child_weight": {"min": 0, "max": 4},
+                    "subsample": {"min": 0.7, "max": 1.0},
+                    "eta": {"min": 0.01, "max": 0.3, "log": True},
+                    "num_parallel_tree": {"min": 1, "max": 3, "step": 1},
+                },
+            ),
+            (
+                "nn_reg",
+                {
+                    "max_layers": {"min": 5, "max": 30, "step": 5},
+                    "n_hidden_layers": {"min": 1, "max": 30, "step": 5},
+                    "learning_rate": [
+                        0.01,
+                        0.005,
+                        0.001,
+                        0.0005,
+                        0.0001,
+                        0.00005,
+                        0.00001,
+                    ],
+                    "batch_size": [32, 64, 128, 256],
+                    "epochs": [10, 50, 100, 200],
+                    "n_units_hl": [32, 64, 128, 256, 512],
+                },
+            ),
+        ]
+    )
+    def test_hyperparameter_default_used(self, model_type, expected_defaults):
+        """Verifies that the default hyperparameters are used when not passed."""
+        trial = MockTrial()
+
+        # Call the actual function without passing model_hyperparameters
+        _ = ss.get_search_space(trial, model_type, self.tax, test_mode=False)
+
+        # Verify that the trial parameters match the expected defaults
+        self._verify_trial_params(trial, expected_defaults)

@@ -40,6 +40,7 @@ To define a suitable model configuration, please find the description of each va
 | test_mode | Boolean flag to indicate if running in test mode. |
 | tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  #model-tracking for set-up instructions. |
 | train_size | Fraction of data to use for training (e.g., 0.8 for 80% train, 20% test split). |
+| model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `run_config_whparams.json`|
 
 ### Local training
 To locally train models with a defined configuration in `q2_ritme/run_config.json` run:

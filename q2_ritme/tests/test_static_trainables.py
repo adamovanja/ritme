@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import skbio
 import torch
+from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
 from ray import tune
 from sklearn.linear_model import LinearRegression
@@ -141,13 +142,15 @@ class TestTrainables(TestPluginBase):
         # Arrange
         config = {"lambda": 0.1}
         mock_process_train.return_value = (None, None, None, None, None)
-        mock_create_matrix.return_value = pd.DataFrame()
+        mock_create_matrix.return_value = pd.DataFrame(
+            {"F1": [1, 0], "F2": [0, 1]}, index=["F1", "F2"]
+        )
         mock_preprocess_taxonomy.side_effect = [
             (np.array([[1, 2], [3, 4]]), 2),
             (np.array([[5, 6], [7, 8]]), 2),
         ]
-        mock_classo.return_value = np.array([0.1, 0.2])
-        mock_min_least_squares.return_value = np.array([0.1, 0.2])
+        mock_classo.return_value = np.array([0.1, 0.1, 0.2])
+        mock_min_least_squares.return_value = np.array([0.1, 0.1, 0.2])
 
         # Act
         st.train_trac(
@@ -213,6 +216,7 @@ class TestTrainables(TestPluginBase):
             n_estimators=config["n_estimators"],
             max_depth=config["max_depth"],
             n_jobs=None,
+            random_state=0,
         )
         mock_rf_instance.fit.assert_called_once()
         mock_report.assert_called_once()
@@ -287,8 +291,10 @@ class TestTrainables(TestPluginBase):
     @patch("q2_ritme.model_space.static_trainables.load_data")
     @patch("q2_ritme.model_space.static_trainables.NeuralNet")
     @patch("q2_ritme.model_space.static_trainables.Trainer")
+    @patch("ray.train.get_context")
     def test_train_nn(
         self,
+        mock_get_context,
         mock_trainer,
         mock_neural_net,
         mock_load_data,
@@ -306,7 +312,7 @@ class TestTrainables(TestPluginBase):
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
         mock_trainer_instance = mock_trainer.return_value
-
+        mock_get_context.return_value.get_trial_dir.return_value = tempfile.mkdtemp()
         # Define dummy config and parameters
         config = {
             "n_hidden_layers": 2,
@@ -365,14 +371,16 @@ class TestTrainableLogging(TestPluginBase):
             best_result.path,
         )
 
-    # @parameterized.expand(
-    #     [
-    #         ("linreg",),
-    #         ("xgb",),
-    #         ("nn_reg",),
-    #     ]
-    # )
-    def test_logged_vs_bestresult_rmse(self):  # , model_type):
+    @parameterized.expand(
+        [
+            ("linreg",),
+            ("xgb",),
+            # todo: NN is currently failing: see issue here:
+            # https://github.com/ray-project/ray/issues/47333)
+            # ("nn_reg",),
+        ]
+    )
+    def test_logged_vs_bestresult_rmse(self, model_type):
         """
         Verify that logged rmse values are identical to metrics obtained with
         best result's checkpoint. This is intentionally tested for one model of
@@ -381,8 +389,6 @@ class TestTrainableLogging(TestPluginBase):
         (xgb and nn_reg representative for all NNs).
 
         """
-        # todo: make it run for nn_reg too (currently failing)
-        model_type = "linreg"
         # fit model
         search_space = {
             "data_selection": None,
@@ -393,7 +399,7 @@ class TestTrainableLogging(TestPluginBase):
             "l1_ratio": 0.5,
             "batch_size": 64,
             "n_hidden_layers": 1,
-            "epochs": 1,
+            "epochs": 2,
             "learning_rate": 0.01,
         }
         # todo: make max_layers configurable parameter!
