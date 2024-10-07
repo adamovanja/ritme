@@ -166,11 +166,14 @@ def get_nn_space(
     get_data_eng_space(trial, tax, test_mode)
 
     # max_layers: in network
-    max_layers = model_hyperparameters.get(
+    max_layers_options = model_hyperparameters.get(
         "max_layers", {"min": 5, "max": 30, "step": 5}
     )
-    max_layers_selected = trial.suggest_int(
-        "max_layers", max_layers["min"], max_layers["max"], step=max_layers["step"]
+    max_layers = trial.suggest_int(
+        "max_layers",
+        max_layers_options["min"],
+        max_layers_options["max"],
+        step=max_layers_options["step"],
     )
 
     # Sample random uniformly between [1,max_layers] rounding to multiples of 5
@@ -197,7 +200,7 @@ def get_nn_space(
 
     # first and last layer are fixed by shape of features and target
     n_units_hl = model_hyperparameters.get("n_units_hl", [32, 64, 128, 256, 512])
-    for i in range(max_layers_selected):
+    for i in range(max_layers):
         trial.suggest_categorical(f"n_units_hl{i}", n_units_hl)
 
     return {"model": model_name}
