@@ -65,7 +65,7 @@ def run_n_eval_tune(config_path):
         config["seed_data"],
     )
 
-    # ! Run all experiments
+    # ! Run all experiments on train_val
     result_dic = run_all_trials(
         train_val,
         config["target"],

@@ -152,8 +152,9 @@ dmypy.json
 # Any callgraphs
 **.svg
 
-# My personal scratchpad
+# My personal scratchpad & archive
 x_*
+archive
 
 # logs from slurm launches
 *_err.txt
