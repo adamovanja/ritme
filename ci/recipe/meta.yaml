@@ -53,6 +53,7 @@ requirements:
       - grpcio==1.51.1
       # to enable insights in ray dashboard
       - py-spy
+      - typer
       - wandb
 
 
