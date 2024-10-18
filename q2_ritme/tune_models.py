@@ -256,7 +256,7 @@ def run_all_trials(
     results_all = {}
 
     # if tax + phylogeny empty we can't run trac
-    if (tax.empty or tree_phylo.children == []) and "trac" in model_types:
+    if (tax is None or tree_phylo is None) and "trac" in model_types:
         model_types.remove("trac")
         print(
             "Removing trac from model_types since no taxonomy and phylogeny were "
