@@ -11,6 +11,7 @@ import torch
 from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
+from ray.tune import ResultGrid
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from ray.tune.search.optuna import OptunaSearch
 
@@ -252,7 +253,7 @@ def run_all_trials(
     fully_reproducible: bool = False,
     test_mode: bool = False,
     model_hyperparameters: dict = {},
-) -> dict:
+) -> dict[str, ResultGrid]:
     results_all = {}
 
     # if tax + phylogeny empty we can't run trac

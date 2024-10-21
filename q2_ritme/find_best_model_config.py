@@ -8,7 +8,7 @@ import typer
 from qiime2.plugins import phylogeny
 
 from q2_ritme._decorators import helper_function, main_function
-from q2_ritme.evaluate_models import retrieve_best_models
+from q2_ritme.evaluate_models import TunedModel, retrieve_best_models, save_best_models
 from q2_ritme.tune_models import run_all_trials
 
 
@@ -116,7 +116,7 @@ def find_best_model_config(
     tax: pd.DataFrame = None,
     tree_phylo: skbio.TreeNode = None,
     path_store_model_logs: str = "experiments/models",
-) -> dict:
+) -> tuple[dict[str, TunedModel], str]:
     """
     Find the best model configuration incl. feature representation.
 
@@ -137,7 +137,7 @@ def find_best_model_config(
         `path_store_model_logs`.
 
     Returns:
-        dict: TBA - best model configurations.
+        dict: With model type as key and best TunedModel as value.
         str: Path to the experiment folder.
     """
     _verify_experiment_config(config)
@@ -186,9 +186,7 @@ def find_best_model_config(
     )
 
     # ! Get best models of this experiment
-    # TODO: adjust output to something that can be used for refitting
     best_model_dic = retrieve_best_models(result_dic)
-    # best_model_dic {model_type: tmodel}
     return best_model_dic, path_exp
 
 
@@ -220,7 +218,7 @@ def cli_find_best_model_config(
         `path_store_model_logs`.
 
     Side Effects:
-        Writes the best model configurations to a file in the specified
+        Writes the best tuned model configurations to a file in the specified
         experiment path in path_to_config.
     """
     config = _load_experiment_config(path_to_config)
@@ -236,16 +234,13 @@ def cli_find_best_model_config(
     else:
         tree_phylo = None
 
-    all_model_config, path_exp = find_best_model_config(
+    best_model_dict, path_exp = find_best_model_config(
         config, train_val, tax, tree_phylo, path_store_model_logs
     )
 
-    # TODO: adjust output to something that can be used for refitting
-    # TODO: currently failing since "Object of type TunedModel is not JSON
-    # TODO: serializable"
-    filename = "best_model_config.json"
-    _save_config(all_model_config, path_exp, filename)
-    print(f"Best model configurations were saved in {path_exp}/{filename}.")
+    # save each best tuned model
+    save_best_models(best_model_dict, path_exp)
+    print(f"Best model configurations were saved in {path_exp}.")
 
 
 # ----------------------------------------------------------------------------

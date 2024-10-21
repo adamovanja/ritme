@@ -127,6 +127,7 @@ class TunedModel:
         self.path = path
         self.train_selected_fts = []
 
+    # todo: add refit method!
     def aggregate(self, data):
         return aggregate_microbial_features(
             data, self.data_config["data_aggregation"], self.tax
@@ -212,6 +213,19 @@ def retrieve_best_models(result_dic):
             best_model, best_data_proc, best_tax, best_path
         )
     return best_model_dic
+
+
+def save_best_models(best_model_dic: dict[str:TunedModel], output_dir: str):
+    for model_type, tuned_model in best_model_dic.items():
+        path_to_save = os.path.join(output_dir, f"{model_type}_best_model.pkl")
+        with open(path_to_save, "wb") as file:
+            pickle.dump(tuned_model, file)
+
+
+def load_best_model(model_type: str, path_to_exp: str) -> TunedModel:
+    file_path = os.path.join(path_to_exp, f"{model_type}_best_model.pkl")
+    with open(file_path, "rb") as file:
+        return pickle.load(file)
 
 
 def get_predictions(data, tmodel, target, features, split=None):
