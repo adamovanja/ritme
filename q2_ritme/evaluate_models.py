@@ -1,3 +1,4 @@
+import json
 import os
 import pickle
 from typing import Any
@@ -226,6 +227,13 @@ def load_best_model(model_type: str, path_to_exp: str) -> TunedModel:
     file_path = os.path.join(path_to_exp, f"{model_type}_best_model.pkl")
     with open(file_path, "rb") as file:
         return pickle.load(file)
+
+
+def load_experiment_config(path_to_exp: str) -> dict:
+    file_path = os.path.join(path_to_exp, "experiment_config.json")
+
+    with open(file_path, "rb") as f:
+        return json.load(f)
 
 
 def get_predictions(data, tmodel, target, features, split=None):
