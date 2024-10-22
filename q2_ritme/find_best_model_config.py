@@ -55,7 +55,7 @@ def _process_taxonomy(tax: pd.DataFrame, ft: pd.DataFrame) -> pd.DataFrame:
     # rename taxonomy to match "F" feature names
     df_tax.index = df_tax.index.map(lambda x: "F" + str(x))
 
-    # Filter the taxonomy based on the feature table
+    # filter the taxonomy based on the feature table
     df_tax_f = df_tax[df_tax.index.isin(ft.columns.tolist())]
 
     if df_tax_f.shape[0] == 0:
@@ -65,13 +65,13 @@ def _process_taxonomy(tax: pd.DataFrame, ft: pd.DataFrame) -> pd.DataFrame:
 
 
 @helper_function
-def _load_phylogeny(path_to_phylo: str) -> q2.Artifact:
-    """Load phylogeny artifact"""
-    return q2.Artifact.load(path_to_phylo)
+def _load_phylogeny(path_to_phylo: str) -> skbio.TreeNode:
+    art_phylo = q2.Artifact.load(path_to_phylo)
+    return art_phylo.view(skbio.TreeNode)
 
 
 @helper_function
-def _process_phylogeny(art_phylo: q2.Artifact, ft: pd.DataFrame) -> skbio.TreeNode:
+def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.TreeNode:
     """Process phylogeny"""
     # filter tree by feature table: this prunes a phylogenetic tree to match
     # the input ids
@@ -80,6 +80,7 @@ def _process_phylogeny(art_phylo: q2.Artifact, ft: pd.DataFrame) -> skbio.TreeNo
     ft_i.columns = [col[1:] for col in ft_i.columns]
     art_ft_i = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft_i)
 
+    art_phylo = q2.Artifact.import_data("Phylogeny[Rooted]", phylo_tree)
     (art_phylo_f,) = phylogeny.actions.filter_tree(tree=art_phylo, table=art_ft_i)
     tree_phylo_f = art_phylo_f.view(skbio.TreeNode)
 
@@ -106,6 +107,20 @@ def _define_model_tracker(tracking_uri: str, path_store_model_logs: str) -> str:
         path_tracker = "wandb"
         print("You can view the model logs by logging into your wandb account.")
     return path_tracker
+
+
+@helper_function
+def _define_experiment_path(config, path_store_model_logs):
+    # path to experiments and their logs
+    path_exp = os.path.join(path_store_model_logs, config["experiment_tag"])
+    if os.path.exists(path_exp):
+        raise ValueError(
+            f"This experiment tag already exists: {config['experiment_tag']}."
+            "Please use another one."
+        )
+    else:
+        os.makedirs(path_exp)
+    return path_exp
 
 
 # ----------------------------------------------------------------------------
@@ -143,15 +158,7 @@ def find_best_model_config(
     _verify_experiment_config(config)
 
     # ! Define needed paths
-    # path to experiments and their logs
-    path_exp = os.path.join(path_store_model_logs, config["experiment_tag"])
-    if os.path.exists(path_exp):
-        raise ValueError(
-            f"This experiment tag already exists: {config['experiment_tag']}."
-            "Please use another one."
-        )
-    else:
-        os.makedirs(path_exp)
+    path_exp = _define_experiment_path(config, path_store_model_logs)
     _save_config(config, path_exp, "experiment_config.json")
 
     # define model tracker
@@ -204,12 +211,13 @@ def cli_find_best_model_config(
     Args:
         path_to_config (str): Path to experiment configuration file.
         path_to_train_val (str): Path to train_val dataset.
-        path_to_tax (str, optional): Path to taxonomy matching features starting
-        with 'F' in `train_val`. Needed for training trac models and feature
-        engineering based on taxonomy. Defaults to None.
-        path_to_tree_phylo (str, optional): Path to phylogenetic tree for features
-        starting with "F" in `train_val`. Needed for training trac models.
-        Defaults to None.
+        path_to_tax (str, optional): Path to taxonomy QIIME2 artifact of type
+        FeatureData[Taxonomy] matching features starting with 'F' in
+        `train_val`. Needed for training trac models and feature engineering
+        based on taxonomy. Defaults to None.
+        path_to_tree_phylo (str, optional): Path to phylogenetic tree QIIME2
+        artifact of type "Phylogeny[Rooted]" for features starting with "F" in
+        `train_val`. Needed for training trac models. Defaults to None.
         path_store_model_logs (str, optional): Path to store model logs.
         Defaults to "experiments/models".
 
