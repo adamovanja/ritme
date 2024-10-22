@@ -87,10 +87,9 @@ def evaluate_tuned_models(
         df_metrics = pd.concat([df_metrics, metrics_split])
 
     # create plots for comparison:
-    # TODO: add plot_rmse_over_target plot
+    # TODO: add plot_rmse_over_target plot - à la plot_rmse_over_time
     # TODO: create scatterplot true vs. predicted
-    # TODO: create metric plot à la plot_best_models_comparison(preds_dic,
-    # TODO: save_loc, dpi=400)
+    # TODO: create metric plot à la plot_rmse_over_experiments
 
     return df_metrics
 

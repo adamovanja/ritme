@@ -4,7 +4,11 @@ import pandas as pd
 from pandas.testing import assert_frame_equal
 from qiime2.plugin.testing import TestPluginBase
 
-from q2_ritme.simulate_data import simulate_feature_table, simulate_metadata
+from q2_ritme.simulate_data import (
+    simulate_data,
+    simulate_feature_table,
+    simulate_metadata,
+)
 
 
 class TestFeatureTableSimulation(TestPluginBase):
@@ -58,7 +62,7 @@ class TestMetadataSimulation(TestPluginBase):
 
         # verify hosts
         exp_hosts = ["A", "B", "C"]
-        act_hosts = sorted(act_md.host_id.unique().tolist())
+        act_hosts = sorted(act_md.unique_id.unique().tolist())
         self.assertEqual(exp_hosts, act_hosts)
 
     def test_too_many_hosts(self):
@@ -77,3 +81,28 @@ class TestMetadataSimulation(TestPluginBase):
         # not same
         with self.assertRaises(AssertionError):
             assert_frame_equal(df_1, df_other)
+
+    def test_target_age_days(self):
+        act_md = simulate_metadata(self.feat_df, 3, "age_days")
+
+        self.assertTrue(all(act_md["age_days"] >= 0))
+        self.assertTrue(all(act_md["age_days"] <= 2 * 365))
+
+    def test_target_age_months(self):
+        act_md = simulate_metadata(self.feat_df, 3, "age_months")
+
+        self.assertTrue(all(act_md["age_months"] >= 0))
+        self.assertTrue(all(act_md["age_months"] <= 2 * 12))
+
+
+class TestDataSimulation(TestPluginBase):
+    package = "q2_ritme.tests"
+
+    def test_simulate_data(self):
+        n_samples = 10
+        n_feat = 5
+        n_hosts = 3
+        ft, md = simulate_data(n_samples, "age_days", n_feat, n_hosts)
+        self.assertEqual(ft.shape[0], n_samples)
+        self.assertEqual(ft.shape[1], n_feat)
+        self.assertEqual(md["unique_id"].nunique(), n_hosts)

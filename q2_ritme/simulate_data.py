@@ -53,31 +53,34 @@ def simulate_feature_table(
 
 
 def simulate_metadata(
-    feat_df: pd.DataFrame, n_hosts: int, target: str, seed: int = SEED_SIM
+    feat_df: pd.DataFrame, n_unique_identifiers: int, target: str, seed: int = SEED_SIM
 ) -> pd.DataFrame:
     """
     Create simulated metadata table matching provided feature table with given
-    number of unique hosts.
+    number of unique identifiers (e.g. hosts).
 
     Args:
         feat_df (pd.DataFrame): The feature DataFrame to match.
-        n_hosts (int): The number of unique hosts.
+        n_unique_identifiers (int): The number of unique identifiers.
         seed (int, optional): The seed for the random number generator. Defaults
         to SEED_SIM.
 
     Raises:
-        ValueError: If the number of hosts is greater than the number of samples.
+        ValueError: If the number of unique identifiers is greater than the
+        number of samples.
 
     Returns:
         pd.DataFrame: The simulated metadata.
     """
     n_samples = feat_df.shape[0]
-    if n_hosts > n_samples:
-        raise ValueError("More hosts than samples. Reset n_hosts to match the samples")
+    if n_unique_identifiers > n_samples:
+        raise ValueError(
+            "More unique identifiers than samples. Reset n_unique_identifiers "
+            "to match the samples"
+        )
     # define temporal dimension: age
     np.random.seed(seed)
     # range of target depending on target in config
-    # todo: make this more target agnostic
     if target == "age_days":
         age = np.random.uniform(low=0.0, high=2 * 365, size=n_samples).astype(int)
     elif target == "age_months":
@@ -86,13 +89,13 @@ def simulate_metadata(
         age = np.random.uniform(low=0.0, high=100, size=n_samples).astype(int)
 
     # set hosts
-    host_id_options = list(string.ascii_uppercase)[:n_hosts]
+    unique_id_options = list(string.ascii_uppercase)[:n_unique_identifiers]
     np.random.seed(seed)
-    host_id = np.random.choice(host_id_options, n_samples)
+    unique_id = np.random.choice(unique_id_options, n_samples)
 
     # combine
     md_df = pd.DataFrame(
-        {"host_id": host_id, target: age}, index=feat_df.index.tolist()
+        {"unique_id": unique_id, target: age}, index=feat_df.index.tolist()
     )
     md_df.index.name = "id"
 
@@ -103,10 +106,10 @@ def simulate_data(
     n_samples: int = 100,
     target: str = "age_days",
     n_feat: int = 20,
-    n_hosts: int = 4,
+    n_unique_identifiers: int = 4,
     density: float = DENSITY,
     seed: int = SEED_SIM,
-) -> (pd.DataFrame, pd.DataFrame):
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Simulates data by calling the functions simulate_feature_table and
     simulate_metadata with the provided parameters.
@@ -114,7 +117,7 @@ def simulate_data(
     Parameters:
     n_samples (int): Number of samples. Default value is 10.
     n_feat (int): Number of features. Default value is 20.
-    n_hosts (int): Number of hosts. Default value is 4.
+    n_unique_identifiers (int): Number of unique_identifiers. Default value is 4.
     density (float): Density of the sparse matrix. Default value is DENSITY.
     seed (int): Seed for the random number generator. Default value is SEED_SIM.
 
@@ -122,6 +125,6 @@ def simulate_data(
     tuple: A tuple containing the feature table and metadata as two DataFrames.
     """
     ft = simulate_feature_table(n_samples, n_feat, density, seed)
-    md = simulate_metadata(ft, n_hosts, target, seed)
+    md = simulate_metadata(ft, n_unique_identifiers, target, seed)
 
     return ft, md

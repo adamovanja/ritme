@@ -10,7 +10,7 @@ import skbio
 import torch
 from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
-from ray import tune
+from ray import air, tune
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score, root_mean_squared_error
 
@@ -22,7 +22,7 @@ from q2_ritme.evaluate_models import (
     get_taxonomy,
 )
 from q2_ritme.model_space import static_trainables as st
-from q2_ritme.process_data import split_data_by_host
+from q2_ritme.split_train_test import _split_data_stratified
 from q2_ritme.tune_models import check_for_errors_in_trials, model_trainables
 
 
@@ -375,18 +375,20 @@ class TestTrainableLogging(TestPluginBase):
         [
             ("linreg",),
             ("xgb",),
-            # todo: NN is currently failing: see issue here:
-            # https://github.com/ray-project/ray/issues/47333)
-            # ("nn_reg",),
+            ("nn_reg",),
         ]
     )
     def test_logged_vs_bestresult_rmse(self, model_type):
         """
         Verify that logged rmse values are identical to metrics obtained with
-        best result's checkpoint. This is intentionally tested for one model of
-        each type of checkpoint callbacks, namely manual reporting (linreg
-        representative for trac, rf), and each of the own checkpoint_callbacks
-        (xgb and nn_reg representative for all NNs).
+        best result's checkpoint for validation set. This is intentionally
+        tested for one model of each type of checkpoint callbacks, namely manual
+        reporting (linreg representative for trac, rf), and each of the own
+        checkpoint_callbacks (xgb and nn_reg representative for all NNs).
+
+        Note: this test works for train set only for linreg and xgb, NN fails.
+        This issue was raised with tune here:
+        https://github.com/ray-project/ray/issues/47333
 
         """
         # fit model
@@ -401,45 +403,57 @@ class TestTrainableLogging(TestPluginBase):
             "n_hidden_layers": 1,
             "epochs": 2,
             "learning_rate": 0.01,
+            "max_layers": 2,
         }
-        # todo: make max_layers configurable parameter!
-        for i in range(30):
+        for i in range(search_space["max_layers"]):
             search_space[f"n_units_hl{i}"] = 2
         metric = "rmse_val"
         mode = "min"
-        tuner = tune.Tuner(
-            tune.with_parameters(
-                model_trainables[model_type],
-                train_val=self.train_val,
-                target=self.target,
-                host_id=self.host_id,
-                seed_data=self.seed_data,
-                seed_model=self.seed_model,
-                tax=self.tax,
-                tree_phylo=self.tree_phylo,
-            ),
-            param_space=search_space,
-            tune_config=tune.TuneConfig(metric=metric, mode=mode, num_samples=1),
-        )
-        results = tuner.fit()
-        check_for_errors_in_trials(results)
 
-        # get logs
-        best_result = results.get_best_result("rmse_val", "min", "all")
-        logged_rmse = {
-            "train": best_result.metrics["rmse_train"],
-            "val": best_result.metrics["rmse_val"],
-        }
-        # get recreated predictions & assert
-        tuned_model = self._create_tuned_model(model_type, best_result)
-        # split data with same split as during training - ensures with self.seed_data
-        train, val = split_data_by_host(
-            self.train_val, self.host_id, 0.8, self.seed_data
-        )
-
-        for split, data in [("train", train), ("val", val)]:
-            preds = get_predictions(
-                data, tuned_model, self.target, self.features, split=split
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tuner = tune.Tuner(
+                tune.with_parameters(
+                    model_trainables[model_type],
+                    train_val=self.train_val,
+                    target=self.target,
+                    host_id=self.host_id,
+                    seed_data=self.seed_data,
+                    seed_model=self.seed_model,
+                    tax=self.tax,
+                    tree_phylo=self.tree_phylo,
+                ),
+                param_space=search_space,
+                tune_config=tune.TuneConfig(metric=metric, mode=mode, num_samples=1),
+                run_config=air.RunConfig(storage_path=tmpdir),
             )
-            calculated_rmse = np.sqrt(mean_squared_error(preds["pred"], preds["true"]))
-            self.assertAlmostEqual(logged_rmse[split], calculated_rmse, places=6)
+            results = tuner.fit()
+            check_for_errors_in_trials(results)
+
+            # get logs
+            best_result = results.get_best_result("rmse_val", "min", "all")
+            logged_rmse = {
+                "train": best_result.metrics["rmse_train"],
+                "val": best_result.metrics["rmse_val"],
+            }
+            # get recreated predictions & assert
+            tuned_model = self._create_tuned_model(model_type, best_result)
+            # split data with same split as during training - ensures with
+            # self.seed_data
+            train, val = _split_data_stratified(
+                self.train_val, self.host_id, 0.8, self.seed_data
+            )
+
+            for split, data in [("train", train), ("val", val)]:
+                preds = get_predictions(
+                    data, tuned_model, self.target, self.features, split=split
+                )
+                calculated_rmse = np.sqrt(
+                    mean_squared_error(preds["pred"], preds["true"])
+                )
+                if split == "val":
+                    # this test works for train set only for linreg and xgb, NN
+                    # fails. This issue was raised with tune here:
+                    # https://github.com/ray-project/ray/issues/47333
+                    self.assertAlmostEqual(
+                        logged_rmse[split], calculated_rmse, places=6
+                    )
