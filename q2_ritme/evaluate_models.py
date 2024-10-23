@@ -1,16 +1,14 @@
 import json
 import os
 import pickle
-from typing import Any
+from typing import Any, Dict
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
 from joblib import load
 from ray.air.result import Result
-from sklearn.metrics import root_mean_squared_error
 
 from q2_ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
@@ -35,9 +33,6 @@ color_map = {
 def _get_checkpoint_path(result: Result) -> str:
     """
     Get the checkpoint path for a given result.
-
-    :param result: The result object containing the checkpoint information.
-    :return: The checkpoint path as a string.
     """
     checkpoint_dir = result.checkpoint.to_directory()
     checkpoint_path = os.path.join(checkpoint_dir, "checkpoint")
@@ -47,9 +42,6 @@ def _get_checkpoint_path(result: Result) -> str:
 def load_sklearn_model(result: Result) -> Any:
     """
     Load an sklearn model from a given result object.
-
-    :param result: The result object containing the model path.
-    :return: The loaded sklearn model.
     """
     return load(result.metrics["model_path"])
 
@@ -57,9 +49,6 @@ def load_sklearn_model(result: Result) -> Any:
 def load_trac_model(result: Result) -> Any:
     """
     Load a TRAC model from a given result object.
-
-    :param result: The result object containing the model path.
-    :return: The loaded TRAC model.
     """
     with open(result.metrics["model_path"], "rb") as file:
         model = pickle.load(file)
@@ -70,27 +59,21 @@ def load_trac_model(result: Result) -> Any:
 def load_xgb_model(result: Result) -> xgb.Booster:
     """
     Load an XGBoost model from a given result object.
-
-    :param result: The result object containing the checkpoint information.
-    :return: The loaded XGBoost model.
     """
     ckpt_path = _get_checkpoint_path(result)
     return xgb.Booster(model_file=ckpt_path)
 
 
-def load_nn_model(result: Result) -> Any:
+def load_nn_model(result: Result) -> NeuralNet:
     """
     Load a neural network model from a given result object.
-
-    :param result: The result object containing the checkpoint information.
-    :return: The loaded neural network model.
     """
     ckpt_path = _get_checkpoint_path(result)
     model = NeuralNet.load_from_checkpoint(checkpoint_path=ckpt_path)
     return model
 
 
-def get_model(model_type: str, result) -> Any:
+def get_model(model_type: str, result: Result) -> Any:
     """
     Get the model of a specified type from the result object.
     """
@@ -109,32 +92,39 @@ def get_model(model_type: str, result) -> Any:
     return model
 
 
-def get_taxonomy(result) -> pd.DataFrame:
+def get_taxonomy(result: Result) -> pd.DataFrame:
+    """
+    Retrieve the taxonomy DataFrame from the result object.
+    """
     trial_dir = result.path
     taxonomy_path = os.path.join(trial_dir, "taxonomy.pkl")
     return load(taxonomy_path)
 
 
-def get_data_processing(result) -> str:
+def get_data_processing(result: Result) -> Dict[str, str]:
+    """
+    Retrieve the data processing configuration from the result object.
+    """
     config_data = {k: v for k, v in result.config.items() if k.startswith("data_")}
     return config_data
 
 
 class TunedModel:
-    def __init__(self, model, data_config, tax, path):
+    def __init__(
+        self, model: Any, data_config: Dict[str, str], tax: pd.DataFrame, path: str
+    ):
         self.model = model
         self.data_config = data_config
         self.tax = tax
         self.path = path
         self.train_selected_fts = []
 
-    # todo: add refit method!
-    def aggregate(self, data):
+    def aggregate(self, data: pd.DataFrame) -> pd.DataFrame:
         return aggregate_microbial_features(
             data, self.data_config["data_aggregation"], self.tax
         )
 
-    def select(self, data, split):
+    def select(self, data: pd.DataFrame, split: str) -> pd.DataFrame:
         # selection needs to be performed based on train set values -> not on
         # test set!
         ft_prefix = "F"
@@ -165,7 +155,7 @@ class TunedModel:
 
         return data[self.train_selected_fts]
 
-    def transform(self, data):
+    def transform(self, data: pd.DataFrame) -> Any:
         transformed = transform_microbial_features(
             data,
             self.data_config["data_transform"],
@@ -178,7 +168,7 @@ class TunedModel:
         else:
             return transformed.values
 
-    def predict(self, data, split):
+    def predict(self, data: pd.DataFrame, split: str) -> Any:
         aggregated = self.aggregate(data)
         # selection only possible if it was run on test set before!
         selected = self.select(aggregated, split)
@@ -200,7 +190,18 @@ class TunedModel:
         return predicted
 
 
-def retrieve_best_models(result_dic):
+def retrieve_best_models(result_dic: Dict[str, Result]) -> Dict[str, TunedModel]:
+    """
+    Retrieve the best models from the result dictionary.
+
+    Args:
+        result_dic (Dict[str, Result]): Dictionary with model types as keys and
+        result grids as values.
+
+    Returns:
+        Dict[str, TunedModel]: Dictionary with model types as keys and
+        TunedModel instances as values.
+    """
     best_model_dic = {}
     for model_type, result_grid in result_dic.items():
         best_result = result_grid.get_best_result(scope="all")
@@ -216,7 +217,15 @@ def retrieve_best_models(result_dic):
     return best_model_dic
 
 
-def save_best_models(best_model_dic: dict[str:TunedModel], output_dir: str):
+def save_best_models(best_model_dic: Dict[str, TunedModel], output_dir: str) -> None:
+    """
+    Save the best models to the specified output directory.
+
+    Args:
+        best_model_dic (Dict[str, TunedModel]): Dictionary with model types as keys and
+        TunedModel instances as values.
+        output_dir (str): Directory to save the best models.
+    """
     for model_type, tuned_model in best_model_dic.items():
         path_to_save = os.path.join(output_dir, f"{model_type}_best_model.pkl")
         with open(path_to_save, "wb") as file:
@@ -224,19 +233,58 @@ def save_best_models(best_model_dic: dict[str:TunedModel], output_dir: str):
 
 
 def load_best_model(model_type: str, path_to_exp: str) -> TunedModel:
+    """
+    Load the best model of a specified type from the experiment directory.
+
+    Args:
+        model_type (str): The type of the model to load.
+        path_to_exp (str): The path to the experiment directory.
+
+    Returns:
+        TunedModel: The loaded best model.
+    """
     file_path = os.path.join(path_to_exp, f"{model_type}_best_model.pkl")
     with open(file_path, "rb") as file:
         return pickle.load(file)
 
 
-def load_experiment_config(path_to_exp: str) -> dict:
-    file_path = os.path.join(path_to_exp, "experiment_config.json")
+def load_experiment_config(path_to_exp: str) -> Dict[str, Any]:
+    """
+    Load the experiment configuration from the specified directory.
 
+    Args:
+        path_to_exp (str): The path to the experiment directory.
+
+    Returns:
+        Dict[str, Any]: The experiment configuration.
+    """
+    file_path = os.path.join(path_to_exp, "experiment_config.json")
     with open(file_path, "rb") as f:
         return json.load(f)
 
 
-def get_predictions(data, tmodel, target, features, split=None):
+def get_predictions(
+    data: pd.DataFrame,
+    tmodel: TunedModel,
+    target: str,
+    features: list,
+    split: str = None,
+) -> pd.DataFrame:
+    """
+    Get predictions from the tuned model for the given data.
+
+    Args:
+        data (pd.DataFrame): The input data for prediction.
+        tmodel (TunedModel): The tuned model to use for prediction.
+        target (str): The target column name in the data.
+        features (list): The list of feature column names in the data.
+        split (str, optional): The data split type (e.g., 'train', 'test').
+        Defaults to None.
+
+    Returns:
+        pd.DataFrame: DataFrame containing true and predicted values along with
+        the split type.
+    """
     # id, true
     saved_pred = data[[target]].copy()
     saved_pred.rename(columns={target: "true"}, inplace=True)
@@ -244,80 +292,3 @@ def get_predictions(data, tmodel, target, features, split=None):
     saved_pred["pred"] = tmodel.predict(data[features], split)
     saved_pred["split"] = split
     return saved_pred
-
-
-def calculate_rmse(pred_df):
-    rmse_scores = {}
-    for split in pred_df["split"].unique():
-        pred_split = pred_df[pred_df["split"] == split].copy()
-        rmse = root_mean_squared_error(
-            pred_split["true"].values, pred_split["pred"].values
-        )
-        rmse_scores[split] = rmse
-    return rmse_scores
-
-
-def plot_rmse_over_experiments(preds_dic, save_loc, dpi=400):
-    if not os.path.exists(save_loc):
-        os.makedirs(save_loc)
-
-    rmse_dic = {}
-    for model_type, pred_df in preds_dic.items():
-        rmse_dic[model_type] = calculate_rmse(pred_df)
-
-    plt.figure(dpi=dpi)  # Increase the resolution by setting a higher dpi
-    rmse_df = pd.DataFrame(rmse_dic).T
-    rmse_df = rmse_df[
-        sorted(rmse_df.columns, key=lambda x: 0 if "train" in x else 1)
-    ]  # Enforce column order
-    rmse_df.plot(
-        kind="bar",
-        title="Overall",
-        ylabel="RMSE",
-        color=[color_map.get(col, "gray") for col in rmse_df.columns],
-    )
-    path_to_save = os.path.join(save_loc, "rmse_over_experiments_train_test.png")
-    plt.tight_layout()
-    plt.savefig(path_to_save, dpi=dpi)
-
-
-def plot_rmse_over_time(preds_dic, ls_model_types, save_loc, dpi=300):
-    """
-    Plot RMSE over true time bins for the first model type in ls_model_types.
-
-    Parameters:
-    preds_dic (dict): Dictionary containing predictions for each model type.
-    ls_model_types (list): List of model types.
-    dpi (int): Resolution of the plot.
-    """
-    for model_type in ls_model_types:
-        pred_df = preds_dic[model_type]
-        split = None
-
-        # Bin true columns
-        pred_df["group"] = np.round(pred_df["true"], 0).astype(int)
-
-        # Calculate RMSE for each group
-        grouped_ser = pred_df.groupby(["group"]).apply(calculate_rmse)
-        grouped_df = grouped_ser.apply(pd.Series)
-        if split is not None:
-            grouped_df = grouped_df[[split]].copy()
-
-        # Enforce column order
-        grouped_df = grouped_df[
-            sorted(grouped_df.columns, key=lambda x: 0 if "train" in x else 1)
-        ]
-
-        # Plot
-        plt.figure(dpi=dpi)
-        grouped_df.plot(
-            kind="bar",
-            title=f"Model: {model_type}",
-            ylabel="RMSE",
-            figsize=(10, 5),
-            color=[color_map.get(col, "gray") for col in grouped_df.columns],
-        )
-        path_to_save = os.path.join(
-            save_loc, f"rmse_over_time_train_test_{model_type}.png"
-        )
-        plt.savefig(path_to_save, dpi=dpi)

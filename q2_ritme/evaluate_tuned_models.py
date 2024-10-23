@@ -28,10 +28,10 @@ def _predict_w_tuned_model(
         x for x in train_val.columns if x.startswith(exp_config["feature_prefix"])
     ]
 
-    # create predictions on train_val and test set
-    # note: ft aggregation, selection and transformation are originally also
-    # performed on train_val directly before splitting to train-val for
-    # hyperparameter search - so no problem with doing this again here
+    # create predictions on train_val and test set - note: ft aggregation,
+    # selection and transformation are originally also performed on train_val
+    # directly before splitting to train-val for hyperparameter search - so no
+    # problem with doing this again here
     train_pred = get_predictions(train_val, tuned_model, target, features, "train")
     test_pred = get_predictions(test, tuned_model, target, features, "test")
     all_pred = pd.concat([train_pred, test_pred])
@@ -87,7 +87,7 @@ def evaluate_tuned_models(
         df_metrics = pd.concat([df_metrics, metrics_split])
 
     # create plots for comparison:
-    # TODO: add plot_rmse_over_target plot - à la plot_rmse_over_time
+    # TODO: add plot_rmse_over_target plot - à la plot_rmse_over_target_bins
     # TODO: create scatterplot true vs. predicted
     # TODO: create metric plot à la plot_rmse_over_experiments
 
