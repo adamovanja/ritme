@@ -310,15 +310,24 @@ class TestTrainables(TestPluginBase):
         mock_xgb_train.assert_called_once()
         mock_checkpoint.assert_called_once()
 
+    @parameterized.expand(
+        [
+            ("regression", [5, 10, 5, 1]),
+            ("classification", [5, 10, 5, 2]),
+            ("ordinal_regression", [5, 10, 5, 1]),
+        ]
+    )
     @patch("q2_ritme.model_space.static_trainables._save_taxonomy")
     @patch("q2_ritme.model_space.static_trainables.seed_everything")
     @patch("q2_ritme.model_space.static_trainables.process_train")
     @patch("q2_ritme.model_space.static_trainables.load_data")
     @patch("q2_ritme.model_space.static_trainables.NeuralNet")
     @patch("q2_ritme.model_space.static_trainables.Trainer")
-    @patch("ray.train.get_context")
+    @patch("ray.train.get_context", return_value=MagicMock())
     def test_train_nn(
         self,
+        nn_type,
+        nb_units,
         mock_get_context,
         mock_trainer,
         mock_neural_net,
@@ -337,7 +346,11 @@ class TestTrainables(TestPluginBase):
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
         mock_trainer_instance = mock_trainer.return_value
-        mock_get_context.return_value.get_trial_dir.return_value = tempfile.mkdtemp()
+
+        # Create a mock context object with a get_trial_dir method
+        mock_context = mock_get_context.return_value
+        mock_context.get_trial_dir.return_value = tempfile.mkdtemp()
+
         # Define dummy config and parameters
         config = {
             "n_hidden_layers": 2,
@@ -354,7 +367,16 @@ class TestTrainables(TestPluginBase):
         seed_model = 42
 
         # Call the function under test
-        st.train_nn(config, train_val, target, host_id, self.tax, seed_data, seed_model)
+        st.train_nn(
+            config,
+            train_val,
+            target,
+            host_id,
+            self.tax,
+            seed_data,
+            seed_model,
+            nn_type=nn_type,
+        )
 
         # Assertions to verify the expected behavior
         mock_seed_everything.assert_called_once_with(seed_model, workers=True)
@@ -363,7 +385,7 @@ class TestTrainables(TestPluginBase):
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(
-            n_units=[5, 10, 5, 1], learning_rate=0.01, nn_type="regression"
+            n_units=nb_units, learning_rate=0.01, nn_type=nn_type
         )
         mock_trainer_instance.fit.assert_called()
 
