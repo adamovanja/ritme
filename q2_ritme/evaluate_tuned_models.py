@@ -39,6 +39,39 @@ def _predict_w_tuned_model(
     return all_pred
 
 
+@helper_function
+def _calculate_metrics(all_preds: pd.DataFrame, model_type: str) -> pd.DataFrame:
+    metrics = pd.DataFrame()
+    for split in ["train", "test"]:
+        pred_split = all_preds[all_preds["split"] == split].copy()
+
+        metrics.loc[model_type, f"rmse_{split}"] = root_mean_squared_error(
+            pred_split["true"], pred_split["pred"]
+        )
+        metrics.loc[model_type, f"r2_{split}"] = r2_score(
+            pred_split["true"], pred_split["pred"]
+        )
+    return metrics
+
+
+@helper_function
+def _load_best_tuned_models(path_to_exp):
+    # Get model types that yielded tuned models for this experiment
+    pattern = re.compile(r"(.*)_best_model\.pkl$")
+    tmodel_files = [
+        pattern.match(filename).group(1)
+        for filename in os.listdir(path_to_exp)
+        if pattern.match(filename)
+    ]
+    if len(tmodel_files) == 0:
+        raise ValueError(
+            f"No best tuned models found in {path_to_exp}. "
+            "Please run cli_find_best_model_config first or evaluate in the "
+            "Python API with the function evaluate_tuned_models."
+        )
+    return tmodel_files
+
+
 # ----------------------------------------------------------------------------
 @main_function
 def evaluate_tuned_models(
@@ -63,27 +96,13 @@ def evaluate_tuned_models(
     Returns:
         pd.DataFrame: R2 and RMSE metrics for train and test split.
     """
-    preds_dic = {}
     df_metrics = pd.DataFrame()
     for model_type, model in dic_tuned_models.items():
         # create predictions on train_val & test
-        all_pred = _predict_w_tuned_model(model, exp_config, train_val, test)
+        preds_model_type = _predict_w_tuned_model(model, exp_config, train_val, test)
 
-        # save preds to dict
-        preds_dic[model_type] = all_pred
-
-        # calculate metrics for models
-        metrics_split = pd.DataFrame()
-        for split in ["train", "test"]:
-            pred_split = all_pred[all_pred["split"] == split].copy()
-
-            metrics_split.loc[model_type, f"rmse_{split}"] = root_mean_squared_error(
-                pred_split["true"], pred_split["pred"]
-            )
-            metrics_split.loc[model_type, f"r2_{split}"] = r2_score(
-                pred_split["true"], pred_split["pred"]
-            )
-        # append metrics
+        # calculate metrics for models and append
+        metrics_split = _calculate_metrics(preds_model_type, model_type)
         df_metrics = pd.concat([df_metrics, metrics_split])
 
     # create plots for comparison:
@@ -121,19 +140,7 @@ def cli_evaluate_tuned_models(
     test = pd.read_pickle(path_to_test)
 
     # ! load best tuned models of this experiment
-    # Get model types that yielded tuned models for this experiment
-    pattern = re.compile(r"(.*)_best_model\.pkl$")
-    tmodel_files = [
-        pattern.match(filename).group(1)
-        for filename in os.listdir(path_to_exp)
-        if pattern.match(filename)
-    ]
-    if len(tmodel_files) == 0:
-        raise ValueError(
-            f"No best tuned models found in {path_to_exp}. "
-            "Please run cli_find_best_model_config first or evaluate in the "
-            "Python API with the function evaluate_tuned_models."
-        )
+    tmodel_files = _load_best_tuned_models(path_to_exp)
 
     best_model_dict = {}
     for model_type in tmodel_files:
