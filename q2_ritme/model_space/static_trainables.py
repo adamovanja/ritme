@@ -311,7 +311,6 @@ def train_rf(
 
 
 class NeuralNet(LightningModule):
-    # TODO: adjust to have option of NNcorn also within
     def __init__(self, n_units, learning_rate, nn_type="regression"):
         super(NeuralNet, self).__init__()
         self.save_hyperparameters()  # This saves all passed arguments to self.hparams
@@ -680,8 +679,6 @@ def train_xgb(
             results, X_train.shape[1]
         ),
     )
-    # todo: add test set here to be tracked as well
-
     xgb.train(
         config,
         dtrain,
@@ -689,5 +686,3 @@ def train_xgb(
         callbacks=[checkpoint_callback],
         custom_metric=custom_xgb_metric,
     )
-
-    # TODO: add test set here to be tracked as well

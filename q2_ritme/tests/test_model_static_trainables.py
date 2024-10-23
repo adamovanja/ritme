@@ -45,6 +45,12 @@ class TestHelperFunctions(TestPluginBase):
         self.assertEqual(obs_rmse, exp_rmse)
         self.assertEqual(obs_r2, exp_r2)
 
+    def test_predict_rmse_r2_trac(self):
+        alpha = np.array([1.0, 0.1, 0.1])
+        obs_rmse, obs_r2 = st._predict_rmse_r2_trac(alpha, self.X, self.y)
+        self.assertAlmostEqual(obs_rmse, 0.2999, places=3)
+        self.assertAlmostEqual(obs_r2, 0.6400, places=3)
+
     @patch("ray.train.get_context")
     def test_save_sklearn_model(self, mock_get_context):
         mock_trial_context = MagicMock()
@@ -67,6 +73,25 @@ class TestHelperFunctions(TestPluginBase):
 
             st._report_results_manually(
                 self.model, self.X, self.y, self.X, self.y, self.tax
+            )
+            mock_report.assert_called_once()
+
+    @patch("ray.air.session.report")
+    @patch("ray.train.get_context")
+    def test_report_results_manually_trac(self, mock_get_context, mock_report):
+        mock_trial_context = MagicMock()
+        mock_trial_context.get_trial_id.return_value = "mock_trial_id"
+        mock_get_context.return_value = mock_trial_context
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_trial_context.get_trial_dir.return_value = tmpdir
+
+            model = {
+                "model": pd.DataFrame(
+                    {"alpha": [1.0, 0.1, 0.1]}, index=["F1", "F2", "F3"]
+                )
+            }
+            st._report_results_manually_trac(
+                model, self.X, self.y, self.X, self.y, self.tax
             )
             mock_report.assert_called_once()
 
