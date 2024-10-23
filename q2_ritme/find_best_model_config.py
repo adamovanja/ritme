@@ -231,7 +231,7 @@ def cli_find_best_model_config(
     """
     config = _load_experiment_config(path_to_config)
     train_val = pd.read_pickle(path_to_train_val)
-    print(train_val.shape)
+
     if path_to_tax is not None:
         tax = _load_taxonomy(path_to_tax)
     else:

@@ -3,12 +3,13 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from io import StringIO
+from unittest.mock import ANY, patch
 
 import pandas as pd
 import qiime2 as q2
 import skbio
-from pandas.testing import assert_series_equal
+from pandas.testing import assert_frame_equal, assert_series_equal
 from qiime2.plugin.testing import TestPluginBase
 
 from q2_ritme.find_best_model_config import (
@@ -21,6 +22,7 @@ from q2_ritme.find_best_model_config import (
     _process_taxonomy,
     _save_config,
     _verify_experiment_config,
+    cli_find_best_model_config,
     find_best_model_config,
 )
 
@@ -30,6 +32,7 @@ class TestFindBestModelConfig(TestPluginBase):
 
     def setUp(self):
         super().setUp()
+        # experiment config
         self.config = {
             "tracking_uri": "mlruns",
             "experiment_tag": "test_experiment",
@@ -44,6 +47,7 @@ class TestFindBestModelConfig(TestPluginBase):
             "test_mode": False,
             "model_hyperparameters": {},
         }
+        # data
         self.ft = pd.read_csv(
             self.get_data_path("example_feature_table.tsv"), sep="\t", index_col=0
         )
@@ -61,6 +65,8 @@ class TestFindBestModelConfig(TestPluginBase):
             "b",
             "b",
         ]
+
+        # taxonomy
         self.tax_renamed = pd.read_csv(
             self.get_data_path("example_taxonomy.tsv"), sep="\t", index_col=0
         )
@@ -69,12 +75,20 @@ class TestFindBestModelConfig(TestPluginBase):
         self.tax = self.tax_renamed.copy()
         self.tax.index = self.tax.index.map(lambda x: x.replace("F", ""))
         self.tax_art = q2.Artifact.import_data("FeatureData[Taxonomy]", self.tax)
-        self.tree_str_more_fts = (
+
+        # phylogeny
+        # this tree has one feature more than the feature table (namely 7) -
+        # will be filtered out by _process_phylogeny
+        self.tree_str = (
             "(((1:0.1,4:0.2):0.3,(2:0.4,3:0.5):0.6):0.7,((5:0.8,6:0.9):1.0,7:1.1):1.2);"
         )
-
-        self.tree_phylo = skbio.TreeNode.read([self.tree_str_more_fts])
+        self.tree_phylo = skbio.TreeNode.read([self.tree_str])
         self.tree_art = q2.Artifact.import_data("Phylogeny[Rooted]", self.tree_phylo)
+        # this tree is already filtered to the feature table
+        self.tree_str_filtered = (
+            "(((F1:0.1,F4:0.2):0.3,(F2:0.4,F3:0.5):0.6):0.7,(F5:0.8,F6:0.9):2.2);"
+        )
+        self.tree_phylo_filtered = skbio.TreeNode.read([self.tree_str_filtered])
 
     def test_load_experiment_config(self):
         with tempfile.NamedTemporaryFile(mode="w") as temp_file:
@@ -138,15 +152,9 @@ class TestFindBestModelConfig(TestPluginBase):
         self.assertEqual(str(loaded_phylo), str(self.tree_phylo))
 
     def test_process_phylogeny(self):
-        tree_str_more_fts = (
-            "(((1:0.1,4:0.2):0.3,(2:0.4,3:0.5):0.6):0.7,((5:0.8,6:0.9):1.0,7:1.1):1.2);"
-        )
-        tree_phylo = skbio.TreeNode.read([tree_str_more_fts])
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
         processed_tree = _process_phylogeny(tree_phylo, self.ft)
-        expected_tree = (
-            "(((F1:0.1,F4:0.2):0.3,(F2:0.4,F3:0.5):0.6):0.7,(F5:0.8,F6:0.9):2.2);"
-        )
-        self.assertEqual(str(processed_tree).strip(), expected_tree)
+        self.assertEqual(str(processed_tree).strip(), self.tree_str_filtered)
 
     def test_define_model_tracker_mlflow(self):
         with patch("builtins.print") as mock_print:
@@ -187,10 +195,7 @@ class TestFindBestModelConfig(TestPluginBase):
         }
 
         # define phylo tree
-        tree_str = (
-            "(((1:0.1,4:0.2):0.3,(2:0.4,3:0.5):0.6):0.7,((5:0.8,6:0.9):1.0,7:1.1):1.2);"
-        )
-        tree_phylo = skbio.TreeNode.read([tree_str])
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
 
         # Call the function under test
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -198,8 +203,30 @@ class TestFindBestModelConfig(TestPluginBase):
                 self.config, self.train_val, self.tax, tree_phylo, temp_dir
             )
 
-            # Assertions
-            mock_run_all_trials.assert_called_once()
+            # assert pandas dataframes - not easily checkable in the
+            # assert_called_once method below
+            args, _ = mock_run_all_trials.call_args
+            assert_frame_equal(args[0], self.train_val)
+            assert_frame_equal(args[5], self.tax_renamed)
+            self.assertEqual(str(args[6]), str(self.tree_phylo_filtered))
+            mock_run_all_trials.assert_called_once_with(
+                ANY,
+                self.config["target"],
+                self.config["stratify_by_column"],
+                self.config["seed_data"],
+                self.config["seed_model"],
+                ANY,
+                ANY,
+                os.path.join(temp_dir, "mlruns"),
+                os.path.join(temp_dir, "test_experiment"),
+                self.config["num_trials"],
+                self.config["max_cuncurrent_trials"],
+                model_types=self.config["ls_model_types"],
+                fully_reproducible=False,
+                test_mode=self.config["test_mode"],
+                model_hyperparameters={},
+            )
+
             mock_retrieve_best_models.assert_called_once_with(
                 mock_run_all_trials.return_value
             )
@@ -207,6 +234,84 @@ class TestFindBestModelConfig(TestPluginBase):
                 best_model_dic, {"model1": "best_model1", "model2": "best_model2"}
             )
             self.assertTrue(path_exp.startswith(f"{temp_dir}/test_experiment"))
+
+    @patch("q2_ritme.find_best_model_config._load_experiment_config")
+    @patch("q2_ritme.find_best_model_config.pd.read_pickle")
+    @patch("q2_ritme.find_best_model_config._load_taxonomy")
+    @patch("q2_ritme.find_best_model_config._load_phylogeny")
+    @patch("q2_ritme.find_best_model_config.find_best_model_config")
+    @patch("q2_ritme.find_best_model_config.save_best_models")
+    def test_cli_find_best_model_config_w_tax_phylo(
+        self,
+        mock_best_models,
+        mock_find_best_model_config,
+        mock_phylo,
+        mock_tax,
+        mock_train_val,
+        mock_config,
+    ):
+        path_to_logs = "path/to/logs"
+        # Mock the return values of the functions
+        mock_config.return_value = self.config
+        mock_train_val.return_value = self.train_val
+        mock_tax.return_value = self.tax
+        mock_phylo.return_value = self.tree_phylo
+        mock_find_best_model_config.return_value = (
+            {"model1": "best_model1", "model2": "best_model2"},
+            path_to_logs,
+        )
+        mock_best_models.return_value = None
+
+        with patch("sys.stdout", new=StringIO()) as stdout:
+            cli_find_best_model_config(
+                "path/to/config",
+                "path/to/train_val",
+                "path/to/tax",
+                "path/to/tree_phylo",
+                path_to_logs,
+            )
+            self.assertIn(
+                f"Best model configurations were saved in {path_to_logs}.",
+                stdout.getvalue().strip(),
+            )
+
+        # assert called with tax and tree_phylo
+        args, _ = mock_find_best_model_config.call_args
+        assert_frame_equal(args[2], self.tax)
+        self.assertEqual(str(args[3]), str(self.tree_phylo))
+
+    @patch("q2_ritme.find_best_model_config._load_experiment_config")
+    @patch("q2_ritme.find_best_model_config.pd.read_pickle")
+    @patch("q2_ritme.find_best_model_config.find_best_model_config")
+    @patch("q2_ritme.find_best_model_config.save_best_models")
+    def test_cli_find_best_model_config_no_tax_phylo(
+        self,
+        mock_best_models,
+        mock_find_best_model_config,
+        mock_train_val,
+        mock_config,
+    ):
+        path_to_logs = "path/to/logs"
+        # Mock the return values of the functions
+        mock_config.return_value = self.config
+        mock_train_val.return_value = self.train_val
+        mock_find_best_model_config.return_value = (
+            {"model1": "best_model1", "model2": "best_model2"},
+            path_to_logs,
+        )
+        mock_best_models.return_value = None
+
+        # call w/o tax and phylo
+        cli_find_best_model_config(
+            "path/to/config",
+            "path/to/train_val",
+            path_store_model_logs=path_to_logs,
+        )
+
+        # assert called with tax and tree_phylo
+        args, _ = mock_find_best_model_config.call_args
+        self.assertEqual(args[2], None)
+        self.assertEqual(args[3], None)
 
 
 if __name__ == "__main__":
