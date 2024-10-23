@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from q2_ritme.evaluate_all_experiments import (
+from q2_ritme.refactor_or_delete.evaluate_all_experiments import (
     best_trial_name,
     compare_trials,
     get_all_exp_analyses,

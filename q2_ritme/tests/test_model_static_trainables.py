@@ -23,7 +23,7 @@ from q2_ritme.evaluate_models import (
 )
 from q2_ritme.model_space import static_trainables as st
 from q2_ritme.split_train_test import _split_data_stratified
-from q2_ritme.tune_models import check_for_errors_in_trials, model_trainables
+from q2_ritme.tune_models import MODEL_TRAINABLES, check_for_errors_in_trials
 
 
 class TestHelperFunctions(TestPluginBase):
@@ -413,7 +413,7 @@ class TestTrainableLogging(TestPluginBase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tuner = tune.Tuner(
                 tune.with_parameters(
-                    model_trainables[model_type],
+                    MODEL_TRAINABLES[model_type],
                     train_val=self.train_val,
                     target=self.target,
                     host_id=self.host_id,
