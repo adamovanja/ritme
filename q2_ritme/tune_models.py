@@ -38,7 +38,7 @@ DEFAULT_SCHEDULER_GRACE_PERIOD = 10
 DEFAULT_SCHEDULER_MAX_T = 100
 
 
-def get_slurm_resource(resource_name: str, default_value: int = 0) -> int:
+def _get_slurm_resource(resource_name: str, default_value: int = 0) -> int:
     """Retrieve SLURM resource value from environment variables."""
     try:
         return int(os.environ[resource_name])
@@ -46,7 +46,7 @@ def get_slurm_resource(resource_name: str, default_value: int = 0) -> int:
         return default_value
 
 
-def check_for_errors_in_trials(result: ResultGrid) -> None:
+def _check_for_errors_in_trials(result: ResultGrid) -> None:
     """Check if any trials encountered errors and raise an exception if so."""
     if result.num_errors > 0:
         raise RuntimeError(
@@ -54,10 +54,10 @@ def check_for_errors_in_trials(result: ResultGrid) -> None:
         )
 
 
-def get_resources(max_concurrent_trials: int) -> dict:
+def _get_resources(max_concurrent_trials: int) -> dict:
     """Calculate CPU and GPU resources based on SLURM environment variables."""
-    all_cpus_avail = get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
-    all_gpus_avail = get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
+    all_cpus_avail = _get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
+    all_gpus_avail = _get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
     cpus = max(1, all_cpus_avail // max_concurrent_trials)
     gpus = max(0, all_gpus_avail // max_concurrent_trials)
     print(f"Using these resources: CPU {cpus}")
@@ -111,6 +111,58 @@ def _define_search_algo(
     )
 
 
+def _load_wandb_api_key() -> str:
+    """Load WandB API key from .env file."""
+    dotenv.load_dotenv()
+    api_key = os.getenv("WANDB_API_KEY")
+    if api_key is None:
+        raise ValueError("No WANDB_API_KEY found in .env file.")
+    return api_key
+
+
+def _load_wandb_entity() -> str:
+    """Load WandB entity from .env file."""
+    dotenv.load_dotenv()
+    entity = os.getenv("WANDB_ENTITY")
+    if entity is None:
+        raise ValueError("No WANDB_ENTITY found in .env file.")
+    return entity
+
+
+def _define_callbacks(tracking_uri: str, exp_name: str, experiment_tag: str) -> list:
+    """Define callbacks based on the tracking URI."""
+    callbacks = []
+
+    if tracking_uri.endswith("mlruns"):
+        if not os.path.exists(tracking_uri):
+            os.makedirs(tracking_uri)
+        callbacks.append(
+            MLflowLoggerCallback(
+                tracking_uri=tracking_uri,
+                experiment_name=exp_name,
+                # Below would be double saving: local_dir as artifact here
+                # save_artifact=True,
+                tags={"experiment_tag": experiment_tag},
+            )
+        )
+    elif tracking_uri == "wandb":
+        # Load WandB API key from .env file
+        api_key = _load_wandb_api_key()
+        entity = _load_wandb_entity()
+        callbacks.append(
+            WandbLoggerCallback(
+                api_key=api_key,
+                entity=entity,
+                project=experiment_tag,
+                tags={experiment_tag},
+            )
+        )
+    else:
+        print("No valid tracking URI provided. Proceeding without logging callbacks.")
+
+    return callbacks
+
+
 def run_trials(
     tracking_uri: str,
     exp_name: str,
@@ -139,7 +191,7 @@ def run_trials(
     max_concurrent_trials = min(num_trials, max_concurrent_trials)
     if resources is None:
         # If not a SLURM process, default values are used
-        resources = get_resources(max_concurrent_trials)
+        resources = _get_resources(max_concurrent_trials)
 
     # Fun facts about trainables and their parallelization/GPU capabilities:
     # - linreg: not parallelizable + CPU-based
@@ -192,40 +244,8 @@ def run_trials(
 
     storage_path = os.path.abspath(path2exp)
     experiment_tag = os.path.basename(path2exp)
-    # Define callbacks
-    # todo: add function _define_callbacks
-    if tracking_uri.endswith("mlruns"):
-        if not os.path.exists(tracking_uri):
-            os.makedirs(tracking_uri)
-        callbacks = [
-            MLflowLoggerCallback(
-                tracking_uri=tracking_uri,
-                experiment_name=exp_name,
-                # Below would be double saving: local_dir as artifact here
-                # save_artifact=True,
-                tags={"experiment_tag": experiment_tag},
-            )
-        ]
-    elif tracking_uri == "wandb":
-        # Load WandB API key from .env file
-        dotenv.load_dotenv()
-        api_key = os.getenv("WANDB_API_KEY")
-        entity = os.getenv("WANDB_ENTITY")
-        if api_key is None:
-            raise ValueError("No WANDB_API_KEY found in .env file.")
-        if entity is None:
-            raise ValueError("No WANDB_ENTITY found in .env file.")
-        callbacks = [
-            WandbLoggerCallback(
-                api_key=api_key,
-                entity=entity,
-                project=experiment_tag,
-                tags={experiment_tag},
-            )
-        ]
-    else:
-        callbacks = []
-        print("No valid tracking URI provided. Proceeding without logging callbacks.")
+
+    callbacks = _define_callbacks(tracking_uri, exp_name, experiment_tag)
 
     analysis = tune.Tuner(
         # Trainable with input parameters passed and set resources
@@ -272,7 +292,7 @@ def run_trials(
     result = analysis.fit()
 
     # Check all trials & check for error status
-    check_for_errors_in_trials(result)
+    _check_for_errors_in_trials(result)
 
     return result
 

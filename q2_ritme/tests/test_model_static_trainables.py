@@ -23,7 +23,7 @@ from q2_ritme.evaluate_models import (
 )
 from q2_ritme.model_space import static_trainables as st
 from q2_ritme.split_train_test import _split_data_stratified
-from q2_ritme.tune_models import MODEL_TRAINABLES, check_for_errors_in_trials
+from q2_ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
 
 
 class TestHelperFunctions(TestPluginBase):
@@ -427,7 +427,7 @@ class TestTrainableLogging(TestPluginBase):
                 run_config=air.RunConfig(storage_path=tmpdir),
             )
             results = tuner.fit()
-            check_for_errors_in_trials(results)
+            _check_for_errors_in_trials(results)
 
             # get logs
             best_result = results.get_best_result("rmse_val", "min", "all")
