@@ -10,9 +10,8 @@ import pandas as pd
 import qiime2 as q2
 import skbio
 from pandas.testing import assert_frame_equal, assert_series_equal
-from qiime2.plugin.testing import TestPluginBase
 
-from q2_ritme.find_best_model_config import (
+from ritme.find_best_model_config import (
     _define_experiment_path,
     _define_model_tracker,
     _load_experiment_config,
@@ -27,9 +26,7 @@ from q2_ritme.find_best_model_config import (
 )
 
 
-class TestFindBestModelConfig(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestFindBestModelConfig(unittest.TestCase):
     def setUp(self):
         super().setUp()
         # experiment config
@@ -48,8 +45,11 @@ class TestFindBestModelConfig(TestPluginBase):
             "model_hyperparameters": {},
         }
         # data
+        current_dir = os.path.dirname(__file__)
         self.ft = pd.read_csv(
-            self.get_data_path("example_feature_table.tsv"), sep="\t", index_col=0
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
         )
         self.train_val = self.ft.copy()
         self.train_val["target_column"] = [1, 2, 3, 4, 4, 4, 0, 6, 5, 8]
@@ -68,7 +68,9 @@ class TestFindBestModelConfig(TestPluginBase):
 
         # taxonomy
         self.tax_renamed = pd.read_csv(
-            self.get_data_path("example_taxonomy.tsv"), sep="\t", index_col=0
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
         )
         self.tax_renamed.index.name = "Feature ID"
 
@@ -117,7 +119,7 @@ class TestFindBestModelConfig(TestPluginBase):
                 loaded_config = json.load(f)
                 self.assertEqual(loaded_config, self.config)
 
-    @patch("q2_ritme.find_best_model_config.q2.Artifact")
+    @patch("ritme.find_best_model_config.q2.Artifact")
     def test_load_taxonomy(self, mock_artifact):
         mock_artifact.load.return_value = self.tax_art
         loaded_tax = _load_taxonomy("taxonomy.qza")
@@ -145,7 +147,7 @@ class TestFindBestModelConfig(TestPluginBase):
         ):
             _process_taxonomy(tax_not_matched, self.ft)
 
-    @patch("q2_ritme.find_best_model_config.q2.Artifact")
+    @patch("ritme.find_best_model_config.q2.Artifact")
     def test_load_phylogeny(self, mock_artifact):
         mock_artifact.load.return_value = self.tree_art
         loaded_phylo = _load_phylogeny("phylogeny.qza")
@@ -182,8 +184,8 @@ class TestFindBestModelConfig(TestPluginBase):
             ):
                 _define_experiment_path(self.config, temp_dir)
 
-    @patch("q2_ritme.find_best_model_config.run_all_trials")
-    @patch("q2_ritme.find_best_model_config.retrieve_best_models")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_best_models")
     def test_find_best_model_config(
         self, mock_retrieve_best_models, mock_run_all_trials
     ):
@@ -235,12 +237,12 @@ class TestFindBestModelConfig(TestPluginBase):
             )
             self.assertTrue(path_exp.startswith(f"{temp_dir}/test_experiment"))
 
-    @patch("q2_ritme.find_best_model_config._load_experiment_config")
-    @patch("q2_ritme.find_best_model_config.pd.read_pickle")
-    @patch("q2_ritme.find_best_model_config._load_taxonomy")
-    @patch("q2_ritme.find_best_model_config._load_phylogeny")
-    @patch("q2_ritme.find_best_model_config.find_best_model_config")
-    @patch("q2_ritme.find_best_model_config.save_best_models")
+    @patch("ritme.find_best_model_config._load_experiment_config")
+    @patch("ritme.find_best_model_config.pd.read_pickle")
+    @patch("ritme.find_best_model_config._load_taxonomy")
+    @patch("ritme.find_best_model_config._load_phylogeny")
+    @patch("ritme.find_best_model_config.find_best_model_config")
+    @patch("ritme.find_best_model_config.save_best_models")
     def test_cli_find_best_model_config_w_tax_phylo(
         self,
         mock_best_models,
@@ -280,10 +282,10 @@ class TestFindBestModelConfig(TestPluginBase):
         assert_frame_equal(args[2], self.tax)
         self.assertEqual(str(args[3]), str(self.tree_phylo))
 
-    @patch("q2_ritme.find_best_model_config._load_experiment_config")
-    @patch("q2_ritme.find_best_model_config.pd.read_pickle")
-    @patch("q2_ritme.find_best_model_config.find_best_model_config")
-    @patch("q2_ritme.find_best_model_config.save_best_models")
+    @patch("ritme.find_best_model_config._load_experiment_config")
+    @patch("ritme.find_best_model_config.pd.read_pickle")
+    @patch("ritme.find_best_model_config.find_best_model_config")
+    @patch("ritme.find_best_model_config.save_best_models")
     def test_cli_find_best_model_config_no_tax_phylo(
         self,
         mock_best_models,

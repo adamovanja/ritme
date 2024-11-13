@@ -59,14 +59,6 @@ jobs:
     - name: Hack - template coverage output path
       run: echo "COV=coverage xml -o $GITHUB_WORKSPACE/coverage.xml" >> $GITHUB_ENV
 
-    # # TODO: include this once this is a Q2 plugin and remove above run tests
-    # - uses: qiime2/action-library-packaging@alpha1
-    #   with:
-    #     package-name: q2-ritme
-    #     additional-tests: ${{ env.COV }}
-    #     build-target: dev
-    #     library-token: ${{ secrets.LIBRARY_TOKEN }}
-
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       with:

@@ -12,7 +12,7 @@ test: all
 
 # todo: adjust coverage threshold once final
 test-cov: all
-	py.test --cov=q2_ritme --cov-report xml:coverage.xml --cov-fail-under=30
+	py.test --cov=ritme --cov-report xml:coverage.xml --cov-fail-under=30
 
 install: all
 	$(PYTHON) setup.py install

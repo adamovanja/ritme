@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 from ray.air.result import Result
 
-from q2_ritme.evaluate_models import (
+from ritme.evaluate_models import (
     TunedModel,
     _get_checkpoint_path,
     get_data_processing,
@@ -54,13 +54,13 @@ class TestEvaluateModels(unittest.TestCase):
         checkpoint_path = _get_checkpoint_path(self.result)
         self.assertEqual(checkpoint_path, "/test/checkpoint_dir/checkpoint")
 
-    @patch("q2_ritme.evaluate_models.load", return_value=MagicMock())
+    @patch("ritme.evaluate_models.load", return_value=MagicMock())
     def test_load_sklearn_model(self, mock_load):
         _ = load_sklearn_model(self.result)
         mock_load.assert_called_once()
 
     @patch(
-        "q2_ritme.evaluate_models.open",
+        "ritme.evaluate_models.open",
         new_callable=unittest.mock.mock_open,
         read_data=pickle.dumps({"key": "value"}),
     )
@@ -75,7 +75,7 @@ class TestEvaluateModels(unittest.TestCase):
         mock_booster.assert_called_once()
 
     @patch(
-        "q2_ritme.model_space.static_trainables.NeuralNet.load_from_checkpoint",
+        "ritme.model_space.static_trainables.NeuralNet.load_from_checkpoint",
         return_value=MagicMock(),
     )
     def test_load_nn_model(self, mock_load_from_checkpoint):
@@ -86,9 +86,9 @@ class TestEvaluateModels(unittest.TestCase):
         data_processing = get_data_processing(self.result)
         self.assertEqual(data_processing, self.result.config)
 
-    @patch("q2_ritme.evaluate_models.get_model", return_value=MagicMock())
-    @patch("q2_ritme.evaluate_models.get_data_processing")
-    @patch("q2_ritme.evaluate_models.get_taxonomy")
+    @patch("ritme.evaluate_models.get_model", return_value=MagicMock())
+    @patch("ritme.evaluate_models.get_data_processing")
+    @patch("ritme.evaluate_models.get_taxonomy")
     def test_retrieve_best_models(
         self, mock_get_taxonomy, mock_get_data_processing, mock_get_model
     ):

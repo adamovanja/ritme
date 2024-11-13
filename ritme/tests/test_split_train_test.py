@@ -1,14 +1,14 @@
 import os
 import tempfile
+import unittest
 from io import StringIO
 from unittest.mock import patch
 
 import pandas as pd
 import qiime2 as q2
 from pandas.testing import assert_frame_equal
-from qiime2.plugin.testing import TestPluginBase
 
-from q2_ritme.split_train_test import (
+from ritme.split_train_test import (
     _ft_get_relative_abundance,
     _ft_remove_zero_features,
     _ft_rename_microbial_features,
@@ -19,9 +19,7 @@ from q2_ritme.split_train_test import (
 )
 
 
-class TestFeatureTableHelpers(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestFeatureTableHelpers(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.ft_raw = pd.DataFrame(
@@ -61,9 +59,7 @@ class TestFeatureTableHelpers(TestPluginBase):
         pd.testing.assert_frame_equal(ft_rel_obs, self.ft_rel)
 
 
-class TestDataHelpers(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestDataHelpers(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.data_rel = pd.DataFrame(
@@ -133,9 +129,7 @@ class TestDataHelpers(TestPluginBase):
             _split_data_stratified(data, stratify_by, 0.5, 123)
 
 
-class TestMainFunctions(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestMainFunctions(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.data_rel = pd.DataFrame(

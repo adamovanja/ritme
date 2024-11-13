@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 from numpy import linalg
 
-from q2_ritme.model_space._model_trac_calc import (
+from ritme.model_space._model_trac_calc import (
     min_least_squares_solution,
     solve_unpenalized_least_squares,
 )

@@ -6,8 +6,8 @@ import qiime2 as q2
 import typer
 from sklearn.model_selection import GroupShuffleSplit
 
-from q2_ritme._decorators import helper_function, main_function
-from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
+from ritme._decorators import helper_function, main_function
+from ritme.feature_space.utils import _biom_to_df, _df_to_biom
 
 
 # ----------------------------------------------------------------------------

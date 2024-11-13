@@ -2,7 +2,7 @@
 {% set version = data.get('version') or 'placehold' %}
 
 package:
-  name: q2-ritme
+  name: ritme
   version: {{ version }}
 
 source:
@@ -62,12 +62,12 @@ test:
     - coverage
     - pytest-cov
   imports:
-    - q2_ritme
+    - ritme
     - qiime2.plugins.ritme
   commands:
-    - pytest --cov q2_ritme --pyargs q2_ritme
+    - pytest --cov ritme --pyargs ritme
 
 about:
-  home: https://github.com/adamovanja/q2-ritme
+  home: https://github.com/adamovanja/ritme
   license: BSD-3-Clause
   license_family: BSD

@@ -1,2 +1,2 @@
 include versioneer.py
-include q2_ritme/_version.py
+include ritme/_version.py

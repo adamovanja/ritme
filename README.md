@@ -23,11 +23,11 @@ Funfact: A properly packaged version of the package is coming soon.
 | evaluate_tuned_models.py | Evaluate the best model configuration on a left-out test set                     |
 
 ## Finding the best model configuration
-The set-up of the optimization is defined in `q2_ritme/run_config.json`. If you want to parallelize the training of different model types, we recommend training each model in a separate experiment. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.
+The set-up of the optimization is defined in `ritme/run_config.json`. If you want to parallelize the training of different model types, we recommend training each model in a separate experiment. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.
 
 Once you have trained some models, you can check the progress of the trained models in the tracking software you selected (see section #model-tracking).
 
-To define a suitable run configuration, please find the description of each variable in `q2_ritme/config/run_config.json` here:
+To define a suitable run configuration, please find the description of each variable in `ritme/config/run_config.json` here:
 
 | Parameter | Description |
 |-----------|-------------|

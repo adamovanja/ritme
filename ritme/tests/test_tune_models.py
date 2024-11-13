@@ -13,7 +13,7 @@ from ray.tune import ResultGrid
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from ray.tune.search.optuna import OptunaSearch
 
-from q2_ritme.tune_models import (
+from ritme.tune_models import (
     MODEL_TRAINABLES,
     _check_for_errors_in_trials,
     _define_callbacks,
@@ -58,7 +58,7 @@ class TestHelpersTuneModels(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _check_for_errors_in_trials(mock_result)
 
-    @patch("q2_ritme.tune_models._get_slurm_resource")
+    @patch("ritme.tune_models._get_slurm_resource")
     def test_get_resources(self, mock_get_slurm_resource):
         # Mock get_slurm_resource to return predefined values
         mock_get_slurm_resource.side_effect = [8, 2]
@@ -130,7 +130,7 @@ class TestHelpersTuneModels(unittest.TestCase):
         api_key = _load_wandb_api_key()
         self.assertEqual(api_key, "test_api_key")
 
-    @patch("q2_ritme.tune_models.os.getenv", return_value=None)
+    @patch("ritme.tune_models.os.getenv", return_value=None)
     def test_load_wandb_api_key_missing(self, mock_getenv):
         with self.assertRaisesRegex(ValueError, "No WANDB_API_KEY found in .env file."):
             _load_wandb_api_key()
@@ -140,13 +140,13 @@ class TestHelpersTuneModels(unittest.TestCase):
         entity = _load_wandb_entity()
         self.assertEqual(entity, "test_entity")
 
-    @patch("q2_ritme.tune_models.os.getenv", return_value=None)
+    @patch("ritme.tune_models.os.getenv", return_value=None)
     def test_load_wandb_entity_missing(self, mock_getenv):
         with self.assertRaisesRegex(ValueError, "No WANDB_ENTITY found in .env file."):
             _load_wandb_entity()
 
-    @patch("q2_ritme.tune_models.os.path.exists")
-    @patch("q2_ritme.tune_models.os.makedirs")
+    @patch("ritme.tune_models.os.path.exists")
+    @patch("ritme.tune_models.os.makedirs")
     def test_define_callbacks_mlflow(self, mock_makedirs, mock_exists):
         mock_exists.return_value = False
         tracking_uri = "mlruns"
@@ -163,8 +163,8 @@ class TestHelpersTuneModels(unittest.TestCase):
         mock_exists.assert_called_once_with(tracking_uri)
         mock_makedirs.assert_called_once_with(tracking_uri)
 
-    @patch("q2_ritme.tune_models._load_wandb_api_key")
-    @patch("q2_ritme.tune_models._load_wandb_entity")
+    @patch("ritme.tune_models._load_wandb_api_key")
+    @patch("ritme.tune_models._load_wandb_entity")
     def test_define_callbacks_wandb(self, mock_load_entity, mock_load_api_key):
         mock_load_api_key.return_value = "test_api_key"
         mock_load_entity.return_value = "test_entity"
@@ -183,7 +183,7 @@ class TestHelpersTuneModels(unittest.TestCase):
         mock_load_api_key.assert_called_once()
         mock_load_entity.assert_called_once()
 
-    @patch("q2_ritme.tune_models.print")
+    @patch("ritme.tune_models.print")
     def test_define_callbacks_invalid_uri(self, mock_print):
         callbacks = _define_callbacks("invalid_uri", "test_exp", "test_tag")
 
@@ -209,9 +209,9 @@ class TestMainTuneModels(unittest.TestCase):
         self.model_hyperparameters = {}
         self.mlflow_uri = "mlruns"
 
-    @patch("q2_ritme.tune_models.init")
-    @patch("q2_ritme.tune_models.ray.cluster_resources")
-    @patch("q2_ritme.tune_models.tune.Tuner")
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
     def test_run_trials_not_reproducible(
         self, mock_tuner_class, mock_resources, mock_init
     ):
@@ -252,7 +252,7 @@ class TestMainTuneModels(unittest.TestCase):
         mock_tuner.fit.assert_called_once()
         self.assertIsInstance(result, ResultGrid)
 
-    @patch("q2_ritme.tune_models.run_trials")
+    @patch("ritme.tune_models.run_trials")
     def test_run_all_trials(self, mock_run_trials):
         mock_result = MagicMock(spec=ResultGrid)
         mock_run_trials.return_value = mock_result
@@ -281,7 +281,7 @@ class TestMainTuneModels(unittest.TestCase):
             self.assertEqual(results[model], mock_result)
         self.assertEqual(mock_run_trials.call_count, len(model_types))
 
-    @patch("q2_ritme.tune_models.run_trials")
+    @patch("ritme.tune_models.run_trials")
     def test_run_all_trials_remove_trac(self, mock_run_trials):
         mock_result = MagicMock(spec=ResultGrid)
         mock_run_trials.return_value = mock_result

@@ -5,8 +5,8 @@ from unittest.mock import ANY, MagicMock, patch
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from q2_ritme.evaluate_models import TunedModel
-from q2_ritme.evaluate_tuned_models import (
+from ritme.evaluate_models import TunedModel
+from ritme.evaluate_tuned_models import (
     _calculate_metrics,
     _load_best_tuned_models,
     _predict_w_tuned_model,
@@ -45,7 +45,7 @@ class TestEvaluateTunedModels(unittest.TestCase):
             index=[self.model_type],
         )
 
-    @patch("q2_ritme.evaluate_tuned_models.get_predictions")
+    @patch("ritme.evaluate_tuned_models.get_predictions")
     def test_predict_w_tuned_model(self, mock_get_predictions):
         exp_all_preds = self.all_preds.copy()
         pred_train = exp_all_preds[exp_all_preds["split"] == "train"].copy()
@@ -92,7 +92,7 @@ class TestEvaluateTunedModels(unittest.TestCase):
         ):
             _load_best_tuned_models("mock/path/to/exp")
 
-    @patch("q2_ritme.evaluate_tuned_models._predict_w_tuned_model")
+    @patch("ritme.evaluate_tuned_models._predict_w_tuned_model")
     def test_evaluate_tuned_models(self, mock_predict_w_tuned_model):
         mock_predict_w_tuned_model.side_effect = [
             self.all_preds,
@@ -110,10 +110,10 @@ class TestEvaluateTunedModels(unittest.TestCase):
         exp_metrics.index = ["mock_model1", "mock_model2"]
         assert_frame_equal(exp_metrics, metrics)
 
-    @patch("q2_ritme.evaluate_tuned_models.evaluate_tuned_models")
-    @patch("q2_ritme.evaluate_tuned_models.load_experiment_config")
-    @patch("q2_ritme.evaluate_tuned_models.load_best_model")
-    @patch("q2_ritme.evaluate_tuned_models._load_best_tuned_models")
+    @patch("ritme.evaluate_tuned_models.evaluate_tuned_models")
+    @patch("ritme.evaluate_tuned_models.load_experiment_config")
+    @patch("ritme.evaluate_tuned_models.load_best_model")
+    @patch("ritme.evaluate_tuned_models._load_best_tuned_models")
     @patch("pandas.read_pickle")
     def test_cli_evaluate_tuned_models(
         self,
