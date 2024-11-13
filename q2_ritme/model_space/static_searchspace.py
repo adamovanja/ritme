@@ -26,7 +26,7 @@ def get_data_eng_space(trial, tax, test_mode: bool = False) -> None:
     # feature aggregation
     data_aggregation_options = (
         [None]
-        if tax.empty
+        if tax is None
         else [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
     )
     trial.suggest_categorical("data_aggregation", data_aggregation_options)

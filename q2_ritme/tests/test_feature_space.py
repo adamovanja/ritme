@@ -16,6 +16,7 @@ from q2_ritme.feature_space._process_trac_specific import (
     _create_matrix_for_internal_nodes,
     _get_internal_nodes,
     _get_leaves_and_index_map,
+    _preprocess_taxonomy_aggregation,
     create_matrix_from_tree,
 )
 from q2_ritme.feature_space._process_train import process_train
@@ -305,6 +306,12 @@ class TestAggregateMicrobialFeatures(TestPluginBase):
 
         assert_frame_equal(exp_ft, obs_ft)
 
+    def test_aggregate_microbial_features_method_not_available(self):
+        with self.assertRaisesRegex(
+            ValueError, "Method FancyMethod is not implemented yet."
+        ):
+            aggregate_microbial_features(self.ft, "FancyMethod", self.tax)
+
 
 class TestSelectMicrobialFeatures(TestPluginBase):
     package = "q2_ritme.tests"
@@ -570,10 +577,10 @@ class TestProcessTrain(TestPluginBase):
     @patch("q2_ritme.feature_space._process_train.aggregate_microbial_features")
     @patch("q2_ritme.feature_space._process_train.select_microbial_features")
     @patch("q2_ritme.feature_space._process_train.transform_microbial_features")
-    @patch("q2_ritme.feature_space._process_train.split_data_by_host")
+    @patch("q2_ritme.feature_space._process_train._split_data_stratified")
     def test_process_train_no_feature_engineering(
         self,
-        mock_split_data_by_host,
+        mock_split_data_stratified,
         mock_transform_features,
         mock_select_features,
         mock_aggregate_features,
@@ -585,7 +592,7 @@ class TestProcessTrain(TestPluginBase):
         mock_aggregate_features.return_value = ft
         mock_select_features.return_value = ft
         mock_transform_features.return_value = ft
-        mock_split_data_by_host.return_value = (
+        mock_split_data_stratified.return_value = (
             self.train_val.iloc[:2, :],
             self.train_val.iloc[2:, :],
         )
@@ -604,7 +611,7 @@ class TestProcessTrain(TestPluginBase):
         self._assert_called_with_df(mock_select_features, ft, self.config, "F")
         self._assert_called_with_df(mock_transform_features, ft, None)
         self._assert_called_with_df(
-            mock_split_data_by_host,
+            mock_split_data_stratified,
             self.train_val[[self.host_id, self.target] + ls_ft],
             "host_id",
             0.8,
@@ -714,3 +721,21 @@ class TestProcessTracSpecific(TestPluginBase):
         ma_act = create_matrix_from_tree(self.tree, self.tax)
 
         assert_frame_equal(ma_exp, ma_act)
+
+    def test_preprocess_taxonomy_aggregation(self):
+        # Create sample input data
+        x = np.array([[0.1, 0.8, 0.1], [0.2, 0.7, 0.1]])
+        A = np.array([[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]])
+
+        # Define expected output
+        pseudo_count = 0.000001
+        X_expected = np.log(pseudo_count + x)
+        nleaves_expected = np.array([1.0, 1.0, 1.0, 2.0])
+        log_geom_expected = X_expected.dot(A) / nleaves_expected
+
+        # Call the function
+        log_geom_actual, nleaves_actual = _preprocess_taxonomy_aggregation(x, A)
+
+        # Assert the expected output
+        np.testing.assert_array_equal(log_geom_actual, log_geom_expected)
+        np.testing.assert_array_equal(nleaves_actual, nleaves_expected)

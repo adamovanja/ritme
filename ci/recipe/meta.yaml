@@ -34,9 +34,8 @@ requirements:
     - python-dotenv
     - py-xgboost
     # todo: update ray to newest once Q2 has migrated to Python 3.10
-    # note: currently ray is in v2.8.1 restricted by Q2
-    - ray-default
-    - ray-tune
+    - ray-default==2.24.0
+    - ray-tune==2.24.0
     - scipy
     - scikit-learn
     - scikit-bio
@@ -53,6 +52,7 @@ requirements:
       - grpcio==1.51.1
       # to enable insights in ray dashboard
       - py-spy
+      - typer
       - wandb
 
 

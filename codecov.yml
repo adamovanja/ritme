@@ -1,18 +1,16 @@
 coverage:
   precision: 2
   round: down
-  range: "30...100"
+  range: "70...100"
 
   status:
     project:
       default:
         # Target total project coverage
-        # todo: increase when prod ready
-        target: 30%
-        threshold: 1%
+        target: 70%
+        threshold: 2%
     patch:
       default:
         # Target coverage for changes in PRs
-        # todo: increase when prod ready
-        target: 0%
+        target: 70%
         threshold: 1%

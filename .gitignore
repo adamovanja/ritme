@@ -152,12 +152,15 @@ dmypy.json
 # Any callgraphs
 **.svg
 
-# My personal scratchpad
+# My personal scratchpad & archive
 x_*
+archive
 
-# logs from slurm launches
+# logs from slurm launches & local runs
 *_err.txt
 *_out.txt
+experiments/ritme_refact_logs
+experiments/data_splits
 
 # all but one json config file
 *.json

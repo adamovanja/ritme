@@ -10,7 +10,7 @@ import skbio
 import torch
 from parameterized import parameterized
 from qiime2.plugin.testing import TestPluginBase
-from ray import tune
+from ray import air, tune
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score, root_mean_squared_error
 
@@ -22,8 +22,8 @@ from q2_ritme.evaluate_models import (
     get_taxonomy,
 )
 from q2_ritme.model_space import static_trainables as st
-from q2_ritme.process_data import split_data_by_host
-from q2_ritme.tune_models import check_for_errors_in_trials, model_trainables
+from q2_ritme.split_train_test import _split_data_stratified
+from q2_ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
 
 
 class TestHelperFunctions(TestPluginBase):
@@ -44,6 +44,12 @@ class TestHelperFunctions(TestPluginBase):
         obs_rmse, obs_r2 = st._predict_rmse_r2(self.model, self.X, self.y)
         self.assertEqual(obs_rmse, exp_rmse)
         self.assertEqual(obs_r2, exp_r2)
+
+    def test_predict_rmse_r2_trac(self):
+        alpha = np.array([1.0, 0.1, 0.1])
+        obs_rmse, obs_r2 = st._predict_rmse_r2_trac(alpha, self.X, self.y)
+        self.assertAlmostEqual(obs_rmse, 0.2999, places=3)
+        self.assertAlmostEqual(obs_r2, 0.6400, places=3)
 
     @patch("ray.train.get_context")
     def test_save_sklearn_model(self, mock_get_context):
@@ -67,6 +73,25 @@ class TestHelperFunctions(TestPluginBase):
 
             st._report_results_manually(
                 self.model, self.X, self.y, self.X, self.y, self.tax
+            )
+            mock_report.assert_called_once()
+
+    @patch("ray.air.session.report")
+    @patch("ray.train.get_context")
+    def test_report_results_manually_trac(self, mock_get_context, mock_report):
+        mock_trial_context = MagicMock()
+        mock_trial_context.get_trial_id.return_value = "mock_trial_id"
+        mock_get_context.return_value = mock_trial_context
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_trial_context.get_trial_dir.return_value = tmpdir
+
+            model = {
+                "model": pd.DataFrame(
+                    {"alpha": [1.0, 0.1, 0.1]}, index=["F1", "F2", "F3"]
+                )
+            }
+            st._report_results_manually_trac(
+                model, self.X, self.y, self.X, self.y, self.tax
             )
             mock_report.assert_called_once()
 
@@ -285,15 +310,24 @@ class TestTrainables(TestPluginBase):
         mock_xgb_train.assert_called_once()
         mock_checkpoint.assert_called_once()
 
+    @parameterized.expand(
+        [
+            ("regression", [5, 10, 5, 1]),
+            ("classification", [5, 10, 5, 2]),
+            ("ordinal_regression", [5, 10, 5, 1]),
+        ]
+    )
     @patch("q2_ritme.model_space.static_trainables._save_taxonomy")
     @patch("q2_ritme.model_space.static_trainables.seed_everything")
     @patch("q2_ritme.model_space.static_trainables.process_train")
     @patch("q2_ritme.model_space.static_trainables.load_data")
     @patch("q2_ritme.model_space.static_trainables.NeuralNet")
     @patch("q2_ritme.model_space.static_trainables.Trainer")
-    @patch("ray.train.get_context")
+    @patch("ray.train.get_context", return_value=MagicMock())
     def test_train_nn(
         self,
+        nn_type,
+        nb_units,
         mock_get_context,
         mock_trainer,
         mock_neural_net,
@@ -312,7 +346,11 @@ class TestTrainables(TestPluginBase):
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
         mock_trainer_instance = mock_trainer.return_value
-        mock_get_context.return_value.get_trial_dir.return_value = tempfile.mkdtemp()
+
+        # Create a mock context object with a get_trial_dir method
+        mock_context = mock_get_context.return_value
+        mock_context.get_trial_dir.return_value = tempfile.mkdtemp()
+
         # Define dummy config and parameters
         config = {
             "n_hidden_layers": 2,
@@ -329,7 +367,16 @@ class TestTrainables(TestPluginBase):
         seed_model = 42
 
         # Call the function under test
-        st.train_nn(config, train_val, target, host_id, self.tax, seed_data, seed_model)
+        st.train_nn(
+            config,
+            train_val,
+            target,
+            host_id,
+            self.tax,
+            seed_data,
+            seed_model,
+            nn_type=nn_type,
+        )
 
         # Assertions to verify the expected behavior
         mock_seed_everything.assert_called_once_with(seed_model, workers=True)
@@ -338,7 +385,7 @@ class TestTrainables(TestPluginBase):
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(
-            n_units=[5, 10, 5, 1], learning_rate=0.01, nn_type="regression"
+            n_units=nb_units, learning_rate=0.01, nn_type=nn_type
         )
         mock_trainer_instance.fit.assert_called()
 
@@ -375,18 +422,20 @@ class TestTrainableLogging(TestPluginBase):
         [
             ("linreg",),
             ("xgb",),
-            # todo: NN is currently failing: see issue here:
-            # https://github.com/ray-project/ray/issues/47333)
-            # ("nn_reg",),
+            ("nn_reg",),
         ]
     )
     def test_logged_vs_bestresult_rmse(self, model_type):
         """
         Verify that logged rmse values are identical to metrics obtained with
-        best result's checkpoint. This is intentionally tested for one model of
-        each type of checkpoint callbacks, namely manual reporting (linreg
-        representative for trac, rf), and each of the own checkpoint_callbacks
-        (xgb and nn_reg representative for all NNs).
+        best result's checkpoint for validation set. This is intentionally
+        tested for one model of each type of checkpoint callbacks, namely manual
+        reporting (linreg representative for trac, rf), and each of the own
+        checkpoint_callbacks (xgb and nn_reg representative for all NNs).
+
+        Note: this test works for train set only for linreg and xgb, NN fails.
+        This issue was raised with tune here:
+        https://github.com/ray-project/ray/issues/47333
 
         """
         # fit model
@@ -401,45 +450,57 @@ class TestTrainableLogging(TestPluginBase):
             "n_hidden_layers": 1,
             "epochs": 2,
             "learning_rate": 0.01,
+            "max_layers": 2,
         }
-        # todo: make max_layers configurable parameter!
-        for i in range(30):
+        for i in range(search_space["max_layers"]):
             search_space[f"n_units_hl{i}"] = 2
         metric = "rmse_val"
         mode = "min"
-        tuner = tune.Tuner(
-            tune.with_parameters(
-                model_trainables[model_type],
-                train_val=self.train_val,
-                target=self.target,
-                host_id=self.host_id,
-                seed_data=self.seed_data,
-                seed_model=self.seed_model,
-                tax=self.tax,
-                tree_phylo=self.tree_phylo,
-            ),
-            param_space=search_space,
-            tune_config=tune.TuneConfig(metric=metric, mode=mode, num_samples=1),
-        )
-        results = tuner.fit()
-        check_for_errors_in_trials(results)
 
-        # get logs
-        best_result = results.get_best_result("rmse_val", "min", "all")
-        logged_rmse = {
-            "train": best_result.metrics["rmse_train"],
-            "val": best_result.metrics["rmse_val"],
-        }
-        # get recreated predictions & assert
-        tuned_model = self._create_tuned_model(model_type, best_result)
-        # split data with same split as during training - ensures with self.seed_data
-        train, val = split_data_by_host(
-            self.train_val, self.host_id, 0.8, self.seed_data
-        )
-
-        for split, data in [("train", train), ("val", val)]:
-            preds = get_predictions(
-                data, tuned_model, self.target, self.features, split=split
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tuner = tune.Tuner(
+                tune.with_parameters(
+                    MODEL_TRAINABLES[model_type],
+                    train_val=self.train_val,
+                    target=self.target,
+                    host_id=self.host_id,
+                    seed_data=self.seed_data,
+                    seed_model=self.seed_model,
+                    tax=self.tax,
+                    tree_phylo=self.tree_phylo,
+                ),
+                param_space=search_space,
+                tune_config=tune.TuneConfig(metric=metric, mode=mode, num_samples=1),
+                run_config=air.RunConfig(storage_path=tmpdir),
             )
-            calculated_rmse = np.sqrt(mean_squared_error(preds["pred"], preds["true"]))
-            self.assertAlmostEqual(logged_rmse[split], calculated_rmse, places=6)
+            results = tuner.fit()
+            _check_for_errors_in_trials(results)
+
+            # get logs
+            best_result = results.get_best_result("rmse_val", "min", "all")
+            logged_rmse = {
+                "train": best_result.metrics["rmse_train"],
+                "val": best_result.metrics["rmse_val"],
+            }
+            # get recreated predictions & assert
+            tuned_model = self._create_tuned_model(model_type, best_result)
+            # split data with same split as during training - ensures with
+            # self.seed_data
+            train, val = _split_data_stratified(
+                self.train_val, self.host_id, 0.8, self.seed_data
+            )
+
+            for split, data in [("train", train), ("val", val)]:
+                preds = get_predictions(
+                    data, tuned_model, self.target, self.features, split=split
+                )
+                calculated_rmse = np.sqrt(
+                    mean_squared_error(preds["pred"], preds["true"])
+                )
+                if split == "val":
+                    # this test works for train set only for linreg and xgb, NN
+                    # fails. This issue was raised with tune here:
+                    # https://github.com/ray-project/ray/issues/47333
+                    self.assertAlmostEqual(
+                        logged_rmse[split], calculated_rmse, places=6
+                    )
