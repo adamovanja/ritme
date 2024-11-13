@@ -5,7 +5,7 @@
 
 An optimized framework for finding the best feature representation and model class of next generation sequencing data in relation to a target of interest.
 
-If you use this software, please cite it using the metadata from `CITATION.cff`
+If you use this software, please cite it using the metadata from `CITATION.cff`.
 
 ## Setup
 To install the required dependencies for this package clone this repos and run (note: running `make dev` is a mandatory step to ensure all required packages are installed):
@@ -78,4 +78,6 @@ export HTTP_PROXY=http://proxy.example.com:8080
 In case of questions or comments feel free to raise an issue in this repository.
 
 ## License
+If you use this software, please cite it using the metadata from `CITATION.cff`.
+
 *ritme* is released under a BSD-3-Clause license. See LICENSE for more details.
