@@ -1,5 +1,5 @@
 # ritme
-![CI](https://github.com/adamovanja/q2-ritme/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/adamovanja/ritme/actions/workflows/ci.yml/badge.svg)
 [![codecov](https://codecov.io/gh/adamovanja/q2-ritme/branch/main/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/q2-ritme)
 
 An optimized framework for finding the best feature representation and model class of next generation sequencing data in relation to a target of interest.
