@@ -1,4 +1,4 @@
-# q2-ritme
+# ritme
 ![CI](https://github.com/adamovanja/q2-ritme/actions/workflows/ci.yml/badge.svg)
 [![codecov](https://codecov.io/gh/adamovanja/q2-ritme/branch/main/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/q2-ritme)
 
