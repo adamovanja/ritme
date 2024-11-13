@@ -1,4 +1,5 @@
 # ritme
+[![DOI](https://zenodo.org/badge/601045059.svg)](https://doi.org/10.5281/zenodo.14149081)
 ![CI](https://github.com/adamovanja/ritme/actions/workflows/ci.yml/badge.svg)
 [![codecov](https://codecov.io/gh/adamovanja/ritme/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/ritme)
 
