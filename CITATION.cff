@@ -5,9 +5,7 @@ authors:
     given-names: Anja
     orcid: https://orcid.org/0000-0002-7506-1583
 title: "ritme"
-abstract: "Target-driven optimization of feature representation and model selection for next-generation sequencing data"
 version: 1.0.0
-identifiers:
-  - type: doi
-    value: 10.5281/zenodo.14149081
-repository-code: "https://github.com/adamovanja/ritme"
+doi: 10.5281/zenodo.14149081
+date-released: 2024-11-13
+url: "https://github.com/adamovanja/ritme"
