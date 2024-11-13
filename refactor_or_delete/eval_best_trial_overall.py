@@ -1,3 +1,8 @@
+# To evaluate the best trial (trial < experiment) of all launched experiments
+# locally, run:
+# ````
+# python q2_ritme/eval_best_trial_overall.py --model_path "experiments/models"
+# ````
 import argparse
 import os
 

@@ -1,0 +1,26 @@
+{
+  "experiment_tag": "r_local_all_mlruns",
+  "feature_prefix": "F",
+  "ls_model_types": [
+    "linreg",
+    "trac",
+    "xgb",
+    "nn_reg",
+    "nn_class",
+    "nn_corn",
+    "rf"
+  ],
+  "max_cuncurrent_trials": 5,
+  "num_trials": 2,
+  "path_to_ft": "data/all_otu_table_filt.qza",
+  "path_to_md": "data/metadata_proc_v20240323_r0_r3_le_2yrs.tsv",
+  "path_to_phylo": "data/silva-138-99-rooted-tree.qza",
+  "path_to_tax": "data/otu_taxonomy_all.qza",
+  "seed_data": 12,
+  "seed_model": 12,
+  "stratify_by_column": "host_id",
+  "target": "age_months",
+  "test_mode": true,
+  "tracking_uri": "mlruns",
+  "train_size": 0.8
+}
