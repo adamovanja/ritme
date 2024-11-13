@@ -30,12 +30,12 @@ from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
 
-from q2_ritme.feature_space._process_trac_specific import (
+from ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
     create_matrix_from_tree,
 )
-from q2_ritme.feature_space._process_train import process_train
-from q2_ritme.model_space._model_trac_calc import min_least_squares_solution
+from ritme.feature_space._process_train import process_train
+from ritme.model_space._model_trac_calc import min_least_squares_solution
 
 
 def _predict_rmse_r2(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tuple:

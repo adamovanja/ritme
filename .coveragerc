@@ -1,15 +1,15 @@
 [run]
 branch = True
 omit =
-    q2_ritme/tests/*
+    ritme/tests/*
     */__init__.py
-    q2_ritme/_version.py
+    ritme/_version.py
     versioneer.py
 
 [report]
 fail_under = 90
 omit =
-    q2_ritme/tests/*
+    ritme/tests/*
     */__init__.py
-    q2_ritme/_version.py
+    ritme/_version.py
     versioneer.py

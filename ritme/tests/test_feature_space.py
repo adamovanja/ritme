@@ -1,3 +1,5 @@
+import os
+import unittest
 from unittest.mock import patch
 
 import biom
@@ -6,12 +8,11 @@ import pandas as pd
 from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal
 from parameterized import parameterized
-from qiime2.plugin.testing import TestPluginBase
 from scipy.stats.mstats import gmean
 from skbio import TreeNode
 from skbio.stats.composition import ilr
 
-from q2_ritme.feature_space._process_trac_specific import (
+from ritme.feature_space._process_trac_specific import (
     _create_identity_matrix_for_leaves,
     _create_matrix_for_internal_nodes,
     _get_internal_nodes,
@@ -19,14 +20,14 @@ from q2_ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
     create_matrix_from_tree,
 )
-from q2_ritme.feature_space._process_train import process_train
-from q2_ritme.feature_space.aggregate_features import (
+from ritme.feature_space._process_train import process_train
+from ritme.feature_space.aggregate_features import (
     agg_microbial_fts_taxonomy,
     aggregate_ft_by_taxonomy,
     aggregate_microbial_features,
     extract_taxonomic_entity,
 )
-from q2_ritme.feature_space.select_features import (
+from ritme.feature_space.select_features import (
     find_features_to_group_by_abundance_ith,
     find_features_to_group_by_abundance_quantile,
     find_features_to_group_by_abundance_threshold,
@@ -37,19 +38,17 @@ from q2_ritme.feature_space.select_features import (
     find_features_to_group_by_variance_topi,
     select_microbial_features,
 )
-from q2_ritme.feature_space.transform_features import (
+from ritme.feature_space.transform_features import (
     PSEUDOCOUNT,
     _find_most_nonzero_feature_idx,
     alr,
     presence_absence,
     transform_microbial_features,
 )
-from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
+from ritme.feature_space.utils import _biom_to_df, _df_to_biom
 
 
-class TestUtils(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestUtils(unittest.TestCase):
     def setUp(self):
         super().setUp()
         idx_ls = ["Sample1", "Sample2", "Sample3"]
@@ -73,9 +72,7 @@ class TestUtils(TestPluginBase):
         assert obs_biom_table == self.true_biom_table
 
 
-class TestTransformMicrobialFeatures(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestTransformMicrobialFeatures(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.ft = pd.DataFrame({"F0": [10.0, 20.0, 50.0], "F1": [20.0, 30.0, 5.0]})
@@ -216,16 +213,19 @@ class TestTransformMicrobialFeatures(TestPluginBase):
             transform_microbial_features(self.ft, "FancyTransform")
 
 
-class TestAggregateMicrobialFeatures(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestAggregateMicrobialFeatures(unittest.TestCase):
     def setUp(self):
         super().setUp()
+        current_dir = os.path.dirname(__file__)
         self.ft = pd.read_csv(
-            self.get_data_path("example_feature_table.tsv"), sep="\t", index_col=0
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
         )
         self.tax = pd.read_csv(
-            self.get_data_path("example_taxonomy.tsv"), sep="\t", index_col=0
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
         )
         self.tax_dict_class = {
             "F1": "c__Clostridia",
@@ -313,9 +313,7 @@ class TestAggregateMicrobialFeatures(TestPluginBase):
             aggregate_microbial_features(self.ft, "FancyMethod", self.tax)
 
 
-class TestSelectMicrobialFeatures(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestSelectMicrobialFeatures(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.ft = pd.DataFrame(
@@ -539,9 +537,7 @@ class TestSelectMicrobialFeatures(TestPluginBase):
         assert_frame_equal(exp_ft, obs_ft)
 
 
-class TestProcessTrain(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestProcessTrain(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.config = {
@@ -574,10 +570,10 @@ class TestProcessTrain(TestPluginBase):
             else:
                 assert expected == actual, f"Expected {expected}, but got {actual}"
 
-    @patch("q2_ritme.feature_space._process_train.aggregate_microbial_features")
-    @patch("q2_ritme.feature_space._process_train.select_microbial_features")
-    @patch("q2_ritme.feature_space._process_train.transform_microbial_features")
-    @patch("q2_ritme.feature_space._process_train._split_data_stratified")
+    @patch("ritme.feature_space._process_train.aggregate_microbial_features")
+    @patch("ritme.feature_space._process_train.select_microbial_features")
+    @patch("ritme.feature_space._process_train.transform_microbial_features")
+    @patch("ritme.feature_space._process_train._split_data_stratified")
     def test_process_train_no_feature_engineering(
         self,
         mock_split_data_stratified,
@@ -619,9 +615,7 @@ class TestProcessTrain(TestPluginBase):
         )
 
 
-class TestProcessTracSpecific(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestProcessTracSpecific(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.tree = self._build_example_tree()

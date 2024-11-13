@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from skbio.stats.composition import clr, ilr
 
-from q2_ritme.feature_space.utils import _biom_to_df, _df_to_biom
+from ritme.feature_space.utils import _biom_to_df, _df_to_biom
 
 PSEUDOCOUNT = 0.000001
 

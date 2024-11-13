@@ -5,8 +5,8 @@ import pandas as pd
 import typer
 from sklearn.metrics import r2_score, root_mean_squared_error
 
-from q2_ritme._decorators import helper_function, main_function
-from q2_ritme.evaluate_models import (
+from ritme._decorators import helper_function, main_function
+from ritme.evaluate_models import (
     TunedModel,
     get_predictions,
     load_best_model,

@@ -1,20 +1,15 @@
 """Testing data simulator"""
 
+import unittest
+
 import pandas as pd
 from pandas.testing import assert_frame_equal
-from qiime2.plugin.testing import TestPluginBase
 
-from q2_ritme.simulate_data import (
-    simulate_data,
-    simulate_feature_table,
-    simulate_metadata,
-)
+from ritme.simulate_data import simulate_data, simulate_feature_table, simulate_metadata
 
 
-class TestFeatureTableSimulation(TestPluginBase):
+class TestFeatureTableSimulation(unittest.TestCase):
     """Test all related to simulate_feature_table"""
-
-    package = "q2_ritme.tests"
 
     def test_default_feature_table(self):
         """Test default functionality"""
@@ -42,10 +37,8 @@ class TestFeatureTableSimulation(TestPluginBase):
             assert_frame_equal(df_1, df_other)
 
 
-class TestMetadataSimulation(TestPluginBase):
+class TestMetadataSimulation(unittest.TestCase):
     """Test all related to simulate_metadata"""
-
-    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()
@@ -95,9 +88,7 @@ class TestMetadataSimulation(TestPluginBase):
         self.assertTrue(all(act_md["age_months"] <= 2 * 12))
 
 
-class TestDataSimulation(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestDataSimulation(unittest.TestCase):
     def test_simulate_data(self):
         n_samples = 10
         n_feat = 5

@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import unittest
 from unittest.mock import MagicMock, call, patch
 
 import numpy as np
@@ -9,27 +10,24 @@ import pandas as pd
 import skbio
 import torch
 from parameterized import parameterized
-from qiime2.plugin.testing import TestPluginBase
 from ray import air, tune
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score, root_mean_squared_error
 
-from q2_ritme.evaluate_models import (
+from ritme.evaluate_models import (
     TunedModel,
     get_data_processing,
     get_model,
     get_predictions,
     get_taxonomy,
 )
-from q2_ritme.model_space import static_trainables as st
-from q2_ritme.split_train_test import _split_data_stratified
-from q2_ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
+from ritme.model_space import static_trainables as st
+from ritme.split_train_test import _split_data_stratified
+from ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
 
 
-class TestHelperFunctions(TestPluginBase):
+class TestHelperFunctions(unittest.TestCase):
     """Test all related to helper functions used by static_trainables"""
-
-    package = "q2_ritme.tests"
 
     def setUp(self):
         super().setUp()
@@ -96,9 +94,7 @@ class TestHelperFunctions(TestPluginBase):
             mock_report.assert_called_once()
 
 
-class TestTrainables(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestTrainables(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.train_val = pd.DataFrame(
@@ -116,9 +112,9 @@ class TestTrainables(TestPluginBase):
         self.seed_model = 0
         self.tax = pd.DataFrame([])
 
-    @patch("q2_ritme.model_space.static_trainables.process_train")
-    @patch("q2_ritme.model_space.static_trainables.ElasticNet")
-    @patch("q2_ritme.model_space.static_trainables._report_results_manually")
+    @patch("ritme.model_space.static_trainables.process_train")
+    @patch("ritme.model_space.static_trainables.ElasticNet")
+    @patch("ritme.model_space.static_trainables._report_results_manually")
     def test_train_linreg(self, mock_report, mock_linreg, mock_process_train):
         # define input parameters
         config = {"fit_intercept": True, "alpha": 0.1, "l1_ratio": 0.5}
@@ -149,12 +145,12 @@ class TestTrainables(TestPluginBase):
         mock_linreg_instance.fit.assert_called_once()
         mock_report.assert_called_once()
 
-    @patch("q2_ritme.model_space.static_trainables.process_train")
-    @patch("q2_ritme.model_space.static_trainables.create_matrix_from_tree")
-    @patch("q2_ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
-    @patch("q2_ritme.model_space.static_trainables.Classo")
-    @patch("q2_ritme.model_space.static_trainables.min_least_squares_solution")
-    @patch("q2_ritme.model_space.static_trainables._report_results_manually_trac")
+    @patch("ritme.model_space.static_trainables.process_train")
+    @patch("ritme.model_space.static_trainables.create_matrix_from_tree")
+    @patch("ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
+    @patch("ritme.model_space.static_trainables.Classo")
+    @patch("ritme.model_space.static_trainables.min_least_squares_solution")
+    @patch("ritme.model_space.static_trainables._report_results_manually_trac")
     def test_train_trac(
         self,
         mock_report,
@@ -212,9 +208,9 @@ class TestTrainables(TestPluginBase):
         mock_min_least_squares.assert_called_once()
         mock_report.assert_called_once()
 
-    @patch("q2_ritme.model_space.static_trainables.process_train")
-    @patch("q2_ritme.model_space.static_trainables.RandomForestRegressor")
-    @patch("q2_ritme.model_space.static_trainables._report_results_manually")
+    @patch("ritme.model_space.static_trainables.process_train")
+    @patch("ritme.model_space.static_trainables.RandomForestRegressor")
+    @patch("ritme.model_space.static_trainables._report_results_manually")
     def test_train_rf(self, mock_report, mock_rf, mock_process_train):
         # Arrange
         config = {"n_estimators": 100, "max_depth": 10}
@@ -249,11 +245,11 @@ class TestTrainables(TestPluginBase):
     # def test_train_nn(self, mock_adam, mock_neural_net, mock_process_train):
     #     # todo: add unit test for pytorch NN
 
-    @patch("q2_ritme.model_space.static_trainables._save_taxonomy")
-    @patch("q2_ritme.model_space.static_trainables.process_train")
-    @patch("q2_ritme.model_space.static_trainables.xgb.DMatrix")
-    @patch("q2_ritme.model_space.static_trainables.xgb.train")
-    @patch("q2_ritme.model_space.static_trainables.xgb_cc")
+    @patch("ritme.model_space.static_trainables._save_taxonomy")
+    @patch("ritme.model_space.static_trainables.process_train")
+    @patch("ritme.model_space.static_trainables.xgb.DMatrix")
+    @patch("ritme.model_space.static_trainables.xgb.train")
+    @patch("ritme.model_space.static_trainables.xgb_cc")
     def test_train_xgb(
         self,
         mock_checkpoint,
@@ -317,12 +313,12 @@ class TestTrainables(TestPluginBase):
             ("ordinal_regression", [5, 10, 5, 1]),
         ]
     )
-    @patch("q2_ritme.model_space.static_trainables._save_taxonomy")
-    @patch("q2_ritme.model_space.static_trainables.seed_everything")
-    @patch("q2_ritme.model_space.static_trainables.process_train")
-    @patch("q2_ritme.model_space.static_trainables.load_data")
-    @patch("q2_ritme.model_space.static_trainables.NeuralNet")
-    @patch("q2_ritme.model_space.static_trainables.Trainer")
+    @patch("ritme.model_space.static_trainables._save_taxonomy")
+    @patch("ritme.model_space.static_trainables.seed_everything")
+    @patch("ritme.model_space.static_trainables.process_train")
+    @patch("ritme.model_space.static_trainables.load_data")
+    @patch("ritme.model_space.static_trainables.NeuralNet")
+    @patch("ritme.model_space.static_trainables.Trainer")
     @patch("ray.train.get_context", return_value=MagicMock())
     def test_train_nn(
         self,
@@ -390,9 +386,7 @@ class TestTrainables(TestPluginBase):
         mock_trainer_instance.fit.assert_called()
 
 
-class TestTrainableLogging(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestTrainableLogging(unittest.TestCase):
     def setUp(self):
         super().setUp()
         np.random.seed(42)

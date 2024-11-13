@@ -8,16 +8,16 @@
 
 from qiime2.plugin import Citations, Plugin
 
-from q2_ritme import __version__
+from ritme import __version__
 
-citations = Citations.load("citations.bib", package="q2_ritme")
+citations = Citations.load("citations.bib", package="ritme")
 
 plugin = Plugin(
     name="ritme",
     version=__version__,
-    website="https://github.com/adamovanja/q2-ritme",
-    package="q2_ritme",
-    description="This is a QIIME 2 plugin for longitudinal modeling applied to "
-    "microbial time-series.",
+    website="https://github.com/adamovanja/ritme",
+    package="ritme",
+    description="Target-driven optimization of feature representation and model "
+    "selection for next-generation sequencing data",
     short_description="",
 )

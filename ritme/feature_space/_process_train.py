@@ -1,10 +1,10 @@
-from q2_ritme.feature_space.aggregate_features import aggregate_microbial_features
-from q2_ritme.feature_space.select_features import select_microbial_features
-from q2_ritme.feature_space.transform_features import (
+from ritme.feature_space.aggregate_features import aggregate_microbial_features
+from ritme.feature_space.select_features import select_microbial_features
+from ritme.feature_space.transform_features import (
     _find_most_nonzero_feature_idx,
     transform_microbial_features,
 )
-from q2_ritme.split_train_test import _split_data_stratified
+from ritme.split_train_test import _split_data_stratified
 
 
 def process_train(config, train_val, target, host_id, tax, seed_data):

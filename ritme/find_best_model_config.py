@@ -7,9 +7,9 @@ import skbio
 import typer
 from qiime2.plugins import phylogeny
 
-from q2_ritme._decorators import helper_function, main_function
-from q2_ritme.evaluate_models import TunedModel, retrieve_best_models, save_best_models
-from q2_ritme.tune_models import run_all_trials
+from ritme._decorators import helper_function, main_function
+from ritme.evaluate_models import TunedModel, retrieve_best_models, save_best_models
+from ritme.tune_models import run_all_trials
 
 
 # ----------------------------------------------------------------------------

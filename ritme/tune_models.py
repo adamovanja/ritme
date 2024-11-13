@@ -16,8 +16,8 @@ from ray.tune import ResultGrid
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from ray.tune.search.optuna import OptunaSearch
 
-from q2_ritme.model_space import static_searchspace as ss
-from q2_ritme.model_space import static_trainables as st
+from ritme.model_space import static_searchspace as ss
+from ritme.model_space import static_trainables as st
 
 # Set environment variable
 os.environ["TUNE_WARN_EXCESSIVE_EXPERIMENT_CHECKPOINT_SYNC_THRESHOLD_S"] = "0"

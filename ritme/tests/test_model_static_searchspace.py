@@ -1,10 +1,10 @@
+import unittest
 from unittest.mock import patch
 
 import pandas as pd
 from parameterized import parameterized
-from qiime2.plugin.testing import TestPluginBase
 
-from q2_ritme.model_space import static_searchspace as ss
+from ritme.model_space import static_searchspace as ss
 
 
 class MockTrial:
@@ -24,9 +24,7 @@ class MockTrial:
         return low
 
 
-class TestStaticSearchSpace(TestPluginBase):
-    package = "q2_ritme.tests"
-
+class TestStaticSearchSpace(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.tax = pd.DataFrame()
@@ -197,7 +195,7 @@ class TestStaticSearchSpace(TestPluginBase):
             ),
         ]
     )
-    @patch("q2_ritme.model_space.static_searchspace.get_search_space")
+    @patch("ritme.model_space.static_searchspace.get_search_space")
     def test_hyperparameter_passing_different_than_default(
         self, model_type, hyperparameters, mock_get_search_space
     ):
