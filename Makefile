@@ -10,9 +10,8 @@ lint:
 test: all
 	py.test
 
-# todo: adjust coverage threshold once final
 test-cov: all
-	py.test --cov=ritme --cov-report xml:coverage.xml --cov-fail-under=30
+	py.test --cov=ritme --cov-report xml:coverage.xml --cov-fail-under=80
 
 # todo: update c-lasso to this once lfs quota is increased again:
 # git+https://github.com/Leo-Simpson/c-lasso.git@82b106c471c70559b1720a5bb79a61a5224cca7f
