@@ -19,10 +19,12 @@ requirements:
 
   run:
     - python
+    - grpcio
+    - anaconda::git-lfs
     - importlib-metadata
-    - qiime2 {{ qiime2_epoch }}.*
-    - q2-feature-table {{ qiime2_epoch }}.*
-    - q2-phylogeny {{ qiime2_epoch }}.*
+    - qiime2::qiime2
+    - qiime2::q2-feature-table
+    - qiime2::q2-phylogeny
     - lightning
     - mlflow
     - numpy
@@ -32,6 +34,7 @@ requirements:
     - pip
     - pytorch
     - python-dotenv
+    - py-spy
     - py-xgboost
     # todo: update ray to newest once Q2 has migrated to Python 3.10
     - ray-default==2.24.0
@@ -42,30 +45,20 @@ requirements:
     - setuptools
     - torchmetrics
     - torchvision
+    - typer
+    - wandb
     - zipp
-  # TODO: build package from GH or pypip
-  run_constrained:
-    - pip:
-      - coral_pytorch
-      - c-lasso
-      # grpcio pinned due to incompatibility with ray caused by c-lasso
-      - grpcio==1.51.1
-      # to enable insights in ray dashboard
-      - py-spy
-      - typer
-      - wandb
-
 
 test:
   requires:
     - parameterized
     - coverage
+    - pytest
     - pytest-cov
   imports:
     - ritme
-    - qiime2.plugins.ritme
   commands:
-    - pytest --cov ritme --pyargs ritme
+    - pytest -v --cov ritme --pyargs ritme
 
 about:
   home: https://github.com/adamovanja/ritme

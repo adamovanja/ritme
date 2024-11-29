@@ -5,20 +5,17 @@ import yaml
 from jinja2 import Template
 
 
-def load_meta_yaml(file_path: str, default_versions: Dict[str, str]) -> Dict:
+def load_meta_yaml(file_path: str) -> Dict:
     """
     Load and render a conda meta.yaml file with given default_versions.
 
     :param file_path: str, path to the meta.yaml file
-    :param default_versions: dict, default version values for Jinja2 variables
     :return: dict, parsed meta.yaml data
     """
     with open(file_path, "r") as f:
         content = f.read()
         template = Template(content)
-        rendered_content = template.render(
-            load_setup_py_data=lambda: {}, **default_versions
-        )
+        rendered_content = template.render(load_setup_py_data=lambda: {})
         return yaml.safe_load(rendered_content)
 
 
@@ -55,14 +52,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract requirements from meta.yaml")
     parser.add_argument("meta_yaml_path", help="Path to meta.yaml file")
     parser.add_argument("req_type", help="Conda or pip requirements", default="conda")
-    parser.add_argument(
-        "--qiime2_epoch", help="Set version for qiime2_epoch", default="2024.5"
-    )
     args = parser.parse_args()
 
-    default_versions = {
-        "qiime2_epoch": args.qiime2_epoch,
-    }
-
-    meta_yaml_data = load_meta_yaml(args.meta_yaml_path, default_versions)
+    meta_yaml_data = load_meta_yaml(args.meta_yaml_path)
     print_requirements(meta_yaml_data, args.req_type)
