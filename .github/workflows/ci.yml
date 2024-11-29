@@ -14,10 +14,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up python 3.8
+    - name: Set up python 3.10
       uses: actions/setup-python@v5
       with:
-        python-version: 3.8
+        python-version: 3.10
 
     - name: Install dependencies
       run: |
@@ -30,9 +30,7 @@ jobs:
     needs: lint
     strategy:
       matrix:
-        # todo: include macos once repos is public
-        # os: [ubuntu-latest, macos-latest]
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -44,11 +42,11 @@ jobs:
         fetch-depth: 0
     - uses: actions/setup-python@v5
       with:
-        python-version: 3.8
+        python-version: 3.10
     - uses: conda-incubator/setup-miniconda@v2
       with:
         auto-update-conda: true
-        python-version: 3.8
+        python-version: 3.10
     - name: Run tests
       # ugly because I wanted to keep one location of dependencies
       run: |
@@ -60,8 +58,7 @@ jobs:
       run: echo "COV=coverage xml -o $GITHUB_WORKSPACE/coverage.xml" >> $GITHUB_ENV
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v5
       with:
-        # TODO: remove token when repos is public
         token: ${{ secrets.CODECOV_TOKEN }}
         fail_ci_if_error: true

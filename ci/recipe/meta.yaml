@@ -36,9 +36,8 @@ requirements:
     - python-dotenv
     - py-spy
     - py-xgboost
-    # todo: update ray to newest once Q2 has migrated to Python 3.10
-    - ray-default==2.24.0
-    - ray-tune==2.24.0
+    - ray-default
+    - ray-tune
     - scipy
     - scikit-learn
     - scikit-bio
