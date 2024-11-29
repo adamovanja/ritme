@@ -17,7 +17,7 @@ jobs:
     - name: Set up python 3.10
       uses: actions/setup-python@v5
       with:
-        python-version: 3.10
+        python-version: '3.10'
 
     - name: Install dependencies
       run: |
@@ -42,11 +42,11 @@ jobs:
         fetch-depth: 0
     - uses: actions/setup-python@v5
       with:
-        python-version: 3.10
+        python-version: '3.10'
     - uses: conda-incubator/setup-miniconda@v2
       with:
         auto-update-conda: true
-        python-version: 3.10
+        python-version: '3.10'
     - name: Run tests
       # ugly because I wanted to keep one location of dependencies
       run: |
