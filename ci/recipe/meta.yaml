@@ -20,7 +20,6 @@ requirements:
   run:
     - python
     - grpcio
-    - anaconda::git-lfs
     - importlib-metadata
     - qiime2::qiime2
     - qiime2::q2-feature-table

@@ -13,13 +13,11 @@ test: all
 test-cov: all
 	py.test --cov=ritme --cov-report xml:coverage.xml --cov-fail-under=80
 
-# todo: update c-lasso to this once lfs quota is increased again:
-# git+https://github.com/Leo-Simpson/c-lasso.git@82b106c471c70559b1720a5bb79a61a5224cca7f
+# install c-lasso & coral_pytorch
 install-pip:
-	git lfs install
 	pip install \
-	git+https://github.com/adamovanja/c-lasso.git@2d192ed1e645514b849dc0ad4f4a5505687af88a \
-	git+https://github.com/Raschka-research-group/coral-pytorch.git@313482f86f50b58d8beb9fb54652e943b06745ef
+	https://files.pythonhosted.org/packages/8c/12/b2f7511fbc3563e318754f33c30b2ee5cf095d97896094235202521febc1/c_lasso-1.0.11-py3-none-any.whl \
+	https://files.pythonhosted.org/packages/37/16/abebcfe69a8d7b526770ee23832fd6fed7a12afd469611c459f6dd500f81/coral_pytorch-1.4.0-py2.py3-none-any.whl
 
 install: install-pip
 	$(PYTHON) setup.py install
