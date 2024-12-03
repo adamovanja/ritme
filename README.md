@@ -40,15 +40,10 @@ To define a suitable run configuration, please find the description of each vari
 | ls_model_types | List of model types to explore sequentially - options include "linreg", "trac", "xgb", "nn_reg", "nn_class", "nn_corn" and "rf". |
 | num_trials | Total number of trials to try per model type: the larger this value the more space of the complete search space can be searched. |
 | max_cuncurrent_trials | Maximal number of concurrent trials to run. |
-| path_to_ft | Path to the feature table file. |
-| path_to_md | Path to the metadata file. |
-| path_to_phylo | Path to the phylogenetic tree file. |
-| path_to_tax | Path to the taxonomy file. |
 | seed_data | Seed for data-related random operations. |
 | seed_model | Seed for model-related random operations. |
 | test_mode | Boolean flag to indicate if running in test mode. |
 | tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  #model-tracking for set-up instructions. |
-| train_size | Fraction of data to use for training (e.g., 0.8 for 80% train, 20% test split). |
 | model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `run_config_whparams.json`|
 
 

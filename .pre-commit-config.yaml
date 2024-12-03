@@ -17,9 +17,8 @@ repos:
 
   # Ruff linter on Jupyter notebooks
   - repo: https://github.com/nbQA-dev/nbQA
-    rev: 1.6.1
+    rev: 1.9.1
     hooks:
-      # - id: nbqa-isort  # removing as it clashes with black-jupyter above
       - id: nbqa-ruff
 
   # Ruff linting other scripts
