@@ -23,6 +23,7 @@ setup(
     url="https://github.com/adamovanja/ritme",
     package_data={
         "ritme": ["citations.bib"],
+        "ritme.tests": ["data/*"],
     },
     zip_safe=False,
 )
