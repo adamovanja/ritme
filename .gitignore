@@ -166,3 +166,5 @@ experiments/data_splits
 *.json
 !run_config.json
 !run_config_whparams.json
+!r_local_linreg_py.json
+!r_local_linreg.json

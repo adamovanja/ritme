@@ -44,7 +44,7 @@ To define a suitable run configuration, please find the description of each vari
 | seed_model | Seed for model-related random operations. |
 | test_mode | Boolean flag to indicate if running in test mode. |
 | tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  #model-tracking for set-up instructions. |
-| model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `run_config_whparams.json`|
+| model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `ritme/config/run_config_whparams.json`|
 
 
 ## Model tracking
