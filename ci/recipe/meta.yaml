@@ -9,6 +9,7 @@ source:
   path: ../..
 
 build:
+  noarch: python
   script: make install
 
 requirements:

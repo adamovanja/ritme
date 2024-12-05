@@ -1,14 +1,8 @@
 {
-  "experiment_tag": "run_config",
+  "experiment_tag": "r_local_linreg",
   "feature_prefix": "F",
   "ls_model_types": [
-    "linreg",
-    "trac",
-    "xgb",
-    "nn_reg",
-    "nn_class",
-    "nn_corn",
-    "rf"
+    "linreg"
   ],
   "max_cuncurrent_trials": 5,
   "num_trials": 2,
