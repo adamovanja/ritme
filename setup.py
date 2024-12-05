@@ -25,5 +25,10 @@ setup(
         "ritme": ["citations.bib"],
         "ritme.tests": ["data/*"],
     },
+    entry_points={
+        "console_scripts": [
+            "ritme=ritme.cli:app",
+        ],
+    },
     zip_safe=False,
 )
