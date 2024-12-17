@@ -38,12 +38,12 @@ The configuration of the optimization is defined in a `json` file. To define a s
 | seed_data | Seed for data-related random operations. |
 | seed_model | Seed for model-related random operations. |
 | test_mode | Boolean flag to indicate if running in test mode. |
-| tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  #model-tracking for set-up instructions. |
+| tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  [model tracking](#model-tracking) for set-up instructions. |
 | model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `ritme/config/run_config_whparams.json`|
 
 If you want to parallelize the training of different model types, we recommend training each model in a separate experiment. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.
 
-Once you have trained some models, you can check the progress of the trained models in the tracking software you selected (see section #model-tracking).
+Once you have trained some models, you can check the progress of the trained models in the tracking software you selected (see section on [model tracking](#model-tracking)).
 
 ## Model tracking
 In the run configuration file you can choose to track your trials with MLflow (`tracking_uri=="mlruns"`) or with WandB (`tracking_uri=="wandb"`).
