@@ -29,9 +29,9 @@ requirements:
     - mlflow
     - numpy
     - optuna
-    # fix to avoid clobberwarning when conda building
-    - opencensus==0.11.3
-    - opencensus-context==0.1.3
+    # # fix to avoid clobberwarning when conda building
+    # - opencensus==0.11.3
+    # - opencensus-context==0.1.3
     - packaging
     - pandas
     - pip
