@@ -15,7 +15,7 @@ conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch ritme
 ```
 
 ## Usage
-*ritme* provides three main functions to prepare your data, find the best model configuration (feature + model class) for the specified target and evaluate the best model configuration on a test set. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function either run `ritme <function-name> --help` or have a look at the examples in the notebook `experiments/ritme_example_usage.ipynb`.
+*ritme* provides three main functions to prepare your data, find the best model configuration (feature + model class) for the specified target and evaluate the best model configuration on a test set. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function run `ritme <function-name> --help` or have a look at the examples in the notebook `experiments/ritme_example_usage.ipynb`.
 
 | `ritme` function                   | Description                                                                      |
 |--------------------------|----------------------------------------------------------------------------------|
