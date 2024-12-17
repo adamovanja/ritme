@@ -20,7 +20,7 @@ install-pip:
 	https://files.pythonhosted.org/packages/37/16/abebcfe69a8d7b526770ee23832fd6fed7a12afd469611c459f6dd500f81/coral_pytorch-1.4.0-py2.py3-none-any.whl
 
 install: install-pip
-	$(PYTHON) setup.py install
+	$(PYTHON) -m pip install . --no-deps -vv
 
 create-env: install-req
 	mamba create -y -n ritme -c qiime2 -c conda-forge -c bioconda -c pytorch -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
