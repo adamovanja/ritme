@@ -8,21 +8,20 @@ An optimized framework for finding the best feature representation and model cla
 If you use this software, please cite it using the metadata from `CITATION.cff`.
 
 ## Setup
-To install the required dependencies for this package clone this repos and run (note: running `make dev` is a mandatory step to ensure all required packages are installed):
+`ritme` is available as a conda package on [anaconda.org](https://anaconda.org/adamova/ritme). To install it run the following command:
+
 ```shell
-make create-env
-conda activate ritme
-make dev
+conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch ritme
 ```
-Funfact: A properly packaged version of the package is coming soon.
 
 ## Usage
-*ritme* provides three main functions to prepare your data, find the best model configuration (feature + model class) for the specified target and evaluate the best model configuration on a left-out test set. All of them can be run in the CLI or via the Python API. For examples on how to use each function see this notebook `experiments/ritme_example_usage.ipynb`:
-| Method                   | Description                                                                      |
+*ritme* provides three main functions to prepare your data, find the best model configuration (feature + model class) for the specified target and evaluate the best model configuration on a test set. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function either run `ritme <function-name> --help` or have a look at the examples in the notebook `experiments/ritme_example_usage.ipynb`.
+
+| `ritme` function                   | Description                                                                      |
 |--------------------------|----------------------------------------------------------------------------------|
 | split_train_test         | Split the dataset into train-test in a stratified manner                         |
 | find_best_model_config   | Find the best model configuration (incl. feature representation and model class) |
-| evaluate_tuned_models.py | Evaluate the best model configuration on a left-out test set                     |
+| evaluate_tuned_models | Evaluate the best model configuration on a left-out test set                     |
 
 ## Finding the best model configuration
 The set-up of the optimization is defined in `ritme/run_config.json`. If you want to parallelize the training of different model types, we recommend training each model in a separate experiment. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.

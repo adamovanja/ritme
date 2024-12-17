@@ -48,17 +48,6 @@ requirements:
     - wandb
     - zipp
 
-channels:
-  - qiime2
-  - conda-forge
-  - bioconda
-  - pytorch
-  - defaults
-
-dependencies:
-  - anaconda-client
-  - conda-build
-
 test:
   requires:
     - parameterized
