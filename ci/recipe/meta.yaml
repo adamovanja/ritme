@@ -29,6 +29,9 @@ requirements:
     - mlflow
     - numpy
     - optuna
+    # fix to avoid clobberwarning when conda building
+    - opencensus==0.11.3
+    - opencensus-context==0.1.3
     - packaging
     - pandas
     - pip
@@ -47,6 +50,17 @@ requirements:
     - typer
     - wandb
     - zipp
+
+channels:
+  - qiime2
+  - conda-forge
+  - bioconda
+  - pytorch
+  - defaults
+
+dependencies:
+  - anaconda-client
+  - conda-build
 
 test:
   requires:
