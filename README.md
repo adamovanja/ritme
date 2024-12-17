@@ -8,7 +8,7 @@ An optimized framework for finding the best feature representation and model cla
 If you use this software, please cite it using the metadata from `CITATION.cff`.
 
 ## Setup
-`ritme` is available as a conda package on [anaconda.org](https://anaconda.org/adamova/ritme). To install it run the following command:
+*ritme* is available as a conda package on [anaconda.org](https://anaconda.org/adamova/ritme). To install it run the following command:
 
 ```shell
 conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch ritme
@@ -17,18 +17,14 @@ conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch ritme
 ## Usage
 *ritme* provides three main functions to prepare your data, find the best model configuration (feature + model class) for the specified target and evaluate the best model configuration on a test set. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function run `ritme <function-name> --help` or have a look at the examples in the notebook `experiments/ritme_example_usage.ipynb`.
 
-| `ritme` function                   | Description                                                                      |
+| *ritme* function                   | Description                                                                      |
 |--------------------------|----------------------------------------------------------------------------------|
 | split_train_test         | Split the dataset into train-test in a stratified manner                         |
 | find_best_model_config   | Find the best model configuration (incl. feature representation and model class) |
 | evaluate_tuned_models | Evaluate the best model configuration on a left-out test set                     |
 
 ## Finding the best model configuration
-The set-up of the optimization is defined in `ritme/run_config.json`. If you want to parallelize the training of different model types, we recommend training each model in a separate experiment. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.
-
-Once you have trained some models, you can check the progress of the trained models in the tracking software you selected (see section #model-tracking).
-
-To define a suitable run configuration, please find the description of each variable in `ritme/config/run_config.json` here:
+The configuration of the optimization is defined in a `json` file. To define a suitable configuration for your use case, please find the description of each variable in `config/run_config.json` here:
 
 | Parameter | Description |
 |-----------|-------------|
@@ -45,9 +41,12 @@ To define a suitable run configuration, please find the description of each vari
 | tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  #model-tracking for set-up instructions. |
 | model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `ritme/config/run_config_whparams.json`|
 
+If you want to parallelize the training of different model types, we recommend training each model in a separate experiment. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.
+
+Once you have trained some models, you can check the progress of the trained models in the tracking software you selected (see section #model-tracking).
 
 ## Model tracking
-In the run configuration file you can choose to track your trials with MLflow (tracking_uri=="mlruns") or with WandB (tracking_uri=="wandb").
+In the run configuration file you can choose to track your trials with MLflow (`tracking_uri=="mlruns"`) or with WandB (`tracking_uri=="wandb"`).
 
 ### Choice between MLflow & WandB
 WandB stores aggregate metrics on their servers. The way *ritme* is set up no sample-specific information is stored remotely. This information is stored on your local machine.
