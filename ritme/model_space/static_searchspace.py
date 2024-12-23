@@ -107,7 +107,7 @@ def get_rf_space(
     # values can help reduce overfitting
     # ! 0.0001, 0.001, 0.01
     min_weight_fraction_leaf = model_hyperparameters.get(
-        "min_weight_fraction_leaf", {"min": 0.0001, "max": 0.01, "log": True}
+        "min_weight_fraction_leaf", {"min": 0.0, "max": 0.01, "log": False}
     )
     trial.suggest_float(
         "min_weight_fraction_leaf",
@@ -132,14 +132,14 @@ def get_rf_space(
     # reduce overfitting
     # ! None, "sqrt", "log2", 0.1
     max_features = model_hyperparameters.get(
-        "max_features", [None, "sqrt", "log2", 0.1, 0.2, 0.5]
+        "max_features", [None, "sqrt", "log2", 0.1, 0.2, 0.3, 0.5]
     )
     trial.suggest_categorical("max_features", max_features)
 
     # node split occurs if impurity is >= to this value: large values
     # prevent overfitting
     min_impurity_decrease = model_hyperparameters.get(
-        "min_impurity_decrease", {"min": 0.001, "max": 0.5, "log": True}
+        "min_impurity_decrease", {"min": 0.0, "max": 0.5, "log": False}
     )
     trial.suggest_float(
         "min_impurity_decrease",

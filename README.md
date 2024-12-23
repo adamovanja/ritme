@@ -53,7 +53,7 @@ WandB stores aggregate metrics on their servers. The way *ritme* is set up no sa
 To choose which tracking set-up works best for you, it is best to review the respective services.
 
 ### MLflow
-In case of using MLflow you can view your models with `mlflow ui --backend-store-uri experiments/mlruns`. For more information check out the [official MLflow documentation](https://mlflow.org/docs/latest/index.html).
+In case of using MLflow you can view your models with `mlflow ui` from within the path where the logs were saved (which is outputted when running `find_best_model_config` as "You can view the model logs by launching MLflow UI from within folder : <folder_name>"). This is rather slow when many trials or experiments were launched - then viewing logs via the Python API is better suited. For more information check out the [official MLflow documentation](https://mlflow.org/docs/latest/index.html).
 
 ### WandB
 In case of using WandB you need to store your `WANDB_API_KEY` & `WANDB_ENTITY` as a environment variable in `.env`. Make sure to ignore this file in version control (add to `.gitignore`)!
