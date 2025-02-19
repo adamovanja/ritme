@@ -128,6 +128,12 @@ class TestDataHelpers(unittest.TestCase):
         ):
             _split_data_grouped(data, group_by, 0.5, 123)
 
+    def test_split_data_by_no_group(self):
+        train_obs, test_obs = _split_data_grouped(self.data_rel, None, 0.5, 123)
+
+        assert_frame_equal(train_obs, self.data_rel.iloc[[1, 2], :])
+        assert_frame_equal(test_obs, self.data_rel.iloc[[3, 0], :])
+
 
 class TestMainFunctions(unittest.TestCase):
     def setUp(self):

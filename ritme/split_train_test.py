@@ -4,7 +4,7 @@ import warnings
 import pandas as pd
 import qiime2 as q2
 import typer
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 from ritme._decorators import helper_function, main_function
 from ritme.feature_space.utils import _biom_to_df, _df_to_biom
@@ -81,22 +81,26 @@ def _split_data_grouped(
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Randomly splits the provided data into train and test sets, grouping rows by the
-    specified `group_by_column`. This ensures that rows with the same group value
-    are not spread across multiple subsets, preventing data leakage.
+    Randomly splits the provided data into train and test sets, grouping rows by
+    the specified `group_by_column`. Grouping ensures that rows with the same
+    group value are not spread across multiple subsets, preventing data leakage.
+    If no grouping is provided, a standard random split is performed.
     """
-    if len(data[group_by_column].unique()) == 1:
-        raise ValueError(
-            f"Only one unique value of '{group_by_column}' available in dataset."
-        )
+    if group_by_column is None:
+        train, test = train_test_split(data, train_size=train_size, random_state=seed)
+    else:
+        if len(data[group_by_column].unique()) == 1:
+            raise ValueError(
+                f"Only one unique value of '{group_by_column}' available in dataset."
+            )
 
-    gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
-    split = gss.split(data, groups=data[group_by_column])
-    train_idx, test_idx = next(split)
+        gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
+        split = gss.split(data, groups=data[group_by_column])
+        train_idx, test_idx = next(split)
 
-    train, test = data.iloc[train_idx], data.iloc[test_idx]
+        train, test = data.iloc[train_idx], data.iloc[test_idx]
+
     print(f"Train: {train.shape}, Test: {test.shape}")
-
     return train, test
 
 
@@ -105,25 +109,26 @@ def _split_data_grouped(
 def split_train_test(
     md: pd.DataFrame,
     ft: pd.DataFrame,
-    group_by_column: str,
+    group_by_column: str = None,
     feature_prefix: str = "F",
     train_size: float = 0.8,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Merge metadata and feature table and split into train-test sets grouped by
-    column "group_by_column" (e.g. host_id). Grouping ensures that rows with the
-    same group value are not spread across multiple subsets, preventing data
-    leakage.
+    Merge metadata and feature table and split into train-test sets. Split can
+    be performed with grouping by column "group_by_column" (e.g. host_id), this
+    ensures that rows with the same group value are not spread across multiple
+    subsets, preventing data leakage.
 
     Args:
     md (pd.DataFrame): Metadata dataframe.
     ft (pd.DataFrame): Feature table dataframe.
-    group_by_column (str): Column in metadata by which the split should be
-    grouped.
-    feature_prefix (str): Prefix to append to features in ft. Defaults to "F".
-    train_size (float, optional): The proportion of the dataset to include in
-    the train split. Defaults to 0.8.
+    group_by_column (str, optional): Column in metadata by which the split
+    should be grouped. Defaults to None.
+    feature_prefix (str, optional): Prefix to append to features in ft.
+    Defaults to "F".
+    train_size (float, optional): The proportion of the dataset to include
+    in the train split. Defaults to 0.8.
     seed (int, optional): Random seed for reproducibility. Defaults to 42.
 
     Returns:
@@ -157,26 +162,27 @@ def cli_split_train_test(
     output_path: str,
     path_to_md: str,
     path_to_ft: str,
-    group_by_column: str,
+    group_by_column: str = None,
     feature_prefix: str = "F",
     train_size: float = 0.8,
     seed: int = 42,
 ):
     """
-    Merge metadata and feature table and split into train-test sets grouped by
-    column "group_by_column" (e.g. host_id). Grouping ensures that rows with the
-    same group value are not spread across multiple subsets, preventing data
-    leakage.
+    Merge metadata and feature table and split into train-test sets. Split can
+    be performed with grouping by column "group_by_column" (e.g. host_id), this
+    ensures that rows with the same group value are not spread across multiple
+    subsets, preventing data leakage.
 
     Args:
         output_path (str): Path to save output to.
         path_to_md (str): Path to metadata file.
         path_to_ft (str): Path to feature table file.
-        group_by_column (str): Column in metadata by which the split should be
-        grouped.
-        feature_prefix (str): Prefix to append to features in ft. Defaults to "F".
-        train_size (float, optional): The proportion of the dataset to include in
-        the train split. Defaults to 0.8.
+        group_by_column (str, optional): Column in metadata by which the split
+        should be grouped. Defaults to None.
+        feature_prefix (str, optional): Prefix to append to features in ft.
+        Defaults to "F".
+        train_size (float, optional): The proportion of the dataset to include
+        in the train split. Defaults to 0.8.
         seed (int, optional): Random seed for reproducibility. Defaults to 42.
     Side Effects:
         Writes the train and test splits to "train_val.pkl" and "test.pkl" files
