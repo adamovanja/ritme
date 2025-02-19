@@ -35,7 +35,7 @@ class TestFindBestModelConfig(unittest.TestCase):
             "experiment_tag": "test_experiment",
             "feature_prefix": "F",
             "target": "target_column",
-            "stratify_by_column": "stratify_column",
+            "group_by_column": "group_column",
             "seed_data": 42,
             "seed_model": 42,
             "num_trials": 10,
@@ -53,7 +53,7 @@ class TestFindBestModelConfig(unittest.TestCase):
         )
         self.train_val = self.ft.copy()
         self.train_val["target_column"] = [1, 2, 3, 4, 4, 4, 0, 6, 5, 8]
-        self.train_val["stratify_column"] = [
+        self.train_val["group_column"] = [
             "a",
             "a",
             "a",
@@ -214,7 +214,7 @@ class TestFindBestModelConfig(unittest.TestCase):
             mock_run_all_trials.assert_called_once_with(
                 ANY,
                 self.config["target"],
-                self.config["stratify_by_column"],
+                self.config["group_by_column"],
                 self.config["seed_data"],
                 self.config["seed_model"],
                 ANY,

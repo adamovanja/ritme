@@ -175,7 +175,7 @@ def find_best_model_config(
     result_dic = run_all_trials(
         train_val,
         config["target"],
-        config["stratify_by_column"],
+        config["group_by_column"],
         config["seed_data"],
         config["seed_model"],
         tax,

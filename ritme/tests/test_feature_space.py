@@ -573,10 +573,10 @@ class TestProcessTrain(unittest.TestCase):
     @patch("ritme.feature_space._process_train.aggregate_microbial_features")
     @patch("ritme.feature_space._process_train.select_microbial_features")
     @patch("ritme.feature_space._process_train.transform_microbial_features")
-    @patch("ritme.feature_space._process_train._split_data_stratified")
+    @patch("ritme.feature_space._process_train._split_data_grouped")
     def test_process_train_no_feature_engineering(
         self,
-        mock_split_data_stratified,
+        mock_split_data_grouped,
         mock_transform_features,
         mock_select_features,
         mock_aggregate_features,
@@ -588,7 +588,7 @@ class TestProcessTrain(unittest.TestCase):
         mock_aggregate_features.return_value = ft
         mock_select_features.return_value = ft
         mock_transform_features.return_value = ft
-        mock_split_data_stratified.return_value = (
+        mock_split_data_grouped.return_value = (
             self.train_val.iloc[:2, :],
             self.train_val.iloc[2:, :],
         )
@@ -607,7 +607,7 @@ class TestProcessTrain(unittest.TestCase):
         self._assert_called_with_df(mock_select_features, ft, self.config, "F")
         self._assert_called_with_df(mock_transform_features, ft, None)
         self._assert_called_with_df(
-            mock_split_data_stratified,
+            mock_split_data_grouped,
             self.train_val[[self.host_id, self.target] + ls_ft],
             "host_id",
             0.8,

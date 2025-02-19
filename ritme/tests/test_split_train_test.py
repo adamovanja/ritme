@@ -13,7 +13,7 @@ from ritme.split_train_test import (
     _ft_remove_zero_features,
     _ft_rename_microbial_features,
     _load_data,
-    _split_data_stratified,
+    _split_data_grouped,
     cli_split_train_test,
     split_train_test,
 )
@@ -101,8 +101,8 @@ class TestDataHelpers(unittest.TestCase):
         pd.testing.assert_frame_equal(ft, self.ft_rel)
         pd.testing.assert_frame_equal(md, self.md)
 
-    def test_split_data_stratified_by_host(self):
-        train_obs, test_obs = _split_data_stratified(self.data_rel, "host_id", 0.5, 123)
+    def test_split_data_grouped_by_host(self):
+        train_obs, test_obs = _split_data_grouped(self.data_rel, "host_id", 0.5, 123)
 
         train_exp = self.data_rel.iloc[[0, 2], :].copy()
         test_exp = self.data_rel.iloc[[1, 3], :].copy()
@@ -121,12 +121,12 @@ class TestDataHelpers(unittest.TestCase):
         data = pd.DataFrame(
             {"host_id": ["c", "c", "c", "c"], "supertarget": [1, 2, 1, 2]}
         )
-        stratify_by = "host_id"
+        group_by = "host_id"
         with self.assertRaisesRegex(
             ValueError,
-            f"Only one unique value of '{stratify_by}' available in dataset.",
+            f"Only one unique value of '{group_by}' available in dataset.",
         ):
-            _split_data_stratified(data, stratify_by, 0.5, 123)
+            _split_data_grouped(data, group_by, 0.5, 123)
 
 
 class TestMainFunctions(unittest.TestCase):

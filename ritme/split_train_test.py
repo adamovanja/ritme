@@ -74,23 +74,24 @@ def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 @helper_function
-def _split_data_stratified(
+def _split_data_grouped(
     data: pd.DataFrame,
-    stratify_by_column: str,
+    group_by_column: str,
     train_size: float,
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Randomly split data into train & test split stratified by column
-    "stratify_by_column" (e.g. host_id).
+    Randomly splits the provided data into train and test sets, grouping rows by the
+    specified `group_by_column`. This ensures that rows with the same group value
+    are not spread across multiple subsets, preventing data leakage.
     """
-    if len(data[stratify_by_column].unique()) == 1:
+    if len(data[group_by_column].unique()) == 1:
         raise ValueError(
-            f"Only one unique value of '{stratify_by_column}' available in dataset."
+            f"Only one unique value of '{group_by_column}' available in dataset."
         )
 
     gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
-    split = gss.split(data, groups=data[stratify_by_column])
+    split = gss.split(data, groups=data[group_by_column])
     train_idx, test_idx = next(split)
 
     train, test = data.iloc[train_idx], data.iloc[test_idx]
@@ -104,20 +105,22 @@ def _split_data_stratified(
 def split_train_test(
     md: pd.DataFrame,
     ft: pd.DataFrame,
-    stratify_by_column: str,
+    group_by_column: str,
     feature_prefix: str = "F",
     train_size: float = 0.8,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Merge metadata and feature table and split into train-test sets
-    stratified by column "stratify_by_column" (e.g. host_id).
+    Merge metadata and feature table and split into train-test sets grouped by
+    column "group_by_column" (e.g. host_id). Grouping ensures that rows with the
+    same group value are not spread across multiple subsets, preventing data
+    leakage.
 
     Args:
     md (pd.DataFrame): Metadata dataframe.
     ft (pd.DataFrame): Feature table dataframe.
-    stratify_by_column (str): Column in metadata by which the split should be
-    stratified.
+    group_by_column (str): Column in metadata by which the split should be
+    grouped.
     feature_prefix (str): Prefix to append to features in ft. Defaults to "F".
     train_size (float, optional): The proportion of the dataset to include in
     the train split. Defaults to 0.8.
@@ -142,8 +145,8 @@ def split_train_test(
     data = md.join(ft, how="inner")
 
     # split
-    train_val, test = _split_data_stratified(
-        data, stratify_by_column=stratify_by_column, train_size=train_size, seed=seed
+    train_val, test = _split_data_grouped(
+        data, group_by_column=group_by_column, train_size=train_size, seed=seed
     )
 
     return train_val, test
@@ -154,21 +157,23 @@ def cli_split_train_test(
     output_path: str,
     path_to_md: str,
     path_to_ft: str,
-    stratify_by_column: str,
+    group_by_column: str,
     feature_prefix: str = "F",
     train_size: float = 0.8,
     seed: int = 42,
 ):
     """
-    Merge metadata and feature table and split into train-test sets
-    stratified by column "stratify_by_column" (e.g. host_id).
+    Merge metadata and feature table and split into train-test sets grouped by
+    column "group_by_column" (e.g. host_id). Grouping ensures that rows with the
+    same group value are not spread across multiple subsets, preventing data
+    leakage.
 
     Args:
         output_path (str): Path to save output to.
         path_to_md (str): Path to metadata file.
         path_to_ft (str): Path to feature table file.
-        stratify_by_column (str): Column in metadata by which the split should be
-        stratified.
+        group_by_column (str): Column in metadata by which the split should be
+        grouped.
         feature_prefix (str): Prefix to append to features in ft. Defaults to "F".
         train_size (float, optional): The proportion of the dataset to include in
         the train split. Defaults to 0.8.
@@ -180,7 +185,7 @@ def cli_split_train_test(
     md, ft = _load_data(path_to_md, path_to_ft)
 
     train_val, test = split_train_test(
-        md, ft, stratify_by_column, feature_prefix, train_size, seed
+        md, ft, group_by_column, feature_prefix, train_size, seed
     )
 
     # write to file

@@ -22,7 +22,7 @@ from ritme.evaluate_models import (
     get_taxonomy,
 )
 from ritme.model_space import static_trainables as st
-from ritme.split_train_test import _split_data_stratified
+from ritme.split_train_test import _split_data_grouped
 from ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
 
 
@@ -480,7 +480,7 @@ class TestTrainableLogging(unittest.TestCase):
             tuned_model = self._create_tuned_model(model_type, best_result)
             # split data with same split as during training - ensures with
             # self.seed_data
-            train, val = _split_data_stratified(
+            train, val = _split_data_grouped(
                 self.train_val, self.host_id, 0.8, self.seed_data
             )
 

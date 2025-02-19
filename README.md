@@ -17,29 +17,29 @@ conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch ritme
 ## Usage
 *ritme* provides three main functions to prepare your data, find the best model configuration (feature + model class) for the specified target and evaluate the best model configuration on a test set. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function run `ritme <function-name> --help` or have a look at the examples in the notebook `experiments/ritme_example_usage.ipynb`.
 
-| *ritme* function                   | Description                                                                      |
-|--------------------------|----------------------------------------------------------------------------------|
-| split_train_test         | Split the dataset into train-test in a stratified manner                         |
-| find_best_model_config   | Find the best model configuration (incl. feature representation and model class) |
-| evaluate_tuned_models | Evaluate the best model configuration on a left-out test set                     |
+| *ritme* function       | Description                                                                      |
+|------------------------|----------------------------------------------------------------------------------|
+| split_train_test       | Split the dataset into train-test (with grouping option)                         |
+| find_best_model_config | Find the best model configuration (incl. feature representation and model class) |
+| evaluate_tuned_models  | Evaluate the best model configuration on a left-out test set                     |
 
 ## Finding the best model configuration
 The configuration of the optimization is defined in a `json` file. To define a suitable configuration for your use case, please find the description of each variable in `config/run_config.json` here:
 
-| Parameter | Description |
-|-----------|-------------|
-| experiment_tag | Name of the experiment. |
-| stratify_by_column | Column name to stratify splits by (e.g. unique host_id). |
-| target | Column name of the target variable in the metadata. |
-| feature_prefix | Prefix of features variables. |
-| ls_model_types | List of model types to explore sequentially - options include "linreg", "trac", "xgb", "nn_reg", "nn_class", "nn_corn" and "rf". |
-| num_trials | Total number of trials to try per model type: the larger this value the more space of the complete search space can be searched. |
-| max_cuncurrent_trials | Maximal number of concurrent trials to run. |
-| seed_data | Seed for data-related random operations. |
-| seed_model | Seed for model-related random operations. |
-| test_mode | Boolean flag to indicate if running in test mode. |
-| tracking_uri | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  [model tracking](#model-tracking) for set-up instructions. |
-| model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `ritme/config/run_config_whparams.json`|
+| Parameter             | Description                                                                                                                                                                                                                                                                                                                                                |
+|-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| experiment_tag        | Name of the experiment.                                                                                                                                                                                                                                                                                                                                    |
+| group_by_column       | Column name to group train-test splits by (e.g. unique host_id) ensuring that rows with the same group value are not spread across multiple splits.                                                                                                                                                                                                        |
+| target                | Column name of the target variable in the metadata.                                                                                                                                                                                                                                                                                                        |
+| feature_prefix        | Prefix of features variables.                                                                                                                                                                                                                                                                                                                              |
+| ls_model_types        | List of model types to explore sequentially - options include "linreg", "trac", "xgb", "nn_reg", "nn_class", "nn_corn" and "rf".                                                                                                                                                                                                                           |
+| num_trials            | Total number of trials to try per model type: the larger this value the more space of the complete search space can be searched.                                                                                                                                                                                                                           |
+| max_cuncurrent_trials | Maximal number of concurrent trials to run.                                                                                                                                                                                                                                                                                                                |
+| seed_data             | Seed for data-related random operations.                                                                                                                                                                                                                                                                                                                   |
+| seed_model            | Seed for model-related random operations.                                                                                                                                                                                                                                                                                                                  |
+| test_mode             | Boolean flag to indicate if running in test mode.                                                                                                                                                                                                                                                                                                          |
+| tracking_uri          | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  [model tracking](#model-tracking) for set-up instructions.                                                                                                                                                                                             |
+| model_hyperparameters | Optional: For each model type the range of hyperparameters to check can be defined here. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined as per default in `ritme/config/run_config_whparams.json` |
 
 If you want to parallelize the training of different model types, we recommend training each model in a separate experiment. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.
 
