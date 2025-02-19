@@ -444,9 +444,8 @@ class TestTrainableLogging(unittest.TestCase):
             "n_hidden_layers": 1,
             "epochs": 2,
             "learning_rate": 0.01,
-            "max_layers": 2,
         }
-        for i in range(search_space["max_layers"]):
+        for i in range(search_space["n_hidden_layers"]):
             search_space[f"n_units_hl{i}"] = 2
         metric = "rmse_val"
         mode = "min"

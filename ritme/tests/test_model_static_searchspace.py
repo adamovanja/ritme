@@ -185,7 +185,6 @@ class TestStaticSearchSpace(unittest.TestCase):
             (
                 "nn_reg",
                 {
-                    "max_layers": {"min": 100, "max": 120, "step": 10},
                     "n_hidden_layers": {"min": 2, "max": 10, "step": 2},
                     "learning_rate": [0.01, 0.001, 0.0001],
                     "batch_size": [64, 128],
@@ -234,8 +233,8 @@ class TestStaticSearchSpace(unittest.TestCase):
             self.assertIn(trial.params[param], config)
 
     def _verify_n_units_hl(self, trial, config):
-        max_layers_selected = trial.params["max_layers"]
-        for i in range(max_layers_selected):
+        n_hidden_layers_selected = trial.params["n_hidden_layers"]
+        for i in range(n_hidden_layers_selected):
             param_name = f"n_units_hl{i}"
             self.assertIn(param_name, trial.params)
             self.assertIn(trial.params[param_name], config)
@@ -276,7 +275,6 @@ class TestStaticSearchSpace(unittest.TestCase):
             (
                 "nn_reg",
                 {
-                    "max_layers": {"min": 5, "max": 30, "step": 5},
                     "n_hidden_layers": {"min": 1, "max": 30, "step": 5},
                     "learning_rate": [
                         0.01,

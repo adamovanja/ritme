@@ -165,26 +165,16 @@ def get_nn_space(
 ) -> Dict[str, str]:
     get_data_eng_space(trial, tax, test_mode)
 
-    # max_layers: in network
-    max_layers_options = model_hyperparameters.get(
-        "max_layers", {"min": 5, "max": 30, "step": 5}
+    # define n_hidden_layers: sample uniformly between [min,max] rounding to
+    # multiples of step
+    n_hidden_layers_options = model_hyperparameters.get(
+        "n_hidden_layers", {"min": 5, "max": 30, "step": 5}
     )
-    max_layers = trial.suggest_int(
-        "max_layers",
-        max_layers_options["min"],
-        max_layers_options["max"],
-        step=max_layers_options["step"],
-    )
-
-    # Sample random uniformly between [1,max_layers] rounding to multiples of 5
-    n_hidden_layers = model_hyperparameters.get(
-        "n_hidden_layers", {"min": 1, "max": max_layers, "step": 5}
-    )
-    trial.suggest_int(
+    n_hidden_layers = trial.suggest_int(
         "n_hidden_layers",
-        n_hidden_layers["min"],
-        n_hidden_layers["max"],
-        step=n_hidden_layers["step"],
+        n_hidden_layers_options["min"],
+        n_hidden_layers_options["max"],
+        step=n_hidden_layers_options["step"],
     )
 
     learning_rate = model_hyperparameters.get(
@@ -200,7 +190,7 @@ def get_nn_space(
 
     # first and last layer are fixed by shape of features and target
     n_units_hl = model_hyperparameters.get("n_units_hl", [32, 64, 128, 256, 512])
-    for i in range(max_layers):
+    for i in range(n_hidden_layers):
         trial.suggest_categorical(f"n_units_hl{i}", n_units_hl)
 
     return {"model": model_name}

@@ -45,11 +45,6 @@
         5e-05,
         1e-05
       ],
-      "max_layers": {
-        "max": 30,
-        "min": 5,
-        "step": 5
-      },
       "n_hidden_layers": {
         "max": 30,
         "min": 1,
