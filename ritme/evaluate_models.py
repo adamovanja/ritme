@@ -166,7 +166,8 @@ class TunedModel:
             return transformed.values
 
     def predict(self, data: pd.DataFrame, split: str) -> Any:
-        aggregated = self.aggregate(data)
+        feature_ls = [x for x in data.columns if x.startswith(self.ft_prefix)]
+        aggregated = self.aggregate(data[feature_ls])
         # selection only possible if it was run on test set before!
         selected = self.select(aggregated, split)
         transformed = self.transform(selected)
