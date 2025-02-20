@@ -116,6 +116,7 @@ class TunedModel:
         self.tax = tax
         self.path = path
         self.train_selected_fts = []
+        self.ft_prefix = "F"
 
     def aggregate(self, data: pd.DataFrame) -> pd.DataFrame:
         return aggregate_microbial_features(
@@ -125,14 +126,12 @@ class TunedModel:
     def select(self, data: pd.DataFrame, split: str) -> pd.DataFrame:
         # selection needs to be performed based on train set values -> not on
         # test set!
-        ft_prefix = "F"
-
-        if split == "train":
+        if split == "train" and len(self.train_selected_fts) == 0:
             # assign self.train_selected_fts to be able to run select on test set later
             train_selected = select_microbial_features(
                 data,
                 self.data_config,
-                ft_prefix,
+                self.ft_prefix,
             )
             self.train_selected_fts = train_selected.columns
             return train_selected
@@ -149,7 +148,7 @@ class TunedModel:
                 if self.data_config["data_selection"].startswith("abundance")
                 else "_low_var"
             )
-            data[f"{ft_prefix}{group_name}"] = data[ft_to_sum].sum(axis=1)
+            data[f"{self.ft_prefix}{group_name}"] = data[ft_to_sum].sum(axis=1)
 
         return data[self.train_selected_fts]
 
@@ -188,13 +187,17 @@ class TunedModel:
         return predicted
 
 
-def retrieve_best_models(result_dic: Dict[str, Result]) -> Dict[str, TunedModel]:
+def retrieve_n_init_best_models(
+    result_dic: Dict[str, Result], train_val: pd.DataFrame
+) -> Dict[str, TunedModel]:
     """
-    Retrieve the best models from the result dictionary.
+    Retrieve and initialize the best models from the result dictionary.
 
     Args:
         result_dic (Dict[str, Result]): Dictionary with model types as keys and
         result grids as values.
+        train_val (pd.DataFrame): The training and validation data used to set
+        all feature engineering parameters in TunedModel.
 
     Returns:
         Dict[str, TunedModel]: Dictionary with model types as keys and
@@ -212,6 +215,8 @@ def retrieve_best_models(result_dic: Dict[str, Result]) -> Dict[str, TunedModel]
         best_model_dic[model_type] = TunedModel(
             best_model, best_data_proc, best_tax, best_path
         )
+        # init all model's feature engineering approaches in TunedModel
+        _ = best_model_dic[model_type].predict(train_val, "train")
     return best_model_dic
 
 

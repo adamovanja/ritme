@@ -16,7 +16,7 @@ from ritme.evaluate_models import (
     load_sklearn_model,
     load_trac_model,
     load_xgb_model,
-    retrieve_best_models,
+    retrieve_n_init_best_models,
     save_best_models,
 )
 
@@ -89,18 +89,31 @@ class TestEvaluateModels(unittest.TestCase):
     @patch("ritme.evaluate_models.get_model", return_value=MagicMock())
     @patch("ritme.evaluate_models.get_data_processing")
     @patch("ritme.evaluate_models.get_taxonomy")
-    def test_retrieve_best_models(
-        self, mock_get_taxonomy, mock_get_data_processing, mock_get_model
+    @patch("ritme.evaluate_models.TunedModel.predict")
+    def test_retrieve_n_init_best_models(
+        self,
+        mock_tuned_predict,
+        mock_get_taxonomy,
+        mock_get_data_processing,
+        mock_get_model,
     ):
+        mock_get_data_processing.return_value = {
+            "data_aggregation": None,
+            "data_transform": None,
+            "data_selection": None,
+            "data_alr_denom_idx": 0,
+        }
         result_dic = {"xgb": self.result_grid, "nn_reg": self.result_grid}
 
-        best_models = retrieve_best_models(result_dic)
+        best_models = retrieve_n_init_best_models(result_dic, self.data)
 
         self.assertIsInstance(best_models, dict)
         self.assertEqual(len(best_models), 2)
         for model_type, tuned_model in best_models.items():
             self.assertIn(model_type, ["xgb", "nn_reg"])
             self.assertIsInstance(tuned_model, TunedModel)
+        # assert that tuned model was called with predict for each model type
+        self.assertEqual(mock_tuned_predict.call_count, 2)
 
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("pickle.dump")

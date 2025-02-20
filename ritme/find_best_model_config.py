@@ -8,7 +8,11 @@ import typer
 from qiime2.plugins import phylogeny
 
 from ritme._decorators import helper_function, main_function
-from ritme.evaluate_models import TunedModel, retrieve_best_models, save_best_models
+from ritme.evaluate_models import (
+    TunedModel,
+    retrieve_n_init_best_models,
+    save_best_models,
+)
 from ritme.tune_models import run_all_trials
 
 
@@ -193,7 +197,8 @@ def find_best_model_config(
     )
 
     # ! Get best models of this experiment
-    best_model_dic = retrieve_best_models(result_dic)
+    best_model_dic = retrieve_n_init_best_models(result_dic, train_val)
+
     return best_model_dic, path_exp
 
 
