@@ -24,9 +24,7 @@ def _predict_w_tuned_model(
 ):
     # define
     target = exp_config["target"]
-    features = [
-        x for x in train_val.columns if x.startswith(exp_config["feature_prefix"])
-    ]
+    features = [x for x in train_val.columns if x.startswith("F")]
 
     # create predictions on train_val and test set - note: ft aggregation,
     # selection and transformation are originally also performed on train_val

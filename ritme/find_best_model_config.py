@@ -169,7 +169,7 @@ def find_best_model_config(
     path_tracker = _define_model_tracker(config["tracking_uri"], path_store_model_logs)
 
     # ! Process taxonomy and phylogeny by microbial feature table
-    ft_col = [x for x in train_val.columns if x.startswith(config["feature_prefix"])]
+    ft_col = [x for x in train_val.columns if x.startswith("F")]
     if tax is not None:
         tax = _process_taxonomy(tax, train_val[ft_col])
     if tree_phylo is not None:

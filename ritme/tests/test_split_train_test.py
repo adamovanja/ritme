@@ -41,10 +41,6 @@ class TestFeatureTableHelpers(unittest.TestCase):
         expected_columns = [f"F{x}" for x in self.ft_raw.columns]
         self.assertListEqual(renamed.columns.tolist(), expected_columns)
 
-    def test_ft_rename_microbial_features_nothing_to_rename(self):
-        renamed = _ft_rename_microbial_features(self.ft_renamed, "F")
-        self.assertListEqual(renamed.columns.tolist(), self.ft_renamed.columns.tolist())
-
     def test_ft_remove_zero_features(self):
         with self.assertWarnsRegex(Warning, r".*all zero values: \['F2'\]"):
             removed = _ft_remove_zero_features(self.ft_renamed)
@@ -161,10 +157,17 @@ class TestMainFunctions(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_split_train_test_relative(self):
-        train, test = split_train_test(self.md, self.ft_rel, "host_id", "F", 0.5, 123)
+        train, test = split_train_test(self.md, self.ft_rel, "host_id", 0.5, 123)
         train_exp = self.data_rel.iloc[[0, 2], :].copy()
         test_exp = self.data_rel.iloc[[1, 3], :].copy()
-
+        # add prefix "F" to expected
+        train_exp.columns = [
+            f"F{col}" if col not in self.md.columns else col
+            for col in train_exp.columns
+        ]
+        test_exp.columns = [
+            f"F{col}" if col not in self.md.columns else col for col in test_exp.columns
+        ]
         assert_frame_equal(train, train_exp)
         assert_frame_equal(test, test_exp)
 
@@ -173,7 +176,7 @@ class TestMainFunctions(unittest.TestCase):
         with self.assertWarnsRegex(
             Warning, r".*table contains absolute instead of relative abundances"
         ):
-            _, _ = split_train_test(self.md, ft_abx, "host_id", "F", 0.5, 123)
+            _, _ = split_train_test(self.md, ft_abx, "host_id", 0.5, 123)
 
     def test_cli_split_train_test_absolute(self):
         with patch("sys.stdout", new=StringIO()) as stdout:
@@ -183,7 +186,6 @@ class TestMainFunctions(unittest.TestCase):
                 self.tmp_md_path,
                 self.tmp_ft_rel_path,
                 "host_id",
-                "F",
                 0.5,
                 123,
             )

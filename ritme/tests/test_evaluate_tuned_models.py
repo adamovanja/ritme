@@ -18,7 +18,7 @@ from ritme.evaluate_tuned_models import (
 class TestEvaluateTunedModels(unittest.TestCase):
     def setUp(self):
         self.mock_tuned_model = MagicMock(spec=TunedModel)
-        self.exp_config = {"target": "test_target", "feature_prefix": "F"}
+        self.exp_config = {"target": "test_target"}
 
         self.train_val = pd.DataFrame(
             {"F1": [1, 2, 3], "F2": [4, 5, 6], "test_target": [7, 8, 9]}

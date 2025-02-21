@@ -15,11 +15,9 @@ from ritme.feature_space.utils import _biom_to_df, _df_to_biom
 def _ft_rename_microbial_features(
     ft: pd.DataFrame, feature_prefix: str
 ) -> pd.DataFrame:
-    """Append feature_prefix to microbial feature names if not present."""
-    first_letter = set([i[0] for i in ft.columns.tolist()])
+    """Append feature_prefix to all microbial feature names"""
     ft_renamed = ft.copy()
-    if first_letter != {feature_prefix}:
-        ft_renamed.columns = [f"{feature_prefix}{i}" for i in ft.columns.tolist()]
+    ft_renamed.columns = [f"{feature_prefix}{i}" for i in ft.columns.tolist()]
     return ft_renamed
 
 
@@ -110,7 +108,6 @@ def split_train_test(
     md: pd.DataFrame,
     ft: pd.DataFrame,
     group_by_column: str = None,
-    feature_prefix: str = "F",
     train_size: float = 0.8,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -118,15 +115,14 @@ def split_train_test(
     Merge metadata and feature table and split into train-test sets. Split can
     be performed with grouping by column "group_by_column" (e.g. host_id), this
     ensures that rows with the same group value are not spread across multiple
-    subsets, preventing data leakage.
+    subsets, preventing data leakage. All feature columns in ft are prefixed
+    with an "F".
 
     Args:
     md (pd.DataFrame): Metadata dataframe.
     ft (pd.DataFrame): Feature table dataframe.
     group_by_column (str, optional): Column in metadata by which the split
     should be grouped. Defaults to None.
-    feature_prefix (str, optional): Prefix to append to features in ft.
-    Defaults to "F".
     train_size (float, optional): The proportion of the dataset to include
     in the train split. Defaults to 0.8.
     seed (int, optional): Random seed for reproducibility. Defaults to 42.
@@ -135,7 +131,7 @@ def split_train_test(
         tuple: A tuple containing train and test dataframes.
     """
     # preprocess feature table
-    ft = _ft_rename_microbial_features(ft, feature_prefix)
+    ft = _ft_rename_microbial_features(ft, "F")
     ft = _ft_remove_zero_features(ft)
 
     relative_abundances = ft[ft.columns].sum(axis=1).round(5).eq(1.0).all()
@@ -163,7 +159,6 @@ def cli_split_train_test(
     path_to_md: str,
     path_to_ft: str,
     group_by_column: str = None,
-    feature_prefix: str = "F",
     train_size: float = 0.8,
     seed: int = 42,
 ):
@@ -171,7 +166,8 @@ def cli_split_train_test(
     Merge metadata and feature table and split into train-test sets. Split can
     be performed with grouping by column "group_by_column" (e.g. host_id), this
     ensures that rows with the same group value are not spread across multiple
-    subsets, preventing data leakage.
+    subsets, preventing data leakage. All feature columns in path_to_ft are
+    prefixed with an "F".
 
     Args:
         output_path (str): Path to save output to.
@@ -179,8 +175,6 @@ def cli_split_train_test(
         path_to_ft (str): Path to feature table file.
         group_by_column (str, optional): Column in metadata by which the split
         should be grouped. Defaults to None.
-        feature_prefix (str, optional): Prefix to append to features in ft.
-        Defaults to "F".
         train_size (float, optional): The proportion of the dataset to include
         in the train split. Defaults to 0.8.
         seed (int, optional): Random seed for reproducibility. Defaults to 42.
@@ -190,9 +184,7 @@ def cli_split_train_test(
     """
     md, ft = _load_data(path_to_md, path_to_ft)
 
-    train_val, test = split_train_test(
-        md, ft, group_by_column, feature_prefix, train_size, seed
-    )
+    train_val, test = split_train_test(md, ft, group_by_column, train_size, seed)
 
     # write to file
     if not os.path.exists(output_path):

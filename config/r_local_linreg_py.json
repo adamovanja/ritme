@@ -1,6 +1,5 @@
 {
   "experiment_tag": "r_local_linreg_py",
-  "feature_prefix": "F",
   "group_by_column": "host_id",
   "ls_model_types": [
     "linreg"
