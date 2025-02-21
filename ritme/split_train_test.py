@@ -4,7 +4,7 @@ import warnings
 import pandas as pd
 import qiime2 as q2
 import typer
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 from ritme._decorators import helper_function, main_function
 from ritme.feature_space.utils import _biom_to_df, _df_to_biom
@@ -15,11 +15,9 @@ from ritme.feature_space.utils import _biom_to_df, _df_to_biom
 def _ft_rename_microbial_features(
     ft: pd.DataFrame, feature_prefix: str
 ) -> pd.DataFrame:
-    """Append feature_prefix to microbial feature names if not present."""
-    first_letter = set([i[0] for i in ft.columns.tolist()])
+    """Append feature_prefix to all microbial feature names"""
     ft_renamed = ft.copy()
-    if first_letter != {feature_prefix}:
-        ft_renamed.columns = [f"{feature_prefix}{i}" for i in ft.columns.tolist()]
+    ft_renamed.columns = [f"{feature_prefix}{i}" for i in ft.columns.tolist()]
     return ft_renamed
 
 
@@ -74,28 +72,33 @@ def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 @helper_function
-def _split_data_stratified(
+def _split_data_grouped(
     data: pd.DataFrame,
-    stratify_by_column: str,
+    group_by_column: str,
     train_size: float,
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Randomly split data into train & test split stratified by column
-    "stratify_by_column" (e.g. host_id).
+    Randomly splits the provided data into train and test sets, grouping rows by
+    the specified `group_by_column`. Grouping ensures that rows with the same
+    group value are not spread across multiple subsets, preventing data leakage.
+    If no grouping is provided, a standard random split is performed.
     """
-    if len(data[stratify_by_column].unique()) == 1:
-        raise ValueError(
-            f"Only one unique value of '{stratify_by_column}' available in dataset."
-        )
+    if group_by_column is None:
+        train, test = train_test_split(data, train_size=train_size, random_state=seed)
+    else:
+        if len(data[group_by_column].unique()) == 1:
+            raise ValueError(
+                f"Only one unique value of '{group_by_column}' available in dataset."
+            )
 
-    gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
-    split = gss.split(data, groups=data[stratify_by_column])
-    train_idx, test_idx = next(split)
+        gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
+        split = gss.split(data, groups=data[group_by_column])
+        train_idx, test_idx = next(split)
 
-    train, test = data.iloc[train_idx], data.iloc[test_idx]
+        train, test = data.iloc[train_idx], data.iloc[test_idx]
+
     print(f"Train: {train.shape}, Test: {test.shape}")
-
     return train, test
 
 
@@ -104,30 +107,31 @@ def _split_data_stratified(
 def split_train_test(
     md: pd.DataFrame,
     ft: pd.DataFrame,
-    stratify_by_column: str,
-    feature_prefix: str = "F",
+    group_by_column: str = None,
     train_size: float = 0.8,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Merge metadata and feature table and split into train-test sets
-    stratified by column "stratify_by_column" (e.g. host_id).
+    Merge metadata and feature table and split into train-test sets. Split can
+    be performed with grouping by column "group_by_column" (e.g. host_id), this
+    ensures that rows with the same group value are not spread across multiple
+    subsets, preventing data leakage. All feature columns in ft are prefixed
+    with an "F".
 
     Args:
     md (pd.DataFrame): Metadata dataframe.
     ft (pd.DataFrame): Feature table dataframe.
-    stratify_by_column (str): Column in metadata by which the split should be
-    stratified.
-    feature_prefix (str): Prefix to append to features in ft. Defaults to "F".
-    train_size (float, optional): The proportion of the dataset to include in
-    the train split. Defaults to 0.8.
+    group_by_column (str, optional): Column in metadata by which the split
+    should be grouped. Defaults to None.
+    train_size (float, optional): The proportion of the dataset to include
+    in the train split. Defaults to 0.8.
     seed (int, optional): Random seed for reproducibility. Defaults to 42.
 
     Returns:
         tuple: A tuple containing train and test dataframes.
     """
     # preprocess feature table
-    ft = _ft_rename_microbial_features(ft, feature_prefix)
+    ft = _ft_rename_microbial_features(ft, "F")
     ft = _ft_remove_zero_features(ft)
 
     relative_abundances = ft[ft.columns].sum(axis=1).round(5).eq(1.0).all()
@@ -142,8 +146,8 @@ def split_train_test(
     data = md.join(ft, how="inner")
 
     # split
-    train_val, test = _split_data_stratified(
-        data, stratify_by_column=stratify_by_column, train_size=train_size, seed=seed
+    train_val, test = _split_data_grouped(
+        data, group_by_column=group_by_column, train_size=train_size, seed=seed
     )
 
     return train_val, test
@@ -154,24 +158,25 @@ def cli_split_train_test(
     output_path: str,
     path_to_md: str,
     path_to_ft: str,
-    stratify_by_column: str,
-    feature_prefix: str = "F",
+    group_by_column: str = None,
     train_size: float = 0.8,
     seed: int = 42,
 ):
     """
-    Merge metadata and feature table and split into train-test sets
-    stratified by column "stratify_by_column" (e.g. host_id).
+    Merge metadata and feature table and split into train-test sets. Split can
+    be performed with grouping by column "group_by_column" (e.g. host_id), this
+    ensures that rows with the same group value are not spread across multiple
+    subsets, preventing data leakage. All feature columns in path_to_ft are
+    prefixed with an "F".
 
     Args:
         output_path (str): Path to save output to.
         path_to_md (str): Path to metadata file.
         path_to_ft (str): Path to feature table file.
-        stratify_by_column (str): Column in metadata by which the split should be
-        stratified.
-        feature_prefix (str): Prefix to append to features in ft. Defaults to "F".
-        train_size (float, optional): The proportion of the dataset to include in
-        the train split. Defaults to 0.8.
+        group_by_column (str, optional): Column in metadata by which the split
+        should be grouped. Defaults to None.
+        train_size (float, optional): The proportion of the dataset to include
+        in the train split. Defaults to 0.8.
         seed (int, optional): Random seed for reproducibility. Defaults to 42.
     Side Effects:
         Writes the train and test splits to "train_val.pkl" and "test.pkl" files
@@ -179,9 +184,7 @@ def cli_split_train_test(
     """
     md, ft = _load_data(path_to_md, path_to_ft)
 
-    train_val, test = split_train_test(
-        md, ft, stratify_by_column, feature_prefix, train_size, seed
-    )
+    train_val, test = split_train_test(md, ft, group_by_column, train_size, seed)
 
     # write to file
     if not os.path.exists(output_path):

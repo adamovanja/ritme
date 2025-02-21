@@ -8,7 +8,11 @@ import typer
 from qiime2.plugins import phylogeny
 
 from ritme._decorators import helper_function, main_function
-from ritme.evaluate_models import TunedModel, retrieve_best_models, save_best_models
+from ritme.evaluate_models import (
+    TunedModel,
+    retrieve_n_init_best_models,
+    save_best_models,
+)
 from ritme.tune_models import run_all_trials
 
 
@@ -165,7 +169,7 @@ def find_best_model_config(
     path_tracker = _define_model_tracker(config["tracking_uri"], path_store_model_logs)
 
     # ! Process taxonomy and phylogeny by microbial feature table
-    ft_col = [x for x in train_val.columns if x.startswith(config["feature_prefix"])]
+    ft_col = [x for x in train_val.columns if x.startswith("F")]
     if tax is not None:
         tax = _process_taxonomy(tax, train_val[ft_col])
     if tree_phylo is not None:
@@ -175,7 +179,7 @@ def find_best_model_config(
     result_dic = run_all_trials(
         train_val,
         config["target"],
-        config["stratify_by_column"],
+        config["group_by_column"],
         config["seed_data"],
         config["seed_model"],
         tax,
@@ -193,7 +197,8 @@ def find_best_model_config(
     )
 
     # ! Get best models of this experiment
-    best_model_dic = retrieve_best_models(result_dic)
+    best_model_dic = retrieve_n_init_best_models(result_dic, train_val)
+
     return best_model_dic, path_exp
 
 

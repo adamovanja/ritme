@@ -33,9 +33,8 @@ class TestFindBestModelConfig(unittest.TestCase):
         self.config = {
             "tracking_uri": "mlruns",
             "experiment_tag": "test_experiment",
-            "feature_prefix": "F",
             "target": "target_column",
-            "stratify_by_column": "stratify_column",
+            "group_by_column": "group_column",
             "seed_data": 42,
             "seed_model": 42,
             "num_trials": 10,
@@ -185,13 +184,13 @@ class TestFindBestModelConfig(unittest.TestCase):
                 _define_experiment_path(self.config, temp_dir)
 
     @patch("ritme.find_best_model_config.run_all_trials")
-    @patch("ritme.find_best_model_config.retrieve_best_models")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
     def test_find_best_model_config(
-        self, mock_retrieve_best_models, mock_run_all_trials
+        self, mock_retrieve_n_init_best_models, mock_run_all_trials
     ):
         # Mock the return values of the functions
         mock_run_all_trials.return_value = {"model1": "result1", "model2": "result2"}
-        mock_retrieve_best_models.return_value = {
+        mock_retrieve_n_init_best_models.return_value = {
             "model1": "best_model1",
             "model2": "best_model2",
         }
@@ -214,7 +213,7 @@ class TestFindBestModelConfig(unittest.TestCase):
             mock_run_all_trials.assert_called_once_with(
                 ANY,
                 self.config["target"],
-                self.config["stratify_by_column"],
+                self.config["group_by_column"],
                 self.config["seed_data"],
                 self.config["seed_model"],
                 ANY,
@@ -229,8 +228,8 @@ class TestFindBestModelConfig(unittest.TestCase):
                 model_hyperparameters={},
             )
 
-            mock_retrieve_best_models.assert_called_once_with(
-                mock_run_all_trials.return_value
+            mock_retrieve_n_init_best_models.assert_called_once_with(
+                mock_run_all_trials.return_value, self.train_val
             )
             self.assertEqual(
                 best_model_dic, {"model1": "best_model1", "model2": "best_model2"}

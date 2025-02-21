@@ -13,7 +13,7 @@ from ritme.split_train_test import (
     _ft_remove_zero_features,
     _ft_rename_microbial_features,
     _load_data,
-    _split_data_stratified,
+    _split_data_grouped,
     cli_split_train_test,
     split_train_test,
 )
@@ -40,10 +40,6 @@ class TestFeatureTableHelpers(unittest.TestCase):
         renamed = _ft_rename_microbial_features(self.ft_raw, "F")
         expected_columns = [f"F{x}" for x in self.ft_raw.columns]
         self.assertListEqual(renamed.columns.tolist(), expected_columns)
-
-    def test_ft_rename_microbial_features_nothing_to_rename(self):
-        renamed = _ft_rename_microbial_features(self.ft_renamed, "F")
-        self.assertListEqual(renamed.columns.tolist(), self.ft_renamed.columns.tolist())
 
     def test_ft_remove_zero_features(self):
         with self.assertWarnsRegex(Warning, r".*all zero values: \['F2'\]"):
@@ -101,8 +97,8 @@ class TestDataHelpers(unittest.TestCase):
         pd.testing.assert_frame_equal(ft, self.ft_rel)
         pd.testing.assert_frame_equal(md, self.md)
 
-    def test_split_data_stratified_by_host(self):
-        train_obs, test_obs = _split_data_stratified(self.data_rel, "host_id", 0.5, 123)
+    def test_split_data_grouped_by_host(self):
+        train_obs, test_obs = _split_data_grouped(self.data_rel, "host_id", 0.5, 123)
 
         train_exp = self.data_rel.iloc[[0, 2], :].copy()
         test_exp = self.data_rel.iloc[[1, 3], :].copy()
@@ -121,12 +117,18 @@ class TestDataHelpers(unittest.TestCase):
         data = pd.DataFrame(
             {"host_id": ["c", "c", "c", "c"], "supertarget": [1, 2, 1, 2]}
         )
-        stratify_by = "host_id"
+        group_by = "host_id"
         with self.assertRaisesRegex(
             ValueError,
-            f"Only one unique value of '{stratify_by}' available in dataset.",
+            f"Only one unique value of '{group_by}' available in dataset.",
         ):
-            _split_data_stratified(data, stratify_by, 0.5, 123)
+            _split_data_grouped(data, group_by, 0.5, 123)
+
+    def test_split_data_by_no_group(self):
+        train_obs, test_obs = _split_data_grouped(self.data_rel, None, 0.5, 123)
+
+        assert_frame_equal(train_obs, self.data_rel.iloc[[1, 2], :])
+        assert_frame_equal(test_obs, self.data_rel.iloc[[3, 0], :])
 
 
 class TestMainFunctions(unittest.TestCase):
@@ -155,10 +157,17 @@ class TestMainFunctions(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_split_train_test_relative(self):
-        train, test = split_train_test(self.md, self.ft_rel, "host_id", "F", 0.5, 123)
+        train, test = split_train_test(self.md, self.ft_rel, "host_id", 0.5, 123)
         train_exp = self.data_rel.iloc[[0, 2], :].copy()
         test_exp = self.data_rel.iloc[[1, 3], :].copy()
-
+        # add prefix "F" to expected
+        train_exp.columns = [
+            f"F{col}" if col not in self.md.columns else col
+            for col in train_exp.columns
+        ]
+        test_exp.columns = [
+            f"F{col}" if col not in self.md.columns else col for col in test_exp.columns
+        ]
         assert_frame_equal(train, train_exp)
         assert_frame_equal(test, test_exp)
 
@@ -167,7 +176,7 @@ class TestMainFunctions(unittest.TestCase):
         with self.assertWarnsRegex(
             Warning, r".*table contains absolute instead of relative abundances"
         ):
-            _, _ = split_train_test(self.md, ft_abx, "host_id", "F", 0.5, 123)
+            _, _ = split_train_test(self.md, ft_abx, "host_id", 0.5, 123)
 
     def test_cli_split_train_test_absolute(self):
         with patch("sys.stdout", new=StringIO()) as stdout:
@@ -177,7 +186,6 @@ class TestMainFunctions(unittest.TestCase):
                 self.tmp_md_path,
                 self.tmp_ft_rel_path,
                 "host_id",
-                "F",
                 0.5,
                 123,
             )

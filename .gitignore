@@ -160,7 +160,9 @@ archive
 *_err.txt
 *_out.txt
 experiments/ritme_refact_logs
+experiments/ritme_test_nn
 experiments/data_splits
+experiments/best_models
 
 # all but one json config file
 *.json
