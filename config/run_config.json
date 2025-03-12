@@ -15,6 +15,5 @@
   "seed_data": 12,
   "seed_model": 12,
   "target": "age_months",
-  "test_mode": true,
   "tracking_uri": "mlruns"
 }

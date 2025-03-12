@@ -192,7 +192,6 @@ def find_best_model_config(
         config["max_cuncurrent_trials"],
         model_types=config["ls_model_types"],
         fully_reproducible=False,
-        test_mode=config["test_mode"],
         model_hyperparameters=config.get("model_hyperparameters", {}),
     )
 

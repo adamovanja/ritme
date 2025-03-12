@@ -10,19 +10,7 @@ def _get_dependent_data_eng_space(trial, data_selection: str) -> None:
         trial.suggest_float("data_selection_t", 0.00001, 0.01, log=True)
 
 
-def get_data_eng_space(trial, tax, test_mode: bool = False) -> None:
-    if test_mode:
-        # note: test mode can be adjusted to whatever one wants to test
-        data_selection = trial.suggest_categorical(
-            "data_selection", ["abundance_ith", "variance_threshold"]
-        )
-        if data_selection is not None:
-            _get_dependent_data_eng_space(trial, data_selection)
-
-        trial.suggest_categorical("data_aggregation", [None])
-        trial.suggest_categorical("data_transform", [None])
-        return None
-
+def get_data_eng_space(trial, tax) -> None:
     # feature aggregation
     data_aggregation_options = (
         [None]
@@ -52,10 +40,8 @@ def get_data_eng_space(trial, tax, test_mode: bool = False) -> None:
     return None
 
 
-def get_linreg_space(
-    trial, tax, test_mode: bool = False, model_hyperparameters: dict = {}
-) -> Dict[str, str]:
-    get_data_eng_space(trial, tax, test_mode)
+def get_linreg_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, str]:
+    get_data_eng_space(trial, tax)
 
     # alpha controls overall regularization strength, alpha = 0 is equivalent to
     # an ordinary least square. large alpha -> more regularization
@@ -69,10 +55,8 @@ def get_linreg_space(
     return {"model": "linreg"}
 
 
-def get_rf_space(
-    trial, tax, test_mode: bool = False, model_hyperparameters: dict = {}
-) -> Dict[str, str]:
-    get_data_eng_space(trial, tax, test_mode)
+def get_rf_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, str]:
+    get_data_eng_space(trial, tax)
 
     # number of trees in forest: the more the higher computational costs
     n_estimators = model_hyperparameters.get(
@@ -160,10 +144,9 @@ def get_nn_space(
     trial,
     tax,
     model_name: str,
-    test_mode: bool = False,
     model_hyperparameters: dict = {},
 ) -> Dict[str, str]:
-    get_data_eng_space(trial, tax, test_mode)
+    get_data_eng_space(trial, tax)
 
     # define n_hidden_layers: sample uniformly between [min,max] rounding to
     # multiples of step
@@ -196,10 +179,8 @@ def get_nn_space(
     return {"model": model_name}
 
 
-def get_xgb_space(
-    trial, tax, test_mode: bool = False, model_hyperparameters: dict = {}
-) -> Dict[str, Any]:
-    get_data_eng_space(trial, tax, test_mode)
+def get_xgb_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, Any]:
+    get_data_eng_space(trial, tax)
 
     # max_depth: value between 2 and 6 is often a good starting point
     max_depth = model_hyperparameters.get("max_depth", {"min": 2, "max": 10})
@@ -236,9 +217,7 @@ def get_xgb_space(
     return {"model": "xgb"}
 
 
-def get_trac_space(
-    trial, tax, test_mode: bool = False, model_hyperparameters: dict = {}
-) -> Dict[str, Any]:
+def get_trac_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, Any]:
     # no feature_transformation to be used for trac
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
@@ -267,7 +246,6 @@ def get_search_space(
     trial,
     model_type: str,
     tax,
-    test_mode: bool = False,
     model_hyperparameters: Dict[str, Any] = {},
 ) -> Optional[Dict[str, Any]]:
     """Creates the search space"""
@@ -278,8 +256,8 @@ def get_search_space(
             "rf": get_rf_space,
             "trac": get_trac_space,
         }
-        return space_functions[model_type](trial, tax, test_mode, model_hyperparameters)
+        return space_functions[model_type](trial, tax, model_hyperparameters)
     elif model_type in ["nn_reg", "nn_class", "nn_corn"]:
-        return get_nn_space(trial, tax, model_type, test_mode, model_hyperparameters)
+        return get_nn_space(trial, tax, model_type, model_hyperparameters)
     else:
         raise ValueError(f"Model type {model_type} not supported.")
