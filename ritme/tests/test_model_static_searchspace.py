@@ -44,15 +44,6 @@ class TestStaticSearchSpace(unittest.TestCase):
         self.assertIn(hyperparam, trial.params)
         self.assertIsNotNone(trial.params[hyperparam])
 
-    def test_get_data_eng_space_test_mode(self):
-        trial = MockTrial()
-        ss.get_data_eng_space(trial, self.tax, test_mode=True)
-        expected_params = {"data_selection", "data_aggregation", "data_transform"}
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
-        self.assertIn(trial.params["data_selection"], [None, "abundance_ith"])
-        self.assertEqual(trial.params["data_aggregation"], None)
-        self.assertEqual(trial.params["data_transform"], None)
-
     def test_get_data_eng_space(self):
         trial = MockTrial()
         ss.get_data_eng_space(trial, self.tax)
@@ -203,7 +194,6 @@ class TestStaticSearchSpace(unittest.TestCase):
             trial,
             model_type,
             self.tax,
-            test_mode=False,
             model_hyperparameters=hyperparameters,
         )
 
@@ -213,7 +203,6 @@ class TestStaticSearchSpace(unittest.TestCase):
             trial,
             model_type,
             self.tax,
-            test_mode=False,
             model_hyperparameters=hyperparameters,
         )
 
@@ -297,7 +286,7 @@ class TestStaticSearchSpace(unittest.TestCase):
         trial = MockTrial()
 
         # Call the actual function without passing model_hyperparameters
-        _ = ss.get_search_space(trial, model_type, self.tax, test_mode=False)
+        _ = ss.get_search_space(trial, model_type, self.tax)
 
         # Verify that the trial parameters match the expected defaults
         self._verify_trial_params(trial, expected_defaults)

@@ -92,7 +92,6 @@ class TestHelpersTuneModels(unittest.TestCase):
 
         exp_name = "test_exp"
         tax = pd.DataFrame()
-        test_mode = False
         model_hyperparameters = {}
         seed_model = 42
         metric = "accuracy"
@@ -102,7 +101,6 @@ class TestHelpersTuneModels(unittest.TestCase):
             mock_func_to_get_search_space,
             exp_name,
             tax,
-            test_mode,
             model_hyperparameters,
             seed_model,
             metric,
@@ -117,7 +115,6 @@ class TestHelpersTuneModels(unittest.TestCase):
         mock_func_to_get_search_space.assert_called_once_with(
             model_type=exp_name,
             tax=tax,
-            test_mode=test_mode,
             model_hyperparameters=model_hyperparameters,
         )
 
@@ -231,7 +228,6 @@ class TestMainTuneModels(unittest.TestCase):
             tracking_uri=self.mlflow_uri,
             exp_name="test_experiment",
             trainable=trainable,
-            test_mode=False,
             train_val=self.train_val,
             target=self.target,
             host_id=self.host_id,
@@ -314,7 +310,6 @@ class TestMainTuneModels(unittest.TestCase):
             self.mlflow_uri,
             "rf",
             MODEL_TRAINABLES["rf"],
-            False,
             self.train_val,
             self.target,
             self.host_id,

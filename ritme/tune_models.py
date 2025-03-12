@@ -91,7 +91,6 @@ def _define_search_algo(
     func_to_get_search_space: Callable,
     exp_name: str,
     tax: pd.DataFrame,
-    test_mode: bool,
     model_hyperparameters: dict,
     seed_model: int,
     metric: str,
@@ -102,7 +101,6 @@ def _define_search_algo(
         func_to_get_search_space,
         model_type=exp_name,
         tax=tax,
-        test_mode=test_mode,
         model_hyperparameters=model_hyperparameters,
     )
 
@@ -167,7 +165,6 @@ def run_trials(
     tracking_uri: str,
     exp_name: str,
     trainable,
-    test_mode: bool,
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
@@ -235,7 +232,6 @@ def run_trials(
         ss.get_search_space,
         exp_name,
         tax,
-        test_mode,
         model_hyperparameters,
         seed_model,
         metric,
@@ -319,7 +315,6 @@ def run_all_trials(
         "trac",
     ],
     fully_reproducible: bool = False,
-    test_mode: bool = False,
     model_hyperparameters: dict = {},
 ) -> dict[str, ResultGrid]:
     results_all = {}
@@ -348,7 +343,6 @@ def run_all_trials(
             mlflow_uri,
             model,
             MODEL_TRAINABLES[model],
-            test_mode,
             train_val,
             target,
             host_id,

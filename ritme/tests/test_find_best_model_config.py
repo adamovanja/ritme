@@ -40,7 +40,6 @@ class TestFindBestModelConfig(unittest.TestCase):
             "num_trials": 10,
             "max_cuncurrent_trials": 2,
             "ls_model_types": ["model1", "model2"],
-            "test_mode": False,
             "model_hyperparameters": {},
         }
         # data
@@ -224,7 +223,6 @@ class TestFindBestModelConfig(unittest.TestCase):
                 self.config["max_cuncurrent_trials"],
                 model_types=self.config["ls_model_types"],
                 fully_reproducible=False,
-                test_mode=self.config["test_mode"],
                 model_hyperparameters={},
             )
 
