@@ -214,6 +214,37 @@ def get_xgb_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, Any
         step=num_parallel_tree["step"],
     )
 
+    # Additional regularization hyperparameters
+    # Minimum loss reduction required for a split: Larger values make the
+    # algorithm more conservative - less overfitting. 0 = no regularization
+    gamma = model_hyperparameters.get("gamma", {"min": 0.0, "max": 5.0, "step": 0.1})
+    trial.suggest_float("gamma", gamma["min"], gamma["max"], step=gamma["step"])
+
+    # L1 penalty term
+    reg_alpha = model_hyperparameters.get(
+        "reg_alpha", {"min": 0.0, "max": 1.0, "log": True}
+    )
+    trial.suggest_float(
+        "reg_alpha", reg_alpha["min"], reg_alpha["max"], log=reg_alpha["log"]
+    )
+
+    # L2 penalty term
+    reg_lambda = model_hyperparameters.get(
+        "reg_lambda", {"min": 0.0, "max": 1.0, "log": True}
+    )
+    trial.suggest_float(
+        "reg_lambda", reg_lambda["min"], reg_lambda["max"], log=reg_lambda["log"]
+    )
+
+    # randomly subsample Fraction of features to use in each tree. Lower values
+    # reduce overfitting by limiting feature usage.
+    colsample_bytree = model_hyperparameters.get(
+        "colsample_bytree", {"min": 0.3, "max": 1.0}
+    )
+    trial.suggest_float(
+        "colsample_bytree", colsample_bytree["min"], colsample_bytree["max"]
+    )
+
     return {"model": "xgb"}
 
 

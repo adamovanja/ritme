@@ -28,6 +28,7 @@ class TestStaticSearchSpace(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.tax = pd.DataFrame()
+        self.data_params_prefix = "data_"
 
     @parameterized.expand(
         [
@@ -55,24 +56,33 @@ class TestStaticSearchSpace(unittest.TestCase):
         linreg_space = ss.get_linreg_space(trial, self.tax)
         self.assertIsInstance(linreg_space, dict)
         self.assertEqual(linreg_space["model"], "linreg")
+
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
         expected_params = {"alpha", "l1_ratio"}
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        self.assertSetEqual(trial_model_params, expected_params)
 
     def test_get_rf_space(self):
         trial = MockTrial()
         rf_space = ss.get_rf_space(trial, self.tax)
         self.assertIsInstance(rf_space, dict)
         self.assertEqual(rf_space["model"], "rf")
+
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
         expected_params = {
             "n_estimators",
             "max_depth",
             "min_samples_split",
+            "min_weight_fraction_leaf",
             "min_samples_leaf",
             "max_features",
             "min_impurity_decrease",
             "bootstrap",
         }
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        self.assertSetEqual(trial_model_params, expected_params)
 
     @parameterized.expand(
         [
@@ -88,8 +98,16 @@ class TestStaticSearchSpace(unittest.TestCase):
         self.assertIsInstance(nn_space, dict)
         self.assertEqual(nn_space["model"], model_type)
 
-        expected_params = {"n_hidden_layers", "learning_rate", "batch_size", "epochs"}
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
+        expected_params = {
+            "n_hidden_layers",
+            "learning_rate",
+            "batch_size",
+            "epochs",
+        }.union({f"n_units_hl{i}" for i in range(5)})
+        self.assertSetEqual(trial_model_params, expected_params)
 
         self.assertTrue(any(f"n_units_hl{i}" in trial.params for i in range(30)))
 
@@ -98,14 +116,22 @@ class TestStaticSearchSpace(unittest.TestCase):
         xgb_space = ss.get_xgb_space(trial, self.tax)
         self.assertIsInstance(xgb_space, dict)
         self.assertEqual(xgb_space["model"], "xgb")
+
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
         expected_params = {
             "max_depth",
             "min_child_weight",
             "subsample",
             "eta",
             "num_parallel_tree",
+            "gamma",
+            "reg_alpha",
+            "reg_lambda",
+            "colsample_bytree",
         }
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        self.assertSetEqual(trial_model_params, expected_params)
 
     def test_get_trac_space(self):
         trial = MockTrial()
