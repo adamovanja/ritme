@@ -299,6 +299,12 @@ def train_rf(
     rf = RandomForestRegressor(
         n_estimators=config["n_estimators"],
         max_depth=config["max_depth"],
+        min_samples_split=config["min_samples_split"],
+        min_weight_fraction_leaf=config["min_weight_fraction_leaf"],
+        min_samples_leaf=config["min_samples_leaf"],
+        max_features=config["max_features"],
+        min_impurity_decrease=config["min_impurity_decrease"],
+        bootstrap=config["bootstrap"],
         # ray tune uses joblib for parallelization - so this makes sure all
         # available resources are used
         n_jobs=None,

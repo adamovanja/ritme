@@ -213,7 +213,16 @@ class TestTrainables(unittest.TestCase):
     @patch("ritme.model_space.static_trainables._report_results_manually")
     def test_train_rf(self, mock_report, mock_rf, mock_process_train):
         # Arrange
-        config = {"n_estimators": 100, "max_depth": 10}
+        config = {
+            "n_estimators": 100,
+            "max_depth": 10,
+            "min_samples_split": 0.2,
+            "min_weight_fraction_leaf": 0.001,
+            "min_samples_leaf": 0.1,
+            "max_features": "sqrt",
+            "min_impurity_decrease": 0.0,
+            "bootstrap": True,
+        }
 
         mock_process_train.return_value = (None, None, None, None, None)
         mock_rf_instance = mock_rf.return_value
@@ -236,6 +245,12 @@ class TestTrainables(unittest.TestCase):
         mock_rf.assert_called_once_with(
             n_estimators=config["n_estimators"],
             max_depth=config["max_depth"],
+            min_samples_split=config["min_samples_split"],
+            min_weight_fraction_leaf=config["min_weight_fraction_leaf"],
+            min_samples_leaf=config["min_samples_leaf"],
+            max_features=config["max_features"],
+            min_impurity_decrease=config["min_impurity_decrease"],
+            bootstrap=config["bootstrap"],
             n_jobs=None,
             random_state=0,
         )
