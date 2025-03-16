@@ -107,6 +107,10 @@ class TestConfigFiles(unittest.TestCase):
                     "batch_size": None,
                     "epochs": None,
                     "n_units_hl": None,
+                    "dropout_rate": ["min", "max", "step"],
+                    "weight_decay": ["min", "max", "log"],
+                    "early_stopping_patience": ["min", "max", "step"],
+                    "early_stopping_min_delta": ["min", "max", "log"],
                 },
             ),
             (

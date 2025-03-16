@@ -17,7 +17,7 @@ from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from lightning import LightningModule, Trainer, seed_everything
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from ray import train
 from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
@@ -317,18 +317,32 @@ def train_rf(
 
 
 class NeuralNet(LightningModule):
-    def __init__(self, n_units, learning_rate, nn_type="regression"):
+    def __init__(
+        self,
+        n_units,
+        learning_rate,
+        nn_type="regression",
+        dropout_rate=0.0,
+        weight_decay=0.0,
+    ):
         super(NeuralNet, self).__init__()
         self.save_hyperparameters()  # This saves all passed arguments to self.hparams
+        self.learning_rate = learning_rate
+        self.nn_type = nn_type
+        self.dropout_rate = dropout_rate
+        self.weight_decay = weight_decay
+
         self.layers = nn.ModuleList()
         n_layers = len(n_units)
         for i in range(n_layers - 1):
             self.layers.append(nn.Linear(n_units[i], n_units[i + 1]))
             if i != len(n_units) - 2:  # No activation after the last layer
                 self.layers.append(nn.ReLU())
-        self.learning_rate = learning_rate
-        self.nn_type = nn_type
+                if self.dropout_rate > 0:
+                    self.layers.append(nn.Dropout(self.dropout_rate))
+
         self.num_classes = n_units[-1]
+
         self.train_loss = 0
         self.val_loss = 0
         self.train_predictions = []
@@ -428,7 +442,9 @@ class NeuralNet(LightningModule):
         self.validation_targets.clear()
 
     def configure_optimizers(self):
-        optimizer = Adam(self.parameters(), lr=self.learning_rate)
+        optimizer = Adam(
+            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        )
         return optimizer
 
 
@@ -518,9 +534,15 @@ def train_nn(
         + output_layer
     )
     assert len(n_units) == n_layers + 2
+
     model = NeuralNet(
-        n_units=n_units, learning_rate=config["learning_rate"], nn_type=nn_type
+        n_units=n_units,
+        learning_rate=config["learning_rate"],
+        nn_type=nn_type,
+        dropout_rate=config["dropout_rate"],
+        weight_decay=config["weight_decay"],
     )
+
     _save_taxonomy(tax)
     # Callbacks
     checkpoint_dir = ray.train.get_context().get_trial_dir()
@@ -548,6 +570,12 @@ def train_nn(
             filename="checkpoint",
             on="validation_end",
             nb_features=X_train.shape[1],
+        ),
+        EarlyStopping(
+            monitor="val_loss",
+            min_delta=config["early_stopping_min_delta"],
+            patience=config["early_stopping_patience"],
+            mode="min",
         ),
     ]
 

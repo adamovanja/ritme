@@ -369,6 +369,10 @@ class TestTrainables(unittest.TestCase):
             "n_units_hl1": 5,
             "learning_rate": 0.01,
             "epochs": 5,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "early_stopping_patience": 3,
+            "early_stopping_min_delta": 0.0,
             "checkpoint_dir": "checkpoints",
         }
         train_val = MagicMock()
@@ -396,7 +400,11 @@ class TestTrainables(unittest.TestCase):
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(
-            n_units=nb_units, learning_rate=0.01, nn_type=nn_type
+            n_units=nb_units,
+            learning_rate=0.01,
+            nn_type=nn_type,
+            dropout_rate=0.0,
+            weight_decay=0.0,
         )
         mock_trainer_instance.fit.assert_called()
 
@@ -459,6 +467,10 @@ class TestTrainableLogging(unittest.TestCase):
             "n_hidden_layers": 1,
             "epochs": 2,
             "learning_rate": 0.01,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "early_stopping_patience": 3,
+            "early_stopping_min_delta": 0.0,
         }
         for i in range(search_space["n_hidden_layers"]):
             search_space[f"n_units_hl{i}"] = 2

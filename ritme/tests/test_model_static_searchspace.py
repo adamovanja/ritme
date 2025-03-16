@@ -106,6 +106,10 @@ class TestStaticSearchSpace(unittest.TestCase):
             "learning_rate",
             "batch_size",
             "epochs",
+            "dropout_rate",
+            "weight_decay",
+            "early_stopping_patience",
+            "early_stopping_min_delta",
         }.union({f"n_units_hl{i}" for i in range(5)})
         self.assertSetEqual(trial_model_params, expected_params)
 
@@ -197,6 +201,9 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "subsample": {"min": 0.8, "max": 1.0},
                     "eta": {"min": 0.05, "max": 0.2, "log": True},
                     "num_parallel_tree": {"min": 2, "max": 4, "step": 1},
+                    "gamma": {"min": 0.1, "max": 3.0, "step": 0.1},
+                    "reg_alpha": {"min": 0.1, "max": 0.5, "log": True},
+                    "reg_lambda": {"min": 0.1, "max": 0.5, "log": True},
                 },
             ),
             (
@@ -207,6 +214,14 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "batch_size": [64, 128],
                     "epochs": [50, 100],
                     "n_units_hl": [64, 128, 256],
+                    "dropout_rate": {"min": 0.1, "max": 0.3},
+                    "weight_decay": {"min": 0.0001, "max": 0.001, "log": True},
+                    "early_stopping_patience": {"min": 5, "max": 20, "step": 5},
+                    "early_stopping_min_delta": {
+                        "min": 0.001,
+                        "max": 0.01,
+                        "log": True,
+                    },
                 },
             ),
         ]
@@ -285,6 +300,10 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "subsample": {"min": 0.7, "max": 1.0},
                     "eta": {"min": 0.01, "max": 0.3, "log": True},
                     "num_parallel_tree": {"min": 1, "max": 3, "step": 1},
+                    "gamma": {"min": 0.0, "max": 0.5, "step": 0.1},
+                    "reg_alpha": {"min": 1e-10, "max": 1.0, "log": True},
+                    "reg_lambda": {"min": 1e-10, "max": 1.0, "log": True},
+                    "colsample_bytree": {"min": 0.3, "max": 1.0},
                 },
             ),
             (
@@ -303,6 +322,10 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "batch_size": [32, 64, 128, 256],
                     "epochs": [10, 50, 100, 200],
                     "n_units_hl": [32, 64, 128, 256, 512],
+                    "dropout_rate": {"min": 0.0, "max": 0.5, "step": 0.05},
+                    "weight_decay": {"min": 1e-6, "max": 1e-2, "log": True},
+                    "early_stopping_patience": {"min": 2, "max": 10, "step": 1},
+                    "early_stopping_min_delta": {"min": 1e-5, "max": 1e-2, "log": True},
                 },
             ),
         ]
