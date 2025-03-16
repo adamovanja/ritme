@@ -193,6 +193,9 @@ def find_best_model_config(
         model_types=config["ls_model_types"],
         fully_reproducible=False,
         model_hyperparameters=config.get("model_hyperparameters", {}),
+        optuna_searchspace_sampler=config.get(
+            "optuna_searchspace_sampler", "TPESampler"
+        ),
     )
 
     # ! Get best models of this experiment

@@ -35,6 +35,8 @@ class TestConfigFiles(unittest.TestCase):
     @parameterized.expand(
         [
             "run_config.json",
+            "r_local_linreg.json",
+            "r_local_linreg_py.json",
             "run_config_whparams.json",
         ]
     )

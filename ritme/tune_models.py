@@ -9,6 +9,13 @@ import pandas as pd
 import ray
 import skbio
 import torch
+from optuna.samplers import (
+    CmaEsSampler,
+    GPSampler,
+    QMCSampler,
+    RandomSampler,
+    TPESampler,
+)
 from ray import air, init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
@@ -36,6 +43,16 @@ MODEL_TRAINABLES = {
 
 DEFAULT_SCHEDULER_GRACE_PERIOD = 10
 DEFAULT_SCHEDULER_MAX_T = 100
+
+# overview of all optuna samplers is available here:
+# https://optuna.readthedocs.io/en/stable/reference/samplers/index.html
+OPTUNA_SAMPLER_CLASSES = {
+    "RandomSampler": RandomSampler,
+    "TPESampler": TPESampler,
+    "CmaEsSampler": CmaEsSampler,
+    "GPSampler": GPSampler,
+    "QMCSampler": QMCSampler,
+}
 
 
 def _get_slurm_resource(resource_name: str, default_value: int = 0) -> int:
@@ -92,6 +109,7 @@ def _define_search_algo(
     exp_name: str,
     tax: pd.DataFrame,
     model_hyperparameters: dict,
+    optuna_searchspace_sampler: str,
     seed_model: int,
     metric: str,
     mode: str,
@@ -104,8 +122,20 @@ def _define_search_algo(
         model_hyperparameters=model_hyperparameters,
     )
 
+    # Define sampler to be used with OptunaSearch
+    if optuna_searchspace_sampler not in OPTUNA_SAMPLER_CLASSES.keys():
+        raise ValueError(
+            f"Unrecognized sampler '{optuna_searchspace_sampler}'. "
+            f"Available options are: {list(OPTUNA_SAMPLER_CLASSES.keys())}"
+        )
+    sampler_class = OPTUNA_SAMPLER_CLASSES[optuna_searchspace_sampler]
+
     return OptunaSearch(
-        space=define_search_space, seed=seed_model, metric=metric, mode=mode
+        space=define_search_space,
+        sampler=sampler_class(seed=seed_model),
+        seed=seed_model,
+        metric=metric,
+        mode=mode,
     )
 
 
@@ -177,6 +207,7 @@ def run_trials(
     max_concurrent_trials: int,
     fully_reproducible: bool = False,
     model_hyperparameters: dict = None,
+    optuna_searchspace_sampler: str = "TPESampler",
     scheduler_grace_period: int = DEFAULT_SCHEDULER_GRACE_PERIOD,
     scheduler_max_t: int = DEFAULT_SCHEDULER_MAX_T,
     resources: dict = None,
@@ -233,6 +264,7 @@ def run_trials(
         exp_name,
         tax,
         model_hyperparameters,
+        optuna_searchspace_sampler,
         seed_model,
         metric,
         mode,
@@ -316,6 +348,7 @@ def run_all_trials(
     ],
     fully_reproducible: bool = False,
     model_hyperparameters: dict = {},
+    optuna_searchspace_sampler: str = "TPESampler",
 ) -> dict[str, ResultGrid]:
     results_all = {}
 
@@ -355,6 +388,7 @@ def run_all_trials(
             max_concurrent_trials,
             fully_reproducible=fully_reproducible,
             model_hyperparameters=model_hparams_type,
+            optuna_searchspace_sampler=optuna_searchspace_sampler,
         )
         results_all[model] = result
     return results_all

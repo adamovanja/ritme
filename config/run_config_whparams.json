@@ -175,6 +175,7 @@
     }
   },
   "num_trials": 2,
+  "optuna_searchspace_sampler": "TPESampler",
   "seed_data": 12,
   "seed_model": 12,
   "target": "age_months",
