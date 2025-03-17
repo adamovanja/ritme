@@ -276,7 +276,14 @@ class TestTrainables(unittest.TestCase):
         # Arrange
         config = {
             "max_depth": 6,
+            "min_child_weight": 3,
+            "subsample": 0.9,
             "eta": 0.3,
+            "num_parallel_tree": 2,
+            "gamma": 0.1,
+            "reg_alpha": 0.1,
+            "reg_lambda": 0.1,
+            "colsample_bytree": 0.9,
             "objective": "multi:softprob",
             "num_class": 3,
         }

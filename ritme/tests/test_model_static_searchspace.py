@@ -204,6 +204,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "gamma": {"min": 0.1, "max": 3.0, "step": 0.1},
                     "reg_alpha": {"min": 0.1, "max": 0.5, "log": True},
                     "reg_lambda": {"min": 0.1, "max": 0.5, "log": True},
+                    "colsample_bytree": {"min": 0.7, "max": 0.8},
                 },
             ),
             (
