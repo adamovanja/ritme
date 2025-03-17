@@ -171,10 +171,56 @@ def get_nn_space(
     epochs = model_hyperparameters.get("epochs", [10, 50, 100, 200])
     trial.suggest_categorical("epochs", epochs)
 
-    # first and last layer are fixed by shape of features and target
+    # hidden-layer sizes: first and last layer are fixed by shape of features
+    # and target
     n_units_hl = model_hyperparameters.get("n_units_hl", [32, 64, 128, 256, 512])
     for i in range(n_hidden_layers):
         trial.suggest_categorical(f"n_units_hl{i}", n_units_hl)
+
+    # regularisation options:
+    # dropout
+    dropout_range = model_hyperparameters.get(
+        "dropout_rate", {"min": 0.0, "max": 0.5, "step": 0.05}
+    )
+    trial.suggest_float(
+        "dropout_rate",
+        dropout_range["min"],
+        dropout_range["max"],
+        step=dropout_range["step"],
+    )
+
+    # weight decay
+    wd_range = model_hyperparameters.get(
+        "weight_decay", {"min": 1e-6, "max": 1e-2, "log": True}
+    )
+    trial.suggest_float(
+        "weight_decay",
+        wd_range["min"],
+        wd_range["max"],
+        log=wd_range["log"],
+    )
+
+    # early stopping patience range: number of epochs with no improvement
+    es_range = model_hyperparameters.get(
+        "early_stopping_patience", {"min": 2, "max": 10, "step": 1}
+    )
+    trial.suggest_int(
+        "early_stopping_patience",
+        es_range["min"],
+        es_range["max"],
+        step=es_range["step"],
+    )
+
+    # early stopping min_delta range
+    es_delta_range = model_hyperparameters.get(
+        "early_stopping_min_delta", {"min": 1e-5, "max": 1e-2, "log": True}
+    )
+    trial.suggest_float(
+        "early_stopping_min_delta",
+        es_delta_range["min"],
+        es_delta_range["max"],
+        log=es_delta_range["log"],
+    )
 
     return {"model": model_name}
 
@@ -212,6 +258,37 @@ def get_xgb_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, Any
         num_parallel_tree["min"],
         num_parallel_tree["max"],
         step=num_parallel_tree["step"],
+    )
+
+    # Additional regularization hyperparameters
+    # Minimum loss reduction required for a split: Larger values make the
+    # algorithm more conservative - less overfitting. 0 = no regularization
+    gamma = model_hyperparameters.get("gamma", {"min": 0.0, "max": 5.0, "step": 0.1})
+    trial.suggest_float("gamma", gamma["min"], gamma["max"], step=gamma["step"])
+
+    # L1 penalty term
+    reg_alpha = model_hyperparameters.get(
+        "reg_alpha", {"min": 1e-10, "max": 1.0, "log": True}
+    )
+    trial.suggest_float(
+        "reg_alpha", reg_alpha["min"], reg_alpha["max"], log=reg_alpha["log"]
+    )
+
+    # L2 penalty term
+    reg_lambda = model_hyperparameters.get(
+        "reg_lambda", {"min": 1e-10, "max": 1.0, "log": True}
+    )
+    trial.suggest_float(
+        "reg_lambda", reg_lambda["min"], reg_lambda["max"], log=reg_lambda["log"]
+    )
+
+    # randomly subsample Fraction of features to use in each tree. Lower values
+    # reduce overfitting by limiting feature usage.
+    colsample_bytree = model_hyperparameters.get(
+        "colsample_bytree", {"min": 0.3, "max": 1.0}
+    )
+    trial.suggest_float(
+        "colsample_bytree", colsample_bytree["min"], colsample_bytree["max"]
     )
 
     return {"model": "xgb"}

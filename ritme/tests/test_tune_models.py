@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pandas as pd
 import skbio
+from parameterized import parameterized
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import ResultGrid
@@ -15,6 +16,7 @@ from ray.tune.search.optuna import OptunaSearch
 
 from ritme.tune_models import (
     MODEL_TRAINABLES,
+    OPTUNA_SAMPLER_CLASSES,
     _check_for_errors_in_trials,
     _define_callbacks,
     _define_scheduler,
@@ -87,7 +89,16 @@ class TestHelpersTuneModels(unittest.TestCase):
         self.assertIsInstance(scheduler, HyperBandScheduler)
         self.assertEqual(scheduler._max_t_attr, scheduler_max_t)
 
-    def test_define_search_algo(self):
+    @parameterized.expand(
+        [
+            "RandomSampler",
+            "TPESampler",
+            "CmaEsSampler",
+            "GPSampler",
+            "QMCSampler",
+        ]
+    )
+    def test_define_search_algo(self, sampler):
         mock_func_to_get_search_space = Mock()
 
         exp_name = "test_exp"
@@ -102,6 +113,7 @@ class TestHelpersTuneModels(unittest.TestCase):
             exp_name,
             tax,
             model_hyperparameters,
+            sampler,
             seed_model,
             metric,
             mode,
@@ -121,6 +133,25 @@ class TestHelpersTuneModels(unittest.TestCase):
         self.assertEqual(search_algo._seed, seed_model)
         self.assertEqual(search_algo._metric, metric)
         self.assertEqual(search_algo._mode, mode)
+        self.assertTrue(
+            isinstance(search_algo._sampler, OPTUNA_SAMPLER_CLASSES[sampler])
+        )
+
+    def test_define_search_algo_invalid_sampler(self):
+        invalid_sampler = "InvalidSampler"
+        with self.assertRaisesRegex(
+            ValueError, f"Unrecognized sampler '{invalid_sampler}'."
+        ):
+            _define_search_algo(
+                Mock(),
+                "test_exp",
+                pd.DataFrame(),
+                {},
+                invalid_sampler,
+                42,
+                "accuracy",
+                "max",
+            )
 
     @patch.dict(os.environ, {"WANDB_API_KEY": "test_api_key"})
     def test_load_wandb_api_key(self):
@@ -322,6 +353,7 @@ class TestMainTuneModels(unittest.TestCase):
             self.max_concurrent_trials,
             fully_reproducible=False,
             model_hyperparameters={},
+            optuna_searchspace_sampler="TPESampler",
         )
 
 

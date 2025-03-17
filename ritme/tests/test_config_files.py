@@ -35,6 +35,8 @@ class TestConfigFiles(unittest.TestCase):
     @parameterized.expand(
         [
             "run_config.json",
+            "r_local_linreg.json",
+            "r_local_linreg_py.json",
             "run_config_whparams.json",
         ]
     )
@@ -107,6 +109,10 @@ class TestConfigFiles(unittest.TestCase):
                     "batch_size": None,
                     "epochs": None,
                     "n_units_hl": None,
+                    "dropout_rate": ["min", "max", "step"],
+                    "weight_decay": ["min", "max", "log"],
+                    "early_stopping_patience": ["min", "max", "step"],
+                    "early_stopping_min_delta": ["min", "max", "log"],
                 },
             ),
             (
@@ -117,6 +123,10 @@ class TestConfigFiles(unittest.TestCase):
                     "subsample": ["min", "max"],
                     "eta": ["min", "max"],
                     "num_parallel_tree": ["min", "max", "step"],
+                    "gamma": ["min", "max", "step"],
+                    "reg_alpha": ["min", "max", "log"],
+                    "reg_lambda": ["min", "max", "log"],
+                    "colsample_bytree": ["min", "max"],
                 },
             ),
             (
@@ -130,8 +140,16 @@ class TestConfigFiles(unittest.TestCase):
         with open(config_path) as f:
             run_config = json.load(f)
 
+        # Check if all keys in hparams are present in run_config
         for k, v in hparams.items():
             self.assertIn(k, run_config["model_hyperparameters"][model])
             if v is not None:
                 for vi in v:
                     self.assertIn(vi, run_config["model_hyperparameters"][model][k])
+
+        # Check if all keys in run_config are present in hparams
+        for k_config, v_config in run_config["model_hyperparameters"][model].items():
+            self.assertIn(k_config, hparams)
+            if hparams[k_config] is not None:
+                for vi_config in hparams[k_config]:
+                    self.assertIn(vi_config, v_config)

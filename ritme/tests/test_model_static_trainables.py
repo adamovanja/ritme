@@ -213,7 +213,16 @@ class TestTrainables(unittest.TestCase):
     @patch("ritme.model_space.static_trainables._report_results_manually")
     def test_train_rf(self, mock_report, mock_rf, mock_process_train):
         # Arrange
-        config = {"n_estimators": 100, "max_depth": 10}
+        config = {
+            "n_estimators": 100,
+            "max_depth": 10,
+            "min_samples_split": 0.2,
+            "min_weight_fraction_leaf": 0.001,
+            "min_samples_leaf": 0.1,
+            "max_features": "sqrt",
+            "min_impurity_decrease": 0.0,
+            "bootstrap": True,
+        }
 
         mock_process_train.return_value = (None, None, None, None, None)
         mock_rf_instance = mock_rf.return_value
@@ -236,6 +245,12 @@ class TestTrainables(unittest.TestCase):
         mock_rf.assert_called_once_with(
             n_estimators=config["n_estimators"],
             max_depth=config["max_depth"],
+            min_samples_split=config["min_samples_split"],
+            min_weight_fraction_leaf=config["min_weight_fraction_leaf"],
+            min_samples_leaf=config["min_samples_leaf"],
+            max_features=config["max_features"],
+            min_impurity_decrease=config["min_impurity_decrease"],
+            bootstrap=config["bootstrap"],
             n_jobs=None,
             random_state=0,
         )
@@ -261,7 +276,14 @@ class TestTrainables(unittest.TestCase):
         # Arrange
         config = {
             "max_depth": 6,
+            "min_child_weight": 3,
+            "subsample": 0.9,
             "eta": 0.3,
+            "num_parallel_tree": 2,
+            "gamma": 0.1,
+            "reg_alpha": 0.1,
+            "reg_lambda": 0.1,
+            "colsample_bytree": 0.9,
             "objective": "multi:softprob",
             "num_class": 3,
         }
@@ -354,6 +376,10 @@ class TestTrainables(unittest.TestCase):
             "n_units_hl1": 5,
             "learning_rate": 0.01,
             "epochs": 5,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "early_stopping_patience": 3,
+            "early_stopping_min_delta": 0.0,
             "checkpoint_dir": "checkpoints",
         }
         train_val = MagicMock()
@@ -381,7 +407,11 @@ class TestTrainables(unittest.TestCase):
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(
-            n_units=nb_units, learning_rate=0.01, nn_type=nn_type
+            n_units=nb_units,
+            learning_rate=0.01,
+            nn_type=nn_type,
+            dropout_rate=0.0,
+            weight_decay=0.0,
         )
         mock_trainer_instance.fit.assert_called()
 
@@ -444,6 +474,10 @@ class TestTrainableLogging(unittest.TestCase):
             "n_hidden_layers": 1,
             "epochs": 2,
             "learning_rate": 0.01,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "early_stopping_patience": 3,
+            "early_stopping_min_delta": 0.0,
         }
         for i in range(search_space["n_hidden_layers"]):
             search_space[f"n_units_hl{i}"] = 2

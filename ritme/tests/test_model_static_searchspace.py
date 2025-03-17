@@ -28,6 +28,7 @@ class TestStaticSearchSpace(unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.tax = pd.DataFrame()
+        self.data_params_prefix = "data_"
 
     @parameterized.expand(
         [
@@ -55,24 +56,33 @@ class TestStaticSearchSpace(unittest.TestCase):
         linreg_space = ss.get_linreg_space(trial, self.tax)
         self.assertIsInstance(linreg_space, dict)
         self.assertEqual(linreg_space["model"], "linreg")
+
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
         expected_params = {"alpha", "l1_ratio"}
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        self.assertSetEqual(trial_model_params, expected_params)
 
     def test_get_rf_space(self):
         trial = MockTrial()
         rf_space = ss.get_rf_space(trial, self.tax)
         self.assertIsInstance(rf_space, dict)
         self.assertEqual(rf_space["model"], "rf")
+
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
         expected_params = {
             "n_estimators",
             "max_depth",
             "min_samples_split",
+            "min_weight_fraction_leaf",
             "min_samples_leaf",
             "max_features",
             "min_impurity_decrease",
             "bootstrap",
         }
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        self.assertSetEqual(trial_model_params, expected_params)
 
     @parameterized.expand(
         [
@@ -88,8 +98,20 @@ class TestStaticSearchSpace(unittest.TestCase):
         self.assertIsInstance(nn_space, dict)
         self.assertEqual(nn_space["model"], model_type)
 
-        expected_params = {"n_hidden_layers", "learning_rate", "batch_size", "epochs"}
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
+        expected_params = {
+            "n_hidden_layers",
+            "learning_rate",
+            "batch_size",
+            "epochs",
+            "dropout_rate",
+            "weight_decay",
+            "early_stopping_patience",
+            "early_stopping_min_delta",
+        }.union({f"n_units_hl{i}" for i in range(5)})
+        self.assertSetEqual(trial_model_params, expected_params)
 
         self.assertTrue(any(f"n_units_hl{i}" in trial.params for i in range(30)))
 
@@ -98,14 +120,22 @@ class TestStaticSearchSpace(unittest.TestCase):
         xgb_space = ss.get_xgb_space(trial, self.tax)
         self.assertIsInstance(xgb_space, dict)
         self.assertEqual(xgb_space["model"], "xgb")
+
+        trial_model_params = {
+            k for k in trial.params.keys() if not k.startswith(self.data_params_prefix)
+        }
         expected_params = {
             "max_depth",
             "min_child_weight",
             "subsample",
             "eta",
             "num_parallel_tree",
+            "gamma",
+            "reg_alpha",
+            "reg_lambda",
+            "colsample_bytree",
         }
-        self.assertTrue(expected_params.issubset(trial.params.keys()))
+        self.assertSetEqual(trial_model_params, expected_params)
 
     def test_get_trac_space(self):
         trial = MockTrial()
@@ -171,6 +201,10 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "subsample": {"min": 0.8, "max": 1.0},
                     "eta": {"min": 0.05, "max": 0.2, "log": True},
                     "num_parallel_tree": {"min": 2, "max": 4, "step": 1},
+                    "gamma": {"min": 0.1, "max": 3.0, "step": 0.1},
+                    "reg_alpha": {"min": 0.1, "max": 0.5, "log": True},
+                    "reg_lambda": {"min": 0.1, "max": 0.5, "log": True},
+                    "colsample_bytree": {"min": 0.7, "max": 0.8},
                 },
             ),
             (
@@ -181,6 +215,14 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "batch_size": [64, 128],
                     "epochs": [50, 100],
                     "n_units_hl": [64, 128, 256],
+                    "dropout_rate": {"min": 0.1, "max": 0.3},
+                    "weight_decay": {"min": 0.0001, "max": 0.001, "log": True},
+                    "early_stopping_patience": {"min": 5, "max": 20, "step": 5},
+                    "early_stopping_min_delta": {
+                        "min": 0.001,
+                        "max": 0.01,
+                        "log": True,
+                    },
                 },
             ),
         ]
@@ -259,6 +301,10 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "subsample": {"min": 0.7, "max": 1.0},
                     "eta": {"min": 0.01, "max": 0.3, "log": True},
                     "num_parallel_tree": {"min": 1, "max": 3, "step": 1},
+                    "gamma": {"min": 0.0, "max": 0.5, "step": 0.1},
+                    "reg_alpha": {"min": 1e-10, "max": 1.0, "log": True},
+                    "reg_lambda": {"min": 1e-10, "max": 1.0, "log": True},
+                    "colsample_bytree": {"min": 0.3, "max": 1.0},
                 },
             ),
             (
@@ -277,6 +323,10 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "batch_size": [32, 64, 128, 256],
                     "epochs": [10, 50, 100, 200],
                     "n_units_hl": [32, 64, 128, 256, 512],
+                    "dropout_rate": {"min": 0.0, "max": 0.5, "step": 0.05},
+                    "weight_decay": {"min": 1e-6, "max": 1e-2, "log": True},
+                    "early_stopping_patience": {"min": 2, "max": 10, "step": 1},
+                    "early_stopping_min_delta": {"min": 1e-5, "max": 1e-2, "log": True},
                 },
             ),
         ]

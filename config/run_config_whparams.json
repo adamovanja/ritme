@@ -29,6 +29,21 @@
         128,
         256
       ],
+      "dropout_rate": {
+        "max": 0.5,
+        "min": 0.0,
+        "step": 0.05
+      },
+      "early_stopping_min_delta": {
+        "log": true,
+        "max": 0.01,
+        "min": 1e-05
+      },
+      "early_stopping_patience": {
+        "max": 10,
+        "min": 2,
+        "step": 1
+      },
       "epochs": [
         10,
         50,
@@ -55,7 +70,12 @@
         128,
         256,
         512
-      ]
+      ],
+      "weight_decay": {
+        "log": true,
+        "max": 0.01,
+        "min": 1e-06
+      }
     },
     "rf": {
       "bootstrap": [
@@ -112,9 +132,18 @@
       }
     },
     "xgb": {
+      "colsample_bytree": {
+        "max": 1.0,
+        "min": 0.3
+      },
       "eta": {
         "max": 0.3,
         "min": 0.01
+      },
+      "gamma": {
+        "max": 5.0,
+        "min": 0.0,
+        "step": 0.1
       },
       "max_depth": {
         "max": 10,
@@ -129,6 +158,16 @@
         "min": 1,
         "step": 1
       },
+      "reg_alpha": {
+        "log": true,
+        "max": 1.0,
+        "min": 1e-10
+      },
+      "reg_lambda": {
+        "log": true,
+        "max": 1.0,
+        "min": 1e-10
+      },
       "subsample": {
         "max": 1.0,
         "min": 0.7
@@ -136,6 +175,7 @@
     }
   },
   "num_trials": 2,
+  "optuna_searchspace_sampler": "TPESampler",
   "seed_data": 12,
   "seed_model": 12,
   "target": "age_months",

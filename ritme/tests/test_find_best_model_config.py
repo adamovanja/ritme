@@ -224,6 +224,7 @@ class TestFindBestModelConfig(unittest.TestCase):
                 model_types=self.config["ls_model_types"],
                 fully_reproducible=False,
                 model_hyperparameters={},
+                optuna_searchspace_sampler="TPESampler",
             )
 
             mock_retrieve_n_init_best_models.assert_called_once_with(
