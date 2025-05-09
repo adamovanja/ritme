@@ -113,14 +113,20 @@ class TestTrainables(unittest.TestCase):
         self.tax = pd.DataFrame([])
 
     @patch("ritme.model_space.static_trainables.process_train")
+    @patch("ritme.model_space.static_trainables.StandardScaler.fit_transform")
     @patch("ritme.model_space.static_trainables.ElasticNet")
     @patch("ritme.model_space.static_trainables._report_results_manually")
-    def test_train_linreg(self, mock_report, mock_linreg, mock_process_train):
+    def test_train_linreg(
+        self,
+        mock_report,
+        mock_elasticnet,
+        mock_scaler_trf,
+        mock_process_train,
+    ):
         # define input parameters
-        config = {"fit_intercept": True, "alpha": 0.1, "l1_ratio": 0.5}
+        config = {"alpha": 0.1, "l1_ratio": 0.5}
 
         mock_process_train.return_value = (None, None, None, None, None)
-        mock_linreg_instance = mock_linreg.return_value
 
         # run model
         st.train_linreg(
@@ -137,12 +143,15 @@ class TestTrainables(unittest.TestCase):
         mock_process_train.assert_called_once_with(
             config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
         )
-        mock_linreg.assert_called_once_with(
+        mock_scaler_trf.assert_called_once()
+        mock_elasticnet.assert_called_once_with(
             alpha=config["alpha"],
             l1_ratio=config["l1_ratio"],
-            fit_intercept=config["fit_intercept"],
+            fit_intercept=True,
         )
-        mock_linreg_instance.fit.assert_called_once()
+        # Ensure fit() was called on the ElasticNet instance
+        mock_elastic_instance = mock_elasticnet.return_value
+        mock_elastic_instance.fit.assert_called_once()
         mock_report.assert_called_once()
 
     @patch("ritme.model_space.static_trainables.process_train")

@@ -26,6 +26,8 @@ from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import ElasticNet
 from sklearn.metrics import r2_score, root_mean_squared_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
@@ -149,10 +151,18 @@ def train_linreg(
 
     # ! model
     np.random.seed(seed_model)
-    linreg = ElasticNet(
-        alpha=config["alpha"],
-        l1_ratio=config["l1_ratio"],
-        fit_intercept=True,
+    linreg = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "linreg",
+                ElasticNet(
+                    alpha=config["alpha"],
+                    l1_ratio=config["l1_ratio"],
+                    fit_intercept=True,
+                ),
+            ),
+        ]
     )
     linreg.fit(X_train, y_train)
 
