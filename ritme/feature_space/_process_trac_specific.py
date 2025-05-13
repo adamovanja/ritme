@@ -76,7 +76,12 @@ def _create_matrix_for_internal_nodes(num_leaves, internal_nodes, leaf_index_map
             node_leaf_names, tax, a2_node_names, j
         )
         a2_node_names.append(node_consensus_taxon)
-    return A2, a2_node_names
+
+    # remove collinear (duplicated) columns and keep name of the first duplicate
+    A2_df = pd.DataFrame(A2, columns=a2_node_names)
+    A2_df_uni = A2_df.loc[:, ~A2_df.T.duplicated(keep="first")]
+
+    return A2_df_uni.values, A2_df_uni.columns.tolist()
 
 
 def create_matrix_from_tree(tree, tax) -> pd.DataFrame:

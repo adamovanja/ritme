@@ -657,6 +657,30 @@ class TestProcessTracSpecific(unittest.TestCase):
 
         return tree
 
+    def _build_collinear_example_tree(self):
+        # Create the tree nodes with lengths
+        n1 = TreeNode(name="node1")
+        f1 = TreeNode(name="F1", length=1.0)
+        f2 = TreeNode(name="F2", length=1.0)
+        n2 = TreeNode(name="node2")
+        f3 = TreeNode(name="F3", length=1.0)
+        n3 = TreeNode(name="node3")
+        n4 = TreeNode(name="node4")
+
+        # Build the tree structure with lengths
+        n1.extend([f1, f2])
+        n2.extend([f3])
+        n3.extend([n2])
+        n4.extend([n1, n3])
+        n1.length = 1.0
+        n2.length = 1.0
+        n3.length = 1.0
+        n4.length = 1.0
+
+        tree = n4
+
+        return tree
+
     def test_get_leaves_and_index_map(self):
         leaves, leaf_index_map = _get_leaves_and_index_map(self.tree)
         self.assertEqual(len(leaves), 3)
@@ -694,6 +718,25 @@ class TestProcessTracSpecific(unittest.TestCase):
             [
                 "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
                 "f__SBR1031; g__SBR1031"
+            ],
+        )
+
+    def test_create_matrix_for_internal_nodes_collinear_cols(self):
+        """Tests that collinear columns are collapsed"""
+        tree_collinear = self._build_collinear_example_tree()
+        leaves, leaf_index_map = _get_leaves_and_index_map(tree_collinear)
+        internal_nodes = _get_internal_nodes(tree_collinear)
+
+        A2, a2_node_names = _create_matrix_for_internal_nodes(
+            3, internal_nodes, leaf_index_map, self.tax
+        )
+        np.testing.assert_array_equal(A2, np.array([[1, 0], [1, 0], [0, 1]]))
+        self.assertEqual(
+            a2_node_names,
+            [
+                "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031; "
+                "f__SBR1031; g__SBR1031",
+                "d__Bacteria; p__Chloroflexi; c__Anaerolineae; o__SBR1031",
             ],
         )
 
