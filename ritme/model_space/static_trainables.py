@@ -186,7 +186,7 @@ def _bundle_trac_model(alpha, A_df):
 def _report_results_manually_trac(
     model, log_geom_train, y_train, log_geom_val, y_val, tax
 ):
-    # save model
+    # save model in a compressed way
     path_to_save = ray.train.get_context().get_trial_dir()
     model_path = os.path.join(path_to_save, "model.pkl")
     with open(model_path, "wb") as file:
@@ -244,6 +244,7 @@ def train_trac(
         config, train_val, target, host_id, tax, seed_data
     )
     # ! derive matrix A
+    # todo: adjust A_df here already
     a_df = create_matrix_from_tree(tree_phylo, tax)
 
     # ! get log_geom

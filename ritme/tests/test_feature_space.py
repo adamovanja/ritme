@@ -712,6 +712,7 @@ class TestProcessTracSpecific(unittest.TestCase):
             columns=leaf_names + node_taxon_names,
             index=ft_names,
         )
+        ma_exp = ma_exp.astype(pd.SparseDtype("float", 0))
         ma_act = create_matrix_from_tree(self.tree, self.tax)
 
         assert_frame_equal(ma_exp, ma_act)
