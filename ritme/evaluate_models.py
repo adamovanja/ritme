@@ -44,7 +44,7 @@ def load_sklearn_model(result: Result) -> Any:
     return load(result.metrics["model_path"])
 
 
-def load_trac_model(result: Result) -> Any:
+def load_trac_model(result: Result) -> dict:
     """
     Load a TRAC model from a given result object.
     """

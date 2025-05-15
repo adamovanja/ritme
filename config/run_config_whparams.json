@@ -14,12 +14,14 @@
   "model_hyperparameters": {
     "linreg": {
       "alpha": {
-        "max": 1,
-        "min": 0
+        "log": true,
+        "max": 100,
+        "min": 1e-05
       },
       "l1_ratio": {
         "max": 1,
-        "min": 0
+        "min": 0,
+        "step": 0.1
       }
     },
     "nn_all_types": {
