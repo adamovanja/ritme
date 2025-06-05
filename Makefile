@@ -23,7 +23,7 @@ install: install-pip
 	$(PYTHON) -m pip install . --no-deps -vv
 
 create-env: install-req
-	mamba create -y -n ritme -c qiime2 -c conda-forge -c bioconda -c pytorch -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
+	mamba create -y -n ritme -c qiime2 -c conda-forge -c bioconda -c pytorch -c anaconda -c defaults $(shell python get_requirements.py ci/recipe/meta.yaml conda)
 
 install-req:
 	@command -v mamba >/dev/null 2>&1 || { echo "Installing mamba..."; conda install -y mamba -n base -c conda-forge; }
