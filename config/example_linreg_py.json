@@ -1,0 +1,14 @@
+{
+  "experiment_tag": "example_linreg_py",
+  "group_by_column": null,
+  "ls_model_types": [
+    "linreg"
+  ],
+  "max_cuncurrent_trials": 5,
+  "num_trials": 2,
+  "optuna_searchspace_sampler": "TPESampler",
+  "seed_data": 12,
+  "seed_model": 12,
+  "target": "month",
+  "tracking_uri": "mlruns"
+}

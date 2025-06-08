@@ -311,7 +311,7 @@ def plot_metric_history_per_model_type(metric, client, trials):
             hue="name",
             palette="Set2",
             marker="o",
-            linewidth=2,
+            markeredgewidth=0.2,
             ax=ax,
         )
         ax.set_title(model_type)

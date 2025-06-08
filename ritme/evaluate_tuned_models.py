@@ -104,7 +104,7 @@ def _plot_scatter_plots(
             dot_size = 50
             dot_alpha = 0.8
         reg = sns.regplot(
-            x=pred_split["true"],
+            x=pred_split["true"].astype(float),
             y=pred_split["pred"],
             ax=axs_set,
             color=colors[split],

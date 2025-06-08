@@ -45,8 +45,8 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     # SPLIT
     # todo: refine assignment of features to be used for modelling
     train, val = _split_data_grouped(train_val_t, host_id, 0.8, seed_data)
-    X_train, y_train = train[microbial_ft_ls_transf], train[target]
-    X_val, y_val = val[microbial_ft_ls_transf], val[target]
+    X_train, y_train = train[microbial_ft_ls_transf], train[target].astype(float)
+    X_val, y_val = val[microbial_ft_ls_transf], val[target].astype(float)
 
     return (
         X_train.values,
