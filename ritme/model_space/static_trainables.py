@@ -335,6 +335,7 @@ class NeuralNet(LightningModule):
         nn_type="regression",
         dropout_rate=0.0,
         weight_decay=0.0,
+        classes: Optional[list] = None,
     ):
         super(NeuralNet, self).__init__()
         self.save_hyperparameters()  # This saves all passed arguments to self.hparams
@@ -342,6 +343,11 @@ class NeuralNet(LightningModule):
         self.nn_type = nn_type
         self.dropout_rate = dropout_rate
         self.weight_decay = weight_decay
+
+        self.classes = classes
+        if nn_type == "classification" and classes is not None:
+            self.class_to_index = {c: i for i, c in enumerate(classes)}
+            self.index_to_class = {i: c for i, c in enumerate(classes)}
 
         self.layers = nn.ModuleList()
         n_layers = len(n_units)
@@ -370,7 +376,10 @@ class NeuralNet(LightningModule):
         if self.nn_type == "regression":
             return predictions
         elif self.nn_type == "classification":
-            return torch.argmax(predictions, dim=1).float()
+            idx = torch.argmax(predictions, dim=1)
+            # map back to original labels
+            mapped = [self.index_to_class[int(i)] for i in idx.detach().cpu().numpy()]
+            return torch.tensor(mapped, device=predictions.device, dtype=torch.float32)
         elif self.nn_type == "ordinal_regression":
             return corn_label_from_logits(predictions).float()
 
@@ -393,6 +402,13 @@ class NeuralNet(LightningModule):
             # predictions = logits
             return corn_loss(predictions, targets_rounded, self.num_classes)
         elif self.nn_type == "classification":
+            # re-index to 0...C-1 for cross-entropy loss
+            t = targets_rounded.detach().cpu().numpy().astype(int)
+            t_idx = [self.class_to_index[v] for v in t]
+            targets_rounded = torch.tensor(
+                t_idx, device=targets.device, dtype=torch.long
+            )
+
             loss_fn = nn.CrossEntropyLoss()
             # predictions = logits
             return loss_fn(predictions, targets_rounded)
@@ -528,13 +544,16 @@ def train_nn(
     # output layer defined by target
     if nn_type == "regression":
         output_layer = [1]
+        classes = None
     elif nn_type == "classification":
         n_target_classes = len(np.unique(np.round(y_train)))
         output_layer = [n_target_classes]
+        classes = sorted(np.unique(np.round(y_train)))
     elif nn_type == "ordinal_regression":
         # CORN reduces number of classes by 1
         n_target_classes = len(np.unique(np.round(y_train)))
         output_layer = [n_target_classes - 1]
+        classes = None
 
     n_units = (
         # input layer
@@ -552,6 +571,7 @@ def train_nn(
         nn_type=nn_type,
         dropout_rate=config["dropout_rate"],
         weight_decay=config["weight_decay"],
+        classes=classes,
     )
 
     _save_taxonomy(tax)
