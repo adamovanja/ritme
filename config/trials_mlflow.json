@@ -7,6 +7,7 @@
     "xgb",
     "nn_reg",
     "nn_corn",
+    "nn_class",
     "rf"
   ],
   "max_cuncurrent_trials": 5,
