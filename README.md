@@ -72,7 +72,7 @@ For a template on how to evaluate your models see the section on [model training
 
 ## Model training evaluation
 We provide example templates to help you evaluate your *ritme* models for both supported tracking services:
-* for WandB visit [this report](https://wandb.ai/ritme/r_local_all_wandb/reports/Template-for-ritme-training-evaluation--VmlldzoxMjg5MzAxNQ?accessToken=nckmm6ff5funbku94wsfa4tvim7u931sxcv4438watrwjxin3a06svnbxhaz0abb) - simply copy the template and adjust it to your needs.
+* for WandB visit [this report](https://wandb.ai/ritme/trials_wandb/reports/Template-for-ritme-training-evaluation--VmlldzoxMzE1MTQ5MQ?accessToken=2yuzgiu4ke2r3ky5c894nnygguse8xh9mt5ky3g7p43mcirbmhv504ruipny54l5) - simply copy the template and update the run set at the end of the report to your own experiment.
 
 * for MLflow see the notebook [`experiments/evaluate_trials_mlflow.ipynb`](https://github.com/adamovanja/ritme/blob/main/experiments/evaluate_trials_mlflow.ipynb).
 

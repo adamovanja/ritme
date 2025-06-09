@@ -37,4 +37,6 @@ if [[ -z "$(find trials_mlflow -maxdepth 1 -mindepth 1 -print -quit)" ]]; then
     --path-to-tax data/movpic_taxonomy.qza \
     --path-to-tree-phylo data/movpic_tree.qza \
     --path-store-model-logs trials_mlflow
+else
+  echo "trials_mlflow directory is not empty; not running find-best-model-config again."
 fi
