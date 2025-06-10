@@ -24,11 +24,13 @@ requirements:
     - importlib-metadata
     - lightning
     - mlflow
+    - nbformat
     - numpy
     - optuna==4.1.0
     - packaging
     - pandas
     - pip
+    - plotly
     - py-spy
     - py-xgboost
     - python-dotenv

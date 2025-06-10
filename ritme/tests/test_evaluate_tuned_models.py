@@ -1,14 +1,17 @@
 import tempfile
 import unittest
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from pandas.testing import assert_frame_equal
+from parameterized import parameterized
 
 from ritme.evaluate_models import TunedModel
 from ritme.evaluate_tuned_models import (
     _calculate_metrics,
     _load_best_tuned_models,
+    _plot_scatter_plots,
     _predict_w_tuned_model,
     cli_evaluate_tuned_models,
     evaluate_tuned_models,
@@ -71,6 +74,36 @@ class TestEvaluateTunedModels(unittest.TestCase):
             metrics,
         )
 
+    @parameterized.expand(
+        [
+            ("few", 50, 0.8),
+            ("many", 20, 0.3),
+        ]
+    )
+    def test_plot_scatter_plots_nb_pred_design(self, pred_mode, exp_size, exp_alpha):
+        """verifies that depending on the number of predictions, the scatter
+        plot design changes"""
+        if pred_mode == "few":
+            all_preds = self.all_preds
+        else:
+            all_preds = pd.concat([self.all_preds] * 101, ignore_index=True)
+
+        _, axs = plt.subplots(1, 2)
+        _plot_scatter_plots(
+            all_preds=all_preds,
+            metrics_split=self.exp_metrics,
+            axs=axs,
+            row_idx=0,
+            model_name="test_model",
+            only_one_model=True,
+        )
+
+        # scatter design check
+        for split, idx in {"train": 0, "test": 1}.items():
+            scat = axs[idx].collections[0]
+            self.assertEqual(scat.get_sizes()[0], exp_size)
+            self.assertEqual(scat.get_alpha(), exp_alpha)
+
     @patch("os.listdir")
     def test_load_best_tuned_models(self, mock_listdir):
         mock_listdir.return_value = [
@@ -103,12 +136,17 @@ class TestEvaluateTunedModels(unittest.TestCase):
             "mock_model1": self.mock_tuned_model,
             "mock_model2": self.mock_tuned_model,
         }
-        metrics = evaluate_tuned_models(
+        metrics, scatter = evaluate_tuned_models(
             dic_tuned_models, self.exp_config, self.train_val, self.test
         )
+
+        # verify metrics
         exp_metrics = pd.concat([self.exp_metrics, self.exp_metrics])
         exp_metrics.index = ["mock_model1", "mock_model2"]
         assert_frame_equal(exp_metrics, metrics)
+
+        # verify scatter plot dimension -> 2x2 = 4
+        self.assertEqual(len(scatter.axes), 4)
 
     @patch("ritme.evaluate_tuned_models.evaluate_tuned_models")
     @patch("ritme.evaluate_tuned_models.load_experiment_config")
@@ -127,15 +165,21 @@ class TestEvaluateTunedModels(unittest.TestCase):
         mock_load_best_tuned_models.return_value = ["mock_model"]
         mock_load_best_model.return_value = self.mock_tuned_model
         mock_load_experiment_config.return_value = self.exp_config
-        mock_evaluate_tuned_models.return_value = self.exp_metrics
+        mock_evaluate_tuned_models.return_value = (self.exp_metrics, plt.figure())
 
         path_exp = tempfile.TemporaryDirectory()
         path_to_exp = path_exp.name
         with patch("builtins.print") as mock_print:
             cli_evaluate_tuned_models(path_to_exp, "path/to/train_val", "path/to/test")
-            mock_print.assert_called_with(
-                f"Metrics were saved in {path_to_exp}/best_metrics.csv."
-            )
+
+            metrics_path = f"{path_to_exp}/best_metrics.csv"
+            scatter_path = f"{path_to_exp}/best_true_vs_pred.png"
+            expected_calls = [
+                call(f"Metrics were saved in {metrics_path}."),
+                call(f"Scatter plots were saved in {scatter_path}."),
+            ]
+
+            mock_print.assert_has_calls(expected_calls)
 
 
 if __name__ == "__main__":

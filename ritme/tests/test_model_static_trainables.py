@@ -339,9 +339,9 @@ class TestTrainables(unittest.TestCase):
 
     @parameterized.expand(
         [
-            ("regression", [5, 10, 5, 1]),
-            ("classification", [5, 10, 5, 2]),
-            ("ordinal_regression", [5, 10, 5, 1]),
+            ("regression", [5, 10, 5, 1], None),
+            ("classification", [5, 10, 5, 3], [0, 1, 2]),
+            ("ordinal_regression", [5, 10, 5, 2], None),
         ]
     )
     @patch("ritme.model_space.static_trainables._save_taxonomy")
@@ -355,6 +355,7 @@ class TestTrainables(unittest.TestCase):
         self,
         nn_type,
         nb_units,
+        classes,
         mock_get_context,
         mock_trainer,
         mock_neural_net,
@@ -366,9 +367,9 @@ class TestTrainables(unittest.TestCase):
         # Setup mock return values
         mock_process_train.return_value = (
             torch.rand(10, 5),
-            torch.rand(10),
+            torch.tensor([0, 1, 2, 0, 1, 2, 0, 1, 2, 0], dtype=torch.long),
             torch.rand(3, 5),
-            torch.rand(3),
+            torch.tensor([0, 1, 0], dtype=torch.long),
             ["F1", "F2", "F3", "F4", "F5"],
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
@@ -421,6 +422,7 @@ class TestTrainables(unittest.TestCase):
             nn_type=nn_type,
             dropout_rate=0.0,
             weight_decay=0.0,
+            classes=classes,
         )
         mock_trainer_instance.fit.assert_called()
 

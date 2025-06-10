@@ -159,17 +159,26 @@ archive
 # logs from slurm launches & local runs
 *_err.txt
 *_out.txt
+experiments/ritme_example_logs
 experiments/ritme_refact_logs
 experiments/ritme_test_nn
+experiments/ritme_ma2_test
+experiments/trials_mlflow
+experiments/trials_wandb
+experiments/ritme_example_usage_debug.ipynb
 experiments/data_splits
+experiments/data_splits_mlflow
+experiments/data_splits_wandb
+experiments/data_splits_ma2
 experiments/best_models
 
 # all but one json config file
 *.json
 !run_config.json
 !run_config_whparams.json
-!r_local_linreg_py.json
-!r_local_linreg.json
+!example_linreg.json
+!example_linreg_py.json
+!trials_mlflow.json
 
 # GHA secrets
 .secrets
