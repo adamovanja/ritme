@@ -290,7 +290,11 @@ def plot_metric_history_per_model_type(metric, client, trials):
     """Plot the metric history for each model type."""
     all_model_types = trials["params.model"].unique()
     fig, axes = plt.subplots(
-        len(all_model_types), 1, sharex=True, figsize=(10, 12), dpi=400
+        len(all_model_types),
+        1,
+        sharex=True,
+        figsize=(10, len(all_model_types) * 2),
+        dpi=400,
     )
 
     for i, model_type in enumerate(all_model_types):
@@ -324,7 +328,10 @@ def plot_metric_history_per_model_type(metric, client, trials):
         )
 
     # only the bottom plot gets an x-axis label
-    axes[-1].set_xlabel("Timestamp")
+    if len(all_model_types) > 1:
+        axes[-1].set_xlabel("Timestamp")
+    else:
+        axes.set_xlabel("Timestamp")
     # one shared y-axis label
     fig.supylabel(metric)
 
