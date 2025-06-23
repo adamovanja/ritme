@@ -196,13 +196,7 @@ class TestTrainables(unittest.TestCase):
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config,
-            self.train_val,
-            self.target,
-            self.host_id,
-            self.tax,
-            self.seed_data,
-            remove_unclassified=True,
+            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
         )
         mock_create_matrix.assert_called_once()
         assert mock_preprocess_taxonomy.call_count == 2

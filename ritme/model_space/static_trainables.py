@@ -241,7 +241,7 @@ def train_trac(
     """
     # ! process dataset: X with features & y with host_id
     X_train, y_train, X_val, y_val, ft_col = process_train(
-        config, train_val, target, host_id, tax, seed_data, remove_unclassified=True
+        config, train_val, target, host_id, tax, seed_data
     )
     # ! derive matrix A
     # todo: adjust A_df here already

@@ -82,6 +82,12 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
     # Remove the first letter of each column name: "F" to match phylotree
     ft_i = ft.copy()
     ft_i.columns = [col[1:] for col in ft_i.columns]
+    # remove unclassified features since they are not in the phylo tree
+    if "unclassified" in ft_i.columns or "unclustered" in ft_i.columns:
+        ft_i = ft_i.loc[:, ~ft_i.columns.isin(["unclassified", "unclustered"])]
+        exp_nb_ft_tree = ft.shape[1] - 1
+    else:
+        exp_nb_ft_tree = ft.shape[1]
     art_ft_i = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft_i)
 
     art_phylo = q2.Artifact.import_data("Phylogeny[Rooted]", phylo_tree)
@@ -94,7 +100,7 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
 
     # ensure that # leaves in tree == feature table dimension
     num_leaves = tree_phylo_f.count(tips=True)
-    assert num_leaves == ft.shape[1]
+    assert num_leaves == exp_nb_ft_tree
 
     return tree_phylo_f
 
