@@ -7,7 +7,15 @@ from ritme.feature_space.transform_features import (
 from ritme.split_train_test import _split_data_grouped
 
 
-def process_train(config, train_val, target, host_id, tax, seed_data):
+def process_train(
+    config, train_val, target, host_id, tax, seed_data, remove_unclassified=False
+):
+    # only needed for trac model: remove unclassified features
+    if remove_unclassified:
+        train_val = train_val.loc[
+            :, ~train_val.columns.isin(["Funclassified", "Funclustered"])
+        ]
+
     # todo: make feat_prefix an adjustable variable
     feat_prefix = "F"
     microbial_ft_ls = [x for x in train_val if x.startswith(feat_prefix)]
