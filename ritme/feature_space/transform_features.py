@@ -67,6 +67,7 @@ def transform_microbial_features(
         "ilr": ilr,
         "alr": alr,
         "pa": presence_absence,
+        "rank": None,
         None: None,
     }
     if method not in method_map.keys():
@@ -82,6 +83,9 @@ def transform_microbial_features(
         feat_trans = feat_trans.add_prefix(f"{method}_")
     elif method is None:
         feat_trans = feat.copy()
+    elif method == "rank":
+        feat_trans = feat.rank(axis=1, ascending=False)
+        feat_trans = feat_trans.add_prefix(f"{method}_")
     else:  # ilr, clr, pa
         col_names = (
             [f"{method}_{x}" for x in feat.columns]

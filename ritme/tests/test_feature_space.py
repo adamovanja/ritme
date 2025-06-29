@@ -195,6 +195,17 @@ class TestTransformMicrobialFeatures(unittest.TestCase):
 
         assert_frame_equal(exp_ft, obs_ft)
 
+    def test_transform_features_rank(self):
+        """Tests rank feature transformation"""
+        # expected
+        self.ft = pd.DataFrame({"F0": [10.0, 20.0, 50.0], "F1": [20.0, 30.0, 5.0]})
+        exp_ft = pd.DataFrame({"rank_F0": [2.0, 2.0, 1.0], "rank_F1": [1.0, 1.0, 2.0]})
+
+        # observed
+        obs_ft = transform_microbial_features(self.ft, "rank")
+
+        assert_frame_equal(exp_ft, obs_ft)
+
     def test_transform_features_none(self):
         """Tests no transformation"""
         # expected

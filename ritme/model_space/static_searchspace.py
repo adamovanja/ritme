@@ -36,7 +36,9 @@ def get_data_eng_space(trial, tax) -> None:
         _get_dependent_data_eng_space(trial, data_selection)
 
     # feature transform
-    trial.suggest_categorical("data_transform", [None, "clr", "ilr", "alr", "pa"])
+    trial.suggest_categorical(
+        "data_transform", [None, "clr", "ilr", "alr", "pa", "rank"]
+    )
     return None
 
 
