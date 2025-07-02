@@ -23,7 +23,7 @@ requirements:
     - grpcio==1.65.5
     - importlib-metadata
     - lightning
-    - mlflow
+    - mlflow==2.19.0
     - nbformat
     - numpy
     - optuna==4.1.0
