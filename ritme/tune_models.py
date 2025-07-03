@@ -133,7 +133,6 @@ def _define_search_algo(
     return OptunaSearch(
         space=define_search_space,
         sampler=sampler_class(seed=seed_model),
-        seed=seed_model,
         metric=metric,
         mode=mode,
     )

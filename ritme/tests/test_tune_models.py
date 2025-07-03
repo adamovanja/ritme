@@ -130,7 +130,6 @@ class TestHelpersTuneModels(unittest.TestCase):
             model_hyperparameters=model_hyperparameters,
         )
 
-        self.assertEqual(search_algo._seed, seed_model)
         self.assertEqual(search_algo._metric, metric)
         self.assertEqual(search_algo._mode, mode)
         self.assertTrue(

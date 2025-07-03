@@ -32,6 +32,7 @@ class TestFindBestModelConfig(unittest.TestCase):
         # experiment config
         self.config = {
             "tracking_uri": "mlruns",
+            "fully_reproducible": False,
             "experiment_tag": "test_experiment",
             "target": "target_column",
             "group_by_column": "group_column",
