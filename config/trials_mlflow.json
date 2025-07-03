@@ -1,6 +1,6 @@
 {
   "experiment_tag": "trials_mlflow",
-  "fully_reproducible": false,
+  "fully_reproducible": true,
   "group_by_column": null,
   "ls_model_types": [
     "linreg",
