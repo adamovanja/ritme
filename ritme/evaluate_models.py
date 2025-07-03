@@ -172,8 +172,9 @@ class TunedModel:
         selected = self.select(aggregated, split)
         transformed = self.transform(selected)
         if isinstance(self.model, NeuralNet):
+            self.model.eval()
             with torch.no_grad():
-                X_t = torch.tensor(transformed, dtype=torch.float32)
+                X_t = transformed.clone().detach()
                 predicted = self.model(X_t)
                 predicted = self.model._prepare_predictions(predicted)
         elif isinstance(self.model, dict):

@@ -475,7 +475,20 @@ class NeuralNet(LightningModule):
         return optimizer
 
 
-def load_data(X_train, y_train, X_val, y_val, config):
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def load_data(X_train, y_train, X_val, y_val, config, seed_model):
+    # fixed data loader - for reference on reproducibility:
+    # https://docs.pytorch.org/docs/stable/notes/randomness.html
+
+    # a Generator for shuffling
+    g = torch.Generator()
+    g.manual_seed(seed_model)
+
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.float32),
         torch.tensor(y_train, dtype=torch.float32),
@@ -485,9 +498,20 @@ def load_data(X_train, y_train, X_val, y_val, config):
         torch.tensor(y_val, dtype=torch.float32),
     )
     train_loader = DataLoader(
-        train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=2
+        train_dataset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=2,
+        worker_init_fn=seed_worker,
+        generator=g,
     )
-    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], num_workers=2)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config["batch_size"],
+        num_workers=2,
+        worker_init_fn=seed_worker,
+        generator=g,
+    )
     return train_loader, val_loader
 
 
@@ -529,15 +553,25 @@ def train_nn(
     seed_model,
     nn_type="regression",
 ):
+    # Force deterministic algorithms and disable benchmark
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     # Set the seed for reproducibility
     seed_everything(seed_model, workers=True)
+    torch.manual_seed(seed_model)
+    random.seed(seed_model)
+    np.random.seed(seed_model)
 
     # Process dataset
     X_train, y_train, X_val, y_val, ft_col = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
-    train_loader, val_loader = load_data(X_train, y_train, X_val, y_val, config)
+    train_loader, val_loader = load_data(
+        X_train, y_train, X_val, y_val, config, seed_model
+    )
 
     # Model
     n_layers = config["n_hidden_layers"]

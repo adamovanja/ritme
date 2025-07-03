@@ -191,7 +191,7 @@ def find_best_model_config(
         config["num_trials"],
         config["max_cuncurrent_trials"],
         model_types=config["ls_model_types"],
-        fully_reproducible=False,
+        fully_reproducible=config["fully_reproducible"],
         model_hyperparameters=config.get("model_hyperparameters", {}),
         optuna_searchspace_sampler=config.get(
             "optuna_searchspace_sampler", "TPESampler"

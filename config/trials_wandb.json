@@ -1,5 +1,6 @@
 {
   "experiment_tag": "trials_wandb",
+  "fully_reproducible": true,
   "group_by_column": null,
   "ls_model_types": [
     "linreg",

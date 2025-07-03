@@ -113,6 +113,23 @@ class TestDataHelpers(unittest.TestCase):
         ]
         assert len(overlap) == 0
 
+    def test_split_data_grouped_seeded_not_equal(self):
+        train_obs1, test_obs1 = _split_data_grouped(self.data_rel, "host_id", 0.5, 123)
+        train_obs2, test_obs2 = _split_data_grouped(self.data_rel, "host_id", 0.5, 246)
+
+        with self.assertRaises(AssertionError):
+            assert_frame_equal(train_obs1, train_obs2)
+
+        with self.assertRaises(AssertionError):
+            assert_frame_equal(test_obs1, test_obs2)
+
+    def test_split_data_grouped_seeded_equal(self):
+        train_obs1, test_obs1 = _split_data_grouped(self.data_rel, "host_id", 0.5, 123)
+        train_obs2, test_obs2 = _split_data_grouped(self.data_rel, "host_id", 0.5, 123)
+
+        assert_frame_equal(train_obs1, train_obs2)
+        assert_frame_equal(test_obs1, test_obs2)
+
     def test_split_data_by_host_error_one_host(self):
         data = pd.DataFrame(
             {"host_id": ["c", "c", "c", "c"], "supertarget": [1, 2, 1, 2]}
