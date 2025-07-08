@@ -3,6 +3,8 @@ import os
 import numpy as np
 import pandas as pd
 
+from ritme.feature_space.transform_features import PSEUDOCOUNT
+
 
 def _verify_matrix_a(A, feature_columns, tree_phylo):
     # no all 1 in one column
@@ -113,9 +115,7 @@ def create_matrix_from_tree(tree, tax) -> pd.DataFrame:
 
 
 def _preprocess_taxonomy_aggregation(x, A):
-    pseudo_count = 0.000001
-
-    X = np.log(pseudo_count + x)
+    X = np.log(PSEUDOCOUNT + x)
     nleaves = np.sum(A, axis=0)
     # safekeeping: dot-product would not work with wrong dimensions
     # X: n_samples, n_features,  A: n_features, (n_features+n_nodes)

@@ -777,8 +777,7 @@ class TestProcessTracSpecific(unittest.TestCase):
         A = np.array([[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]])
 
         # Define expected output
-        pseudo_count = 0.000001
-        X_expected = np.log(pseudo_count + x)
+        X_expected = np.log(PSEUDOCOUNT + x)
         nleaves_expected = np.array([1.0, 1.0, 1.0, 2.0])
         log_geom_expected = X_expected.dot(A) / nleaves_expected
 
