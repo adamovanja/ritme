@@ -103,6 +103,7 @@ class TestHelpersTuneModels(unittest.TestCase):
 
         exp_name = "test_exp"
         tax = pd.DataFrame()
+        train_val = pd.DataFrame()
         model_hyperparameters = {}
         seed_model = 42
         metric = "accuracy"
@@ -112,6 +113,7 @@ class TestHelpersTuneModels(unittest.TestCase):
             mock_func_to_get_search_space,
             exp_name,
             tax,
+            train_val,
             model_hyperparameters,
             sampler,
             seed_model,
@@ -127,6 +129,7 @@ class TestHelpersTuneModels(unittest.TestCase):
         mock_func_to_get_search_space.assert_called_once_with(
             model_type=exp_name,
             tax=tax,
+            train_val=train_val,
             model_hyperparameters=model_hyperparameters,
         )
 
@@ -144,6 +147,7 @@ class TestHelpersTuneModels(unittest.TestCase):
             _define_search_algo(
                 Mock(),
                 "test_exp",
+                pd.DataFrame(),
                 pd.DataFrame(),
                 {},
                 invalid_sampler,

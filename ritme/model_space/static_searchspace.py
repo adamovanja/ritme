@@ -4,14 +4,13 @@ from ritme.feature_space.transform_features import PSEUDOCOUNT
 
 
 def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None:
+    feature_cols = train_val.columns.str.startswith("F")
     if data_selection.endswith("_ith") or data_selection.endswith("_topi"):
-        trial.suggest_int("data_selection_i", 1, 20)
+        trial.suggest_int("data_selection_i", 1, len(feature_cols))
     elif data_selection.endswith("_quantile"):
         trial.suggest_float("data_selection_q", 0.5, 0.9, step=0.1)
     elif data_selection.endswith("_threshold"):
         # choose thresholds based on train_val
-        feature_cols = train_val.columns.str.startswith("F")
-
         if data_selection.startswith("abundance"):
             min_value = train_val.loc[:, feature_cols].min().min()
             # get largest abundance
