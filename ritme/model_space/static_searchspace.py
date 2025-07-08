@@ -1,16 +1,31 @@
 from typing import Any, Dict, Optional
 
+from ritme.feature_space.transform_features import PSEUDOCOUNT
 
-def _get_dependent_data_eng_space(trial, data_selection: str) -> None:
+
+def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None:
     if data_selection.endswith("_ith") or data_selection.endswith("_topi"):
         trial.suggest_int("data_selection_i", 1, 20)
     elif data_selection.endswith("_quantile"):
         trial.suggest_float("data_selection_q", 0.5, 0.9, step=0.1)
     elif data_selection.endswith("_threshold"):
-        trial.suggest_float("data_selection_t", 0.00001, 0.01, log=True)
+        # choose thresholds based on train_val
+        feature_cols = train_val.columns.str.startswith("F")
+
+        if data_selection.startswith("abundance"):
+            min_value = train_val.loc[:, feature_cols].min().min()
+            # get largest abundance
+            max_value = train_val.loc[:, feature_cols].max().max()
+        elif data_selection.startswith("variance"):
+            min_value = train_val.loc[:, feature_cols].var().min()
+            # get second largest variance
+            max_value = train_val.loc[:, feature_cols].var().max()
+        if min_value == 0:
+            min_value = PSEUDOCOUNT
+        trial.suggest_float("data_selection_t", min_value, max_value, log=True)
 
 
-def get_data_eng_space(trial, tax) -> None:
+def get_data_eng_space(trial, train_val, tax) -> None:
     # feature aggregation
     data_aggregation_options = (
         [None]
@@ -33,7 +48,7 @@ def get_data_eng_space(trial, tax) -> None:
     ]
     data_selection = trial.suggest_categorical("data_selection", data_selection_options)
     if data_selection is not None:
-        _get_dependent_data_eng_space(trial, data_selection)
+        _get_dependent_data_eng_space(trial, train_val, data_selection)
 
     # feature transform
     trial.suggest_categorical(
@@ -42,8 +57,10 @@ def get_data_eng_space(trial, tax) -> None:
     return None
 
 
-def get_linreg_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, str]:
-    get_data_eng_space(trial, tax)
+def get_linreg_space(
+    trial, train_val, tax, model_hyperparameters: dict = {}
+) -> Dict[str, str]:
+    get_data_eng_space(trial, train_val, tax)
 
     # alpha controls overall regularization strength, alpha = 0 is equivalent to
     # an ordinary least square - but = 0 is not numerically reliable. large
@@ -62,8 +79,10 @@ def get_linreg_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, 
     return {"model": "linreg"}
 
 
-def get_rf_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, str]:
-    get_data_eng_space(trial, tax)
+def get_rf_space(
+    trial, train_val, tax, model_hyperparameters: dict = {}
+) -> Dict[str, str]:
+    get_data_eng_space(trial, train_val, tax)
 
     # number of trees in forest: the more the higher computational costs
     n_estimators = model_hyperparameters.get(
@@ -149,11 +168,12 @@ def get_rf_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, str]
 
 def get_nn_space(
     trial,
+    train_val,
     tax,
     model_name: str,
     model_hyperparameters: dict = {},
 ) -> Dict[str, str]:
-    get_data_eng_space(trial, tax)
+    get_data_eng_space(trial, train_val, tax)
 
     # define n_hidden_layers: sample uniformly between [min,max] rounding to
     # multiples of step
@@ -232,8 +252,10 @@ def get_nn_space(
     return {"model": model_name}
 
 
-def get_xgb_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, Any]:
-    get_data_eng_space(trial, tax)
+def get_xgb_space(
+    trial, train_val, tax, model_hyperparameters: dict = {}
+) -> Dict[str, Any]:
+    get_data_eng_space(trial, train_val, tax)
 
     # max_depth: value between 2 and 6 is often a good starting point
     max_depth = model_hyperparameters.get("max_depth", {"min": 2, "max": 10})
@@ -301,7 +323,9 @@ def get_xgb_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, Any
     return {"model": "xgb"}
 
 
-def get_trac_space(trial, tax, model_hyperparameters: dict = {}) -> Dict[str, Any]:
+def get_trac_space(
+    trial, train_val, tax, model_hyperparameters: dict = {}
+) -> Dict[str, Any]:
     # no feature_transformation to be used for trac
     # data_aggregate=taxonomy not an option because tax tree does not match with
     # regards to feature IDs here
@@ -330,6 +354,7 @@ def get_search_space(
     trial,
     model_type: str,
     tax,
+    train_val,
     model_hyperparameters: Dict[str, Any] = {},
 ) -> Optional[Dict[str, Any]]:
     """Creates the search space"""
@@ -340,8 +365,8 @@ def get_search_space(
             "rf": get_rf_space,
             "trac": get_trac_space,
         }
-        return space_functions[model_type](trial, tax, model_hyperparameters)
+        return space_functions[model_type](trial, train_val, tax, model_hyperparameters)
     elif model_type in ["nn_reg", "nn_class", "nn_corn"]:
-        return get_nn_space(trial, tax, model_type, model_hyperparameters)
+        return get_nn_space(trial, train_val, tax, model_type, model_hyperparameters)
     else:
         raise ValueError(f"Model type {model_type} not supported.")

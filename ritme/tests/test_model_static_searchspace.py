@@ -42,6 +42,14 @@ class TestStaticSearchSpace(unittest.TestCase):
             "data_selection": None,
             "data_transform": "clr",
         }
+        self.train_val = pd.DataFrame(
+            {
+                "F1": [0.1, 0.5, 0.85],
+                "F2": [0.8, 0.2, 0.05],
+                "F3": [0.1, 0.3, 0.1],
+                "test_target": [7, 8, 9],
+            }
+        )
 
     @parameterized.expand(
         [
@@ -52,11 +60,30 @@ class TestStaticSearchSpace(unittest.TestCase):
     )
     def test_get_dependent_data_eng_space(self, data_selection, expected_suffix):
         trial = MockTrial()
-        ss._get_dependent_data_eng_space(trial, data_selection)
+        ss._get_dependent_data_eng_space(trial, self.train_val, data_selection)
 
         hyperparam = f"data_selection_{expected_suffix}"
         self.assertIn(hyperparam, trial.params)
         self.assertIsNotNone(trial.params[hyperparam])
+
+    @parameterized.expand(
+        [
+            ("abundance", 0.05, 0.85),
+            ("variance", 0.01333333333333333, 0.15750000000000003),
+        ]
+    )
+    def test_get_dependent_data_eng_space_data_dep_abundance_threshold(
+        self, method, min, max
+    ):
+        trial = mock.Mock(
+            suggest_float=mock.MagicMock(),
+        )
+
+        ss._get_dependent_data_eng_space(trial, self.train_val, f"{method}_threshold")
+
+        trial.suggest_float.assert_called_once_with(
+            "data_selection_t", min, max, log=True
+        )
 
     @parameterized.expand(
         [
@@ -84,7 +111,7 @@ class TestStaticSearchSpace(unittest.TestCase):
             self.model_independent_params.values()
         ) + list(exp_model_params.values())
         # call
-        nn_space = ss.get_nn_space(trial, self.tax, model_type)
+        nn_space = ss.get_nn_space(trial, self.train_val, self.tax, model_type)
 
         # assert
         self.assertIsInstance(nn_space, dict)
@@ -95,7 +122,7 @@ class TestStaticSearchSpace(unittest.TestCase):
 
     def test_get_trac_space(self):
         trial = MockTrial()
-        trac_space = ss.get_trac_space(trial, self.tax)
+        trac_space = ss.get_trac_space(trial, self.train_val, self.tax)
         self.assertIsInstance(trac_space, dict)
         self.assertEqual(trac_space["model"], "trac")
         self.assertIn("lambda", trial.params)
@@ -142,7 +169,7 @@ class TestStaticSearchSpace(unittest.TestCase):
         ) + list(exp_model_params.values())
 
         # call
-        model_space = func_get_space(trial, self.tax)
+        model_space = func_get_space(trial, self.train_val, self.tax)
 
         # assert
         self.assertIsInstance(model_space, dict)
@@ -168,7 +195,7 @@ class TestStaticSearchSpace(unittest.TestCase):
             suggest_int=mock.MagicMock(),
             suggest_float=mock.MagicMock(),
         )
-        search_space = ss.get_search_space(trial, model_type, self.tax)
+        search_space = ss.get_search_space(trial, model_type, self.tax, self.train_val)
         self.assertIsInstance(search_space, dict)
         self.assertEqual(search_space["model"], model_type)
 
@@ -176,7 +203,7 @@ class TestStaticSearchSpace(unittest.TestCase):
         model_type = "FakeModel"
         trial = MockTrial()
         with self.assertRaisesRegex(ValueError, "Model type FakeModel not supported."):
-            ss.get_search_space(trial, model_type, self.tax)
+            ss.get_search_space(trial, model_type, self.tax, self.train_val)
 
     def _list_mocked_params_as_calls(self, exp_defaults):
         mocked_params = []
@@ -305,7 +332,7 @@ class TestStaticSearchSpace(unittest.TestCase):
             trial.suggest_int.side_effect = [2, 100, 100]
 
         # Call the actual function without passing model_hyperparameters
-        _ = ss.get_search_space(trial, model_type, self.tax)
+        _ = ss.get_search_space(trial, model_type, self.tax, self.train_val)
 
         # Verify that the trial parameters match the expected defaults
         if len(exp_float) > 0:
@@ -405,7 +432,11 @@ class TestStaticSearchSpace(unittest.TestCase):
         # Call the actual function with passing model_hyperparameters
         exp_params = {**exp_float, **exp_int, **exp_cat}
         _ = ss.get_search_space(
-            trial, model_type, self.tax, model_hyperparameters=exp_params
+            trial,
+            model_type,
+            self.tax,
+            self.train_val,
+            model_hyperparameters=exp_params,
         )
 
         # Verify that the trial parameters match the expected defaults
