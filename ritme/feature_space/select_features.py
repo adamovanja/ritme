@@ -166,19 +166,22 @@ def select_microbial_features(feat, config, ft_prefix):
 
     group_name = "_low_abun" if method.startswith("abundance") else "_low_var"
 
-    if method.endswith("_ith") or method.endswith("_topi"):
-        # ! HOTFIX: should be done more elegantly such that Optuna knows about
-        # ! this
-        i = _reset_i_too_large(config["data_selection_i"], feat)
-
     if method == "abundance_ith":
-        group_ft_ls = find_features_to_group_by_abundance_ith(feat, i)
+        group_ft_ls = find_features_to_group_by_abundance_ith(
+            feat, config["data_selection_i"]
+        )
     elif method == "variance_ith":
-        group_ft_ls = find_features_to_group_by_variance_ith(feat, i)
+        group_ft_ls = find_features_to_group_by_variance_ith(
+            feat, config["data_selection_i"]
+        )
     elif method == "abundance_topi":
-        group_ft_ls = find_features_to_group_by_abundance_topi(feat, i)
+        group_ft_ls = find_features_to_group_by_abundance_topi(
+            feat, config["data_selection_i"]
+        )
     elif method == "variance_topi":
-        group_ft_ls = find_features_to_group_by_variance_topi(feat, i)
+        group_ft_ls = find_features_to_group_by_variance_topi(
+            feat, config["data_selection_i"]
+        )
     elif method == "abundance_quantile":
         group_ft_ls = find_features_to_group_by_abundance_quantile(
             feat, config["data_selection_q"]
