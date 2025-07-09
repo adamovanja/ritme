@@ -535,6 +535,13 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
 
         assert_frame_equal(exp_ft, obs_ft)
 
+    def test_select_microbial_features_i_too_large(self):
+        with self.assertWarnsRegex(
+            Warning, r"Selected i=1000 is larger than number of features.*"
+        ):
+            config = {"data_selection": "abundance_ith", "data_selection_i": 1000}
+            select_microbial_features(self.ft, config, "F")
+
 
 class TestProcessTrain(unittest.TestCase):
     def setUp(self):
