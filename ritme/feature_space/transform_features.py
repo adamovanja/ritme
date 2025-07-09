@@ -4,7 +4,7 @@ from skbio.stats.composition import clr, ilr
 
 from ritme.feature_space.utils import _biom_to_df, _df_to_biom
 
-PSEUDOCOUNT = 0.000001
+PSEUDOCOUNT = 1e-9
 
 
 def alr(feat: pd.DataFrame, denom_idx: int) -> pd.DataFrame:

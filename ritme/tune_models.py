@@ -108,6 +108,7 @@ def _define_search_algo(
     func_to_get_search_space: Callable,
     exp_name: str,
     tax: pd.DataFrame,
+    train_val: pd.DataFrame,
     model_hyperparameters: dict,
     optuna_searchspace_sampler: str,
     seed_model: int,
@@ -119,6 +120,7 @@ def _define_search_algo(
         func_to_get_search_space,
         model_type=exp_name,
         tax=tax,
+        train_val=train_val,
         model_hyperparameters=model_hyperparameters,
     )
 
@@ -262,6 +264,7 @@ def run_trials(
         ss.get_search_space,
         exp_name,
         tax,
+        train_val,
         model_hyperparameters,
         optuna_searchspace_sampler,
         seed_model,

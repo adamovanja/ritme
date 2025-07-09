@@ -415,13 +415,6 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
             obs_ft = select_microbial_features(self.ft, config, "F")
         assert_frame_equal(self.ft, obs_ft)
 
-    def test_select_microbial_features_i_too_large(self):
-        with self.assertWarnsRegex(
-            Warning, r"Selected i=1000 is larger than number of features.*"
-        ):
-            config = {"data_selection": "abundance_ith", "data_selection_i": 1000}
-            select_microbial_features(self.ft, config, "F")
-
     def test_select_microbial_features_unknown_method(self):
         with self.assertRaisesRegex(ValueError, r"Unknown method: FancyMethod."):
             config = {"data_selection": "FancyMethod"}
@@ -521,17 +514,12 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
         assert_frame_equal(exp_ft, obs_ft)
 
     def test_select_microbial_features_abundance_threshold_all_grouped(self):
-        # expected
-        exp_ft = self.ft.copy()
-        ls_group = ["F1", "F2", "F3", "F4"]
-        exp_ft["F_low_abun"] = self.ft[ls_group].sum(axis=1)
-        exp_ft.drop(columns=ls_group, inplace=True)
-
-        # observed
         config = {"data_selection": "abundance_threshold", "data_selection_t": 100}
-        obs_ft = select_microbial_features(self.ft, config, "F")
-
-        assert_frame_equal(exp_ft, obs_ft)
+        with self.assertRaisesRegex(
+            ValueError,
+            "All features are grouped using method",
+        ):
+            select_microbial_features(self.ft, config, "F")
 
     def test_select_microbial_features_variance_threshold(self):
         # expected
@@ -777,8 +765,7 @@ class TestProcessTracSpecific(unittest.TestCase):
         A = np.array([[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]])
 
         # Define expected output
-        pseudo_count = 0.000001
-        X_expected = np.log(pseudo_count + x)
+        X_expected = np.log(PSEUDOCOUNT + x)
         nleaves_expected = np.array([1.0, 1.0, 1.0, 2.0])
         log_geom_expected = X_expected.dot(A) / nleaves_expected
 
