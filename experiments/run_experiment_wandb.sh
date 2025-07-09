@@ -36,7 +36,7 @@ if [[ -z "$(find trials_wandb -maxdepth 1 -mindepth 1 -print -quit)" ]]; then
     ../config/trials_wandb.json data_splits_wandb/train_val.pkl \
     --path-to-tax data/movpic_taxonomy.qza \
     --path-to-tree-phylo data/movpic_tree.qza \
-    --path-store-model-logs trials_wandb
+    --path-store-model-logs ritme_example_logs
 else
   echo "trials_wandb directory is not empty; not running find-best-model-config again."
 fi

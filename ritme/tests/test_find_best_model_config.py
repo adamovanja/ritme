@@ -218,7 +218,7 @@ class TestFindBestModelConfig(unittest.TestCase):
                 self.config["seed_model"],
                 ANY,
                 ANY,
-                os.path.join(temp_dir, "mlruns"),
+                os.path.join(temp_dir, "test_experiment", "mlruns"),
                 os.path.join(temp_dir, "test_experiment"),
                 self.config["num_trials"],
                 self.config["max_cuncurrent_trials"],

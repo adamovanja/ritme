@@ -31,12 +31,12 @@ if [[ ! -f data_splits_mlflow/train_val.pkl ]]; then
 fi
 
 # run find-best-model-config only if logs folder empty
-if [[ -z "$(find trials_mlflow -maxdepth 1 -mindepth 1 -print -quit)" ]]; then
+if [[ -z "$(find ritme_example_logs/trials_mlflow -maxdepth 1 -mindepth 1 -print -quit)" ]]; then
   ritme find-best-model-config \
     ../config/trials_mlflow.json data_splits_mlflow/train_val.pkl \
     --path-to-tax data/movpic_taxonomy.qza \
     --path-to-tree-phylo data/movpic_tree.qza \
-    --path-store-model-logs trials_mlflow
+    --path-store-model-logs ritme_example_logs
 else
   echo "trials_mlflow directory is not empty; not running find-best-model-config again."
 fi

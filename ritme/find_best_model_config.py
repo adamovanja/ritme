@@ -100,12 +100,12 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
 
 
 @helper_function
-def _define_model_tracker(tracking_uri: str, path_store_model_logs: str) -> str:
+def _define_model_tracker(tracking_uri: str, path_exp: str) -> str:
     if tracking_uri == "mlruns":
-        path_tracker = os.path.join(path_store_model_logs, tracking_uri)
+        path_tracker = os.path.join(path_exp, tracking_uri)
         print(
             f"You can view the model logs by launching MLflow UI from within folder "
-            f": {path_store_model_logs}."
+            f": {path_exp}."
         )
     else:
         path_tracker = "wandb"
@@ -166,7 +166,7 @@ def find_best_model_config(
     _save_config(config, path_exp, "experiment_config.json")
 
     # define model tracker
-    path_tracker = _define_model_tracker(config["tracking_uri"], path_store_model_logs)
+    path_tracker = _define_model_tracker(config["tracking_uri"], path_exp)
 
     # ! Process taxonomy and phylogeny by microbial feature table
     ft_col = [x for x in train_val.columns if x.startswith("F")]
