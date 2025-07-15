@@ -6,6 +6,7 @@ import pandas as pd
 import seaborn as sns
 import typer
 from matplotlib.transforms import offset_copy
+from scipy.stats import pearsonr
 from sklearn.metrics import r2_score, root_mean_squared_error
 
 from ritme._decorators import helper_function, main_function
@@ -55,6 +56,9 @@ def _calculate_metrics(all_preds: pd.DataFrame, model_type: str) -> pd.DataFrame
         metrics.loc[model_type, f"r2_{split}"] = r2_score(
             pred_split["true"], pred_split["pred"]
         )
+        metrics.loc[model_type, f"pearson_corr_{split}"] = pearsonr(
+            pred_split["true"], pred_split["pred"]
+        )[0]
     return metrics
 
 
