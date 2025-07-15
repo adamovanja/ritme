@@ -204,13 +204,7 @@ def select_microbial_features(feat, config, ft_prefix):
             f"Returning original feature table."
         )
         return feat.copy()
-    elif len(group_ft_ls) == len(feat.columns):
-        # this shouldn't be possible - if it does it needs to be fixed
-        raise ValueError(
-            f"All features are grouped using method: {method}. "
-            f"This is not allowed. Please report this as an issue to "
-            f"the ritme repos."
-        )
+
     feat_selected = feat.copy()
     feat_selected[f"{ft_prefix}{group_name}"] = feat_selected[group_ft_ls].sum(axis=1)
     feat_selected.drop(columns=group_ft_ls, inplace=True)

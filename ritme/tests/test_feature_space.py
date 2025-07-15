@@ -513,14 +513,6 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
 
         assert_frame_equal(exp_ft, obs_ft)
 
-    def test_select_microbial_features_abundance_threshold_all_grouped(self):
-        config = {"data_selection": "abundance_threshold", "data_selection_t": 100}
-        with self.assertRaisesRegex(
-            ValueError,
-            "All features are grouped using method",
-        ):
-            select_microbial_features(self.ft, config, "F")
-
     def test_select_microbial_features_variance_threshold(self):
         # expected
         exp_ft = self.ft.copy()
