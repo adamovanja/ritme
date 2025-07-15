@@ -38,8 +38,8 @@ requirements:
     - qiime2::qiime2
     - qiime2::q2-feature-table
     - qiime2::q2-phylogeny
-    - ray-default
-    - ray-tune
+    - ray-default>=2.40.0
+    - ray-tune>=2.40.0
     - scikit-bio
     - scikit-learn
     - scipy
