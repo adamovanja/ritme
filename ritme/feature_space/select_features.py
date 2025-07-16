@@ -198,7 +198,7 @@ def select_microbial_features(feat, config, ft_prefix):
     else:
         raise ValueError(f"Unknown method: {method}.")
 
-    if len(group_ft_ls) == 1:
+    if len(group_ft_ls) <= 1:
         warnings.warn(
             f"No features found to group using method: {method}. "
             f"Returning original feature table."

@@ -57,7 +57,7 @@ def _calculate_metrics(all_preds: pd.DataFrame, model_type: str) -> pd.DataFrame
             pred_split["true"], pred_split["pred"]
         )
         metrics.loc[model_type, f"pearson_corr_{split}"] = pearsonr(
-            pred_split["true"], pred_split["pred"]
+            pred_split["true"].astype(float), pred_split["pred"]
         )[0]
     return metrics
 

@@ -409,9 +409,15 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
         obs_ft = select_microbial_features(self.ft, config, "F")
         assert_frame_equal(self.ft, obs_ft)
 
-    def test_select_microbial_features_none_grouped(self):
+    def test_select_microbial_features_none_grouped_one_selected(self):
         with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
             config = {"data_selection": "abundance_ith", "data_selection_i": 4}
+            obs_ft = select_microbial_features(self.ft, config, "F")
+        assert_frame_equal(self.ft, obs_ft)
+
+    def test_select_microbial_features_none_grouped_zero_selected(self):
+        with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
+            config = {"data_selection": "abundance_threshold", "data_selection_t": 0.5}
             obs_ft = select_microbial_features(self.ft, config, "F")
         assert_frame_equal(self.ft, obs_ft)
 
