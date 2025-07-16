@@ -172,7 +172,7 @@ experiments/data_splits_mlflow
 experiments/data_splits_wandb
 experiments/data_splits_ma2
 experiments/best_models
-
+experiments/ritme_example_usage_nn.ipynb
 # all but one json config file
 *.json
 !run_config.json

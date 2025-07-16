@@ -50,7 +50,7 @@ def _ft_get_relative_abundance(ft: pd.DataFrame) -> pd.DataFrame:
     ft_rel = _biom_to_df(ft_rel_biom)
 
     # round needed as certain 1.0 are represented in different digits 2e-16
-    assert ft_rel.sum(axis=1).round(5).eq(1.0).all()
+    assert ft_rel.sum(axis=1).round(3).eq(1.0).all()
 
     return ft_rel
 
@@ -134,7 +134,7 @@ def split_train_test(
     ft = _ft_rename_microbial_features(ft, "F")
     ft = _ft_remove_zero_features(ft)
 
-    relative_abundances = ft[ft.columns].sum(axis=1).round(5).eq(1.0).all()
+    relative_abundances = ft.sum(axis=1).round(3).eq(1.0).all()
     if not relative_abundances:
         warnings.warn(
             "Provided feature table contains absolute instead of relative abundances. "

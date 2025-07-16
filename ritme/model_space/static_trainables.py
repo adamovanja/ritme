@@ -344,6 +344,8 @@ class NeuralNet(LightningModule):
         self.dropout_rate = dropout_rate
         self.weight_decay = weight_decay
 
+        self.input_norm = nn.BatchNorm1d(n_units[0])
+
         self.classes = classes
         if nn_type == "classification" and classes is not None:
             self.class_to_index = {c: i for i, c in enumerate(classes)}
@@ -368,6 +370,7 @@ class NeuralNet(LightningModule):
         self.validation_targets = []
 
     def forward(self, x):
+        x = self.input_norm(x)
         for layer in self.layers:
             x = layer(x)
         return x
