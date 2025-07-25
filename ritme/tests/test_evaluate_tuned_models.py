@@ -63,9 +63,7 @@ class TestEvaluateTunedModels(unittest.TestCase):
         all_preds = _predict_w_tuned_model(
             self.mock_tuned_model, self.exp_config, self.train_val, self.test
         )
-        mock_get_predictions.assert_called_with(
-            ANY, ANY, "test_target", ["F1", "F2"], ANY
-        )
+        mock_get_predictions.assert_called_with(ANY, ANY, "test_target", ANY)
         assert_frame_equal(all_preds, exp_all_preds)
 
     def test_calculate_metrics(self):

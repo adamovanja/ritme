@@ -41,6 +41,7 @@ class TestStaticSearchSpace(unittest.TestCase):
             "data_aggregation": "tax_class",
             "data_selection": None,
             "data_transform": "clr",
+            "data_enrich": None,
         }
         self.train_val = pd.DataFrame(
             {

@@ -12,6 +12,9 @@
     "rf"
   ],
   "max_cuncurrent_trials": 5,
+  "model_hyperparameters": {
+    "data_enrich_with": null
+  },
   "num_trials": 2,
   "optuna_searchspace_sampler": "TPESampler",
   "seed_data": 12,

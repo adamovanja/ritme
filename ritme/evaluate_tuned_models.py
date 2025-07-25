@@ -31,14 +31,13 @@ def _predict_w_tuned_model(
 ):
     # define
     target = exp_config["target"]
-    features = [x for x in train_val.columns if x.startswith("F")]
 
     # create predictions on train_val and test set - note: ft aggregation,
     # selection and transformation are originally also performed on train_val
     # directly before splitting to train-val for hyperparameter search - so no
     # problem with doing this again here
-    train_pred = get_predictions(train_val, tuned_model, target, features, "train")
-    test_pred = get_predictions(test, tuned_model, target, features, "test")
+    train_pred = get_predictions(train_val, tuned_model, target, "train")
+    test_pred = get_predictions(test, tuned_model, target, "test")
     all_pred = pd.concat([train_pred, test_pred])
 
     return all_pred

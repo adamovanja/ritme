@@ -373,6 +373,10 @@ def run_all_trials(
             model_hparams_type = model_hyperparameters.get("nn_all_types", {})
         else:
             model_hparams_type = model_hyperparameters.get(model, {})
+        # Get data hparam
+        model_hparams_type["data_enrich_with"] = model_hyperparameters.get(
+            "data_enrich_with", None
+        )
 
         result = run_trials(
             mlflow_uri,

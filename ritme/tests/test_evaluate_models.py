@@ -1,10 +1,11 @@
+import os
 import pickle
 import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_allclose, assert_array_equal
 from pandas.testing import assert_frame_equal
 from ray.air.result import Result
 
@@ -145,9 +146,7 @@ class TestEvaluateModels(unittest.TestCase):
         mock_open.assert_called_once()
 
     def test_get_predictions(self):
-        predictions = get_predictions(
-            self.data, self.tmodel, "target", ["feature1", "feature2"], "train"
-        )
+        predictions = get_predictions(self.data, self.tmodel, "target", "train")
         self.assertIsInstance(predictions, pd.DataFrame)
         self.assertIn("true", predictions.columns)
         self.assertIn("pred", predictions.columns)
@@ -160,42 +159,41 @@ class DummySklearnModel:
     """
 
     def predict(self, X):
-        return np.mean(X, axis=1)
+        return np.max(X, axis=1)
 
 
 class TestTunedModelImplementation(unittest.TestCase):
     # only testing functionality that was not already tested elsewhere
-
-    @classmethod
-    def setUpClass(cls):
-        # Minimal taxonomy DataFrame
-        cls.tax_df = pd.DataFrame(
-            {"Taxon": ["c__Bacilli", "c__Clostridia"], "Confidence": [0.9, 0.8]},
-            index=["FSp1", "FSp2"],
-        )
-        # Minimal data_config to exercise aggregator, selector & transformer
-        cls.data_config = {
-            "data_aggregation": "tax_class",
-            "data_transform": "ilr",
-            "data_selection": "abundance_ith",
-            "data_alr_denom_idx": 0,
-        }
-
     def setUp(self):
-        self.data = pd.DataFrame(
-            {
-                "FSp1": [10, 5],
-                "FSp2": [3, 2],
-                "Other": [1, 1],
-            }
+        super().setUp()
+        current_dir = os.path.dirname(__file__)
+
+        # data
+        self.data = pd.read_csv(
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
         )
-        self.data_test = pd.DataFrame(
-            {
-                "FSp1": [15, 6],
-                "FSp2": [5, 5],
-                "Other": [2, 2],
-            }
+        self.microb_raw_fts = [x for x in self.data.columns if x.startswith("F")]
+        self.data_test = self.data.copy()
+        self.data_test.index = [f"S{i}" for i in range(11, 21)]
+
+        self.tax_df = pd.read_csv(
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
         )
+
+        # model
+        self.data_config = {
+            "data_aggregation": "tax_class",
+            "data_transform": "alr",
+            "data_selection": "abundance_threshold",
+            "data_selection_t": 0.1,
+            "data_alr_denom_idx": 0,
+            "data_enrich": "shannon_and_metadata",
+            "data_enrich_with": ["md2"],
+        }
         self.model = DummySklearnModel()
         # create the TunedModel instance
         self.tmodel = TunedModel(
@@ -210,15 +208,79 @@ class TestTunedModelImplementation(unittest.TestCase):
         return_value=pd.DataFrame(),
     )
     def test_aggregate(self, mock_aggregate):
-        aggregated_df = self.tmodel.aggregate(self.data)
-        self.assertIsInstance(aggregated_df, pd.DataFrame)
+        _ = self.tmodel.aggregate(self.data)
         mock_aggregate.assert_called_once()
+
+    @patch(
+        "ritme.evaluate_models.transform_microbial_features",
+        return_value=pd.DataFrame(),
+    )
+    def test_transform(self, mock_transform):
+        _ = self.tmodel.transform(self.data)
+        mock_transform.assert_called_once()
+
+    def test_enrich_train(self):
+        _, _ = self.tmodel.enrich(
+            self.data,
+            self.microb_raw_fts,
+            self.data[self.microb_raw_fts],
+            self.data_config,
+            "train",
+        )
+        self.assertEqual(
+            self.tmodel.enriched_train_other_ft_ls, ["shannon_entropy", "md2_b"]
+        )
+
+    def test_enrich_test_fails_if_no_train_run_before(self):
+        fresh_tmodel = TunedModel(
+            model=self.model,
+            data_config=self.data_config,
+            tax=self.tax_df,
+            path="/some/fake/path",
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "To run tmodel.enrich on the test set it has to be run on the train "
+            "set first.",
+        ):
+            fresh_tmodel.enrich(
+                self.data,
+                self.microb_raw_fts,
+                self.data[self.microb_raw_fts],
+                self.data_config,
+                "test",
+            )
+
+    def test_enrich_test_w_train_run_before(self):
+        # run on train
+        _, _ = self.tmodel.enrich(
+            self.data,
+            self.microb_raw_fts,
+            self.data[self.microb_raw_fts],
+            self.data_config,
+            "train",
+        )
+        # run on "test"
+        enrich_test = self.data_test.copy()
+        enrich_test["md2"] = 5 * ["c"] + 5 * ["d"]
+        test_fts, df_test_enriched = self.tmodel.enrich(
+            enrich_test,
+            self.microb_raw_fts,
+            enrich_test[self.microb_raw_fts],
+            self.data_config,
+            "test",
+        )
+        self.assertEqual(
+            self.tmodel.enriched_train_other_ft_ls, ["shannon_entropy", "md2_b"]
+        )
+        self.assertEqual(test_fts, ["shannon_entropy", "md2_b"])
+        self.assertEqual(df_test_enriched["md2_b"].values.tolist(), 10 * [0])
 
     @patch("ritme.evaluate_models.select_microbial_features")
     def test_select_train(self, mock_select):
-        mock_select.return_value = self.data[["FSp1"]]
-        _ = self.tmodel.select(self.data, split="train")
-        self.assertEqual(self.tmodel.train_selected_fts, ["FSp1"])
+        mock_select.return_value = self.data[["F1"]]
+        _ = self.tmodel.select(self.data[self.microb_raw_fts], split="train")
+        self.assertEqual(self.tmodel.train_selected_fts, ["F1"])
 
     def test_select_test_fails_if_no_train_run_before(self):
         fresh_tmodel = TunedModel(
@@ -232,24 +294,74 @@ class TestTunedModelImplementation(unittest.TestCase):
             "To run tmodel.predict on the test set it has to be run on the train "
             "set first.",
         ):
-            fresh_tmodel.select(self.data, split="test")
+            fresh_tmodel.select(self.data[self.microb_raw_fts], split="test")
 
     @patch("ritme.evaluate_models.select_microbial_features")
     def test_select_test_w_train_run_before(self, mock_select):
         # run on train
-        mock_select.return_value = self.data[["FSp1"]]
-        _ = self.tmodel.select(self.data, split="train")
-        # run on test
-        df_test_selected = self.tmodel.select(self.data_test, split="test")
-        assert_frame_equal(df_test_selected, self.data_test[["FSp1"]])
+        mock_select.return_value = self.data[["F1"]]
+        _ = self.tmodel.select(self.data[self.microb_raw_fts], split="train")
+        # run on "test"
+        df_test_selected = self.tmodel.select(
+            self.data_test[self.microb_raw_fts], split="test"
+        )
+        assert_frame_equal(df_test_selected, self.data_test[["F1"]])
+
+    def test_predict_sklearn_model_w_all_ft_engineering_options(self):
+        # aggregate: F1, ..., F6 -> c__Bacilli, c__Clostridia
+        # selected: c__Bacilli, c__Clostridia -> c__Bacilli, c__Clostridia
+        # transformed: c__Bacilli, c__Clostridia -> alr_c__Clostridia
+        # enriched: alr_c__Clostridia -> alr_c__Clostridia, shannon_entropy, md2_b
+
+        # exp_x was calculated manually to verify that the correct x is used
+        # within below class
+        exp_x = pd.DataFrame(
+            {
+                "alr_c__Clostridia": [
+                    7.018775e05,
+                    1.000000e00,
+                    2.482959e-07,
+                    1.548812e06,
+                    6.156383e01,
+                    1.236978e-07,
+                    1.000000e00,
+                    1.838235e00,
+                    3.514286e01,
+                    1.000000e00,
+                ],
+                "shannon_entropy": [
+                    0.005097,
+                    -0.000000,
+                    2.22098738e-02,
+                    0.010021,
+                    0.364255,
+                    3.894847e-02,
+                    -0.000000,
+                    0.069242,
+                    0.031841,
+                    -0.000000,
+                ],
+            },
+            index=[f"S{i}" for i in range(1, 11)],
+        )
+        exp_x["md2_b"] = 3 * [0.0] + 4 * [1.0] + 3 * [0.0]
+        exp_pred = np.max(exp_x.values, axis=1).flatten()
+        obs_pred = self.tmodel.predict(self.data, split="train")
+        assert_allclose(obs_pred, exp_pred, rtol=1e-6)
 
     @patch("ritme.evaluate_models._preprocess_taxonomy_aggregation")
+    @patch.object(TunedModel, "enrich")
     @patch.object(TunedModel, "transform")
     @patch.object(TunedModel, "select")
     @patch.object(TunedModel, "aggregate")
-    def test_predict_trac_model(self, mock_agg, mock_sel, mock_trans, mock_preproc):
-        # only trac model tested since other trainables are already covered with
-        # other tests
+    def test_predict_trac_model(
+        self, mock_agg, mock_sel, mock_trans, mock_enrich, mock_preproc
+    ):
+        # ony testing that after _preprocess_taxonomy_aggregation the object
+        # does what it should
+        trac_data = pd.DataFrame({"FSp1": [1, 2], "FSp2": [3, 4]}, index=["S1", "S2"])
+        mock_trans.return_value = trac_data
+        mock_enrich.return_value = ([], trac_data)
         mock_preproc.return_value = (np.array([[2], [3]]), None)
 
         trac_model = {

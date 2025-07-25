@@ -479,6 +479,7 @@ class TestTrainableLogging(unittest.TestCase):
             "data_aggregation": None,
             "data_transform": None,
             "data_alr_denom_idx": None,
+            "data_enrich": None,
             "alpha": 0.1,
             "l1_ratio": 0.5,
             "batch_size": 64,
@@ -529,9 +530,7 @@ class TestTrainableLogging(unittest.TestCase):
             )
 
             for split, data in [("train", train), ("val", val)]:
-                preds = get_predictions(
-                    data, tuned_model, self.target, self.features, split=split
-                )
+                preds = get_predictions(data, tuned_model, self.target, split=split)
                 calculated_rmse = np.sqrt(
                     mean_squared_error(preds["pred"], preds["true"])
                 )
