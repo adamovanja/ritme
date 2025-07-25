@@ -53,10 +53,4 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     X_train, y_train = train[ft_ls_used], train[target].astype(float)
     X_val, y_val = val[ft_ls_used], val[target].astype(float)
 
-    return (
-        X_train.values,
-        y_train.values,
-        X_val.values,
-        y_val.values,
-        ft_ls_used,
-    )
+    return (X_train.values, y_train.values, X_val.values, y_val.values)

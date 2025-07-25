@@ -145,7 +145,7 @@ def train_linreg(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -240,7 +240,7 @@ def train_trac(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
     # ! derive matrix A
@@ -300,7 +300,7 @@ def train_rf(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -568,7 +568,7 @@ def train_nn(
     np.random.seed(seed_model)
 
     # Process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -753,7 +753,7 @@ def train_xgb(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
     # Set seeds
