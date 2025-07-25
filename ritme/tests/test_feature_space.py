@@ -6,7 +6,7 @@ import biom
 import numpy as np
 import pandas as pd
 from numpy.testing import assert_array_equal
-from pandas.testing import assert_frame_equal
+from pandas.testing import assert_frame_equal, assert_series_equal
 from parameterized import parameterized
 from scipy.stats.mstats import gmean
 from skbio import TreeNode
@@ -26,6 +26,10 @@ from ritme.feature_space.aggregate_features import (
     aggregate_ft_by_taxonomy,
     aggregate_microbial_features,
     extract_taxonomic_entity,
+)
+from ritme.feature_space.enrich_features import (
+    compute_shannon_diversity,
+    enrich_features,
 )
 from ritme.feature_space.select_features import (
     find_features_to_group_by_abundance_ith,
@@ -228,11 +232,13 @@ class TestAggregateMicrobialFeatures(unittest.TestCase):
     def setUp(self):
         super().setUp()
         current_dir = os.path.dirname(__file__)
-        self.ft = pd.read_csv(
+        ft_w_md = pd.read_csv(
             os.path.join(current_dir, "data/example_feature_table.tsv"),
             sep="\t",
             index_col=0,
         )
+        self.ft = ft_w_md.drop(columns=["md2"])
+
         self.tax = pd.read_csv(
             os.path.join(current_dir, "data/example_taxonomy.tsv"),
             sep="\t",
@@ -409,9 +415,15 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
         obs_ft = select_microbial_features(self.ft, config, "F")
         assert_frame_equal(self.ft, obs_ft)
 
-    def test_select_microbial_features_none_grouped(self):
+    def test_select_microbial_features_none_grouped_one_selected(self):
         with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
             config = {"data_selection": "abundance_ith", "data_selection_i": 4}
+            obs_ft = select_microbial_features(self.ft, config, "F")
+        assert_frame_equal(self.ft, obs_ft)
+
+    def test_select_microbial_features_none_grouped_zero_selected(self):
+        with self.assertWarnsRegex(Warning, r".* Returning original feature table."):
+            config = {"data_selection": "abundance_threshold", "data_selection_t": 0.5}
             obs_ft = select_microbial_features(self.ft, config, "F")
         assert_frame_equal(self.ft, obs_ft)
 
@@ -513,14 +525,6 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
 
         assert_frame_equal(exp_ft, obs_ft)
 
-    def test_select_microbial_features_abundance_threshold_all_grouped(self):
-        config = {"data_selection": "abundance_threshold", "data_selection_t": 100}
-        with self.assertRaisesRegex(
-            ValueError,
-            "All features are grouped using method",
-        ):
-            select_microbial_features(self.ft, config, "F")
-
     def test_select_microbial_features_variance_threshold(self):
         # expected
         exp_ft = self.ft.copy()
@@ -543,6 +547,130 @@ class TestSelectMicrobialFeatures(unittest.TestCase):
             select_microbial_features(self.ft, config, "F")
 
 
+class TestEnrichFeatures(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.train_val = pd.DataFrame(
+            {
+                "md1": ["a", "b", "c"],
+                "md2": [1, 1, 2],
+                "F1": [0.1, 0.0, 0.1],
+                "F2": [0.2, 0.0, 0.1],
+                "F3": [0.2, 0.6, 0.5],
+                "F4": [0.5, 0.4, 0.3],
+                "target": [1, 2, 1],
+            },
+            index=["SR1", "SR2", "SR3"],
+        )
+
+        self.train_val_t = self.train_val.copy()
+        self.train_val_t["F_low_abun"] = self.train_val[["F1", "F2"]].sum(axis=1)
+        self.train_val_t.drop(columns=["F1", "F2"], inplace=True)
+
+    def test_compute_shannon_diversity(self):
+        exp_entropy = pd.Series(
+            [1.2206072605530174, 0.6730116650092564, 1.1682824461765626],
+            index=self.train_val.index,
+        )
+        obs_entropy = compute_shannon_diversity(
+            self.train_val, ["F1", "F2", "F3", "F4"]
+        )
+        assert_series_equal(exp_entropy, obs_entropy)
+
+    def test_enrich_features_shannon(self):
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        # expected
+        exp_df = self.train_val_t.copy()
+        exp_df["shannon_entropy"] = compute_shannon_diversity(
+            self.train_val, microbial_fts
+        )
+
+        # observed
+        config = {"data_enrich": "shannon"}
+        obs_other_ft_ls, obs_df = enrich_features(
+            self.train_val, microbial_fts, self.train_val_t, config
+        )
+
+        assert_frame_equal(exp_df, obs_df)
+        self.assertEqual(["shannon_entropy"], obs_other_ft_ls)
+
+    def test_enrich_features_metadata_only_categorical(self):
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        enrich_w_col = ["md1"]
+        config = {"data_enrich": "metadata_only", "data_enrich_with": enrich_w_col}
+
+        exp_df = self.train_val_t.copy()
+        exp_df["md1_b"] = [0.0, 1.0, 0.0]
+        exp_df["md1_c"] = [0.0, 0.0, 1.0]
+        exp_other_ft_ls = ["md1_b", "md1_c"]
+
+        obs_other_ft_ls, obs_df = enrich_features(
+            self.train_val, microbial_fts, self.train_val_t, config
+        )
+
+        assert_frame_equal(exp_df, obs_df)
+        self.assertEqual(exp_other_ft_ls, obs_other_ft_ls)
+
+    def test_enrich_features_metadata_only_float(self):
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        enrich_w_col = ["md2"]
+        config = {"data_enrich": "metadata_only", "data_enrich_with": enrich_w_col}
+
+        exp_df = self.train_val_t.copy()
+
+        obs_other_ft_ls, obs_df = enrich_features(
+            self.train_val, microbial_fts, self.train_val_t, config
+        )
+
+        assert_frame_equal(exp_df, obs_df)
+        self.assertEqual(enrich_w_col, obs_other_ft_ls)
+
+    def test_enrich_features_metadata_float_n_categorical(self):
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        enrich_w_col = ["md1", "md2"]
+        config = {"data_enrich": "metadata_only", "data_enrich_with": enrich_w_col}
+
+        exp_df = self.train_val_t.copy()
+        exp_df["md1_b"] = [0.0, 1.0, 0.0]
+        exp_df["md1_c"] = [0.0, 0.0, 1.0]
+        exp_other_ft_ls = ["md1_b", "md1_c", "md2"]
+
+        obs_other_ft_ls, obs_df = enrich_features(
+            self.train_val, microbial_fts, self.train_val_t, config
+        )
+
+        assert_frame_equal(exp_df, obs_df)
+        self.assertEqual(exp_other_ft_ls, obs_other_ft_ls)
+
+    def test_enrich_features_metadata_not_fount(self):
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        config = {"data_enrich": "metadata_only", "data_enrich_with": ["md3"]}
+
+        with self.assertRaisesRegex(
+            ValueError, r"Feature {'md3'} not found in the training data."
+        ):
+            enrich_features(self.train_val, microbial_fts, self.train_val_t, config)
+
+    def test_enrich_features_shannon_n_metadata(self):
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        config = {
+            "data_enrich": "shannon_and_metadata",
+            "data_enrich_with": ["md2"],
+        }
+        # expected
+        exp_df = self.train_val_t.copy()
+        exp_df["shannon_entropy"] = compute_shannon_diversity(
+            self.train_val, microbial_fts
+        )
+        # observed
+        obs_other_ft_ls, obs_df = enrich_features(
+            self.train_val, microbial_fts, self.train_val_t, config
+        )
+
+        assert_frame_equal(exp_df, obs_df)
+        self.assertEqual(["shannon_entropy", "md2"], obs_other_ft_ls)
+
+
 class TestProcessTrain(unittest.TestCase):
     def setUp(self):
         super().setUp()
@@ -553,6 +681,8 @@ class TestProcessTrain(unittest.TestCase):
             "data_selection_i": None,
             "data_selection_q": None,
             "data_selection_t": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
         }
         self.train_val = pd.DataFrame(
             {
@@ -576,6 +706,7 @@ class TestProcessTrain(unittest.TestCase):
             else:
                 assert expected == actual, f"Expected {expected}, but got {actual}"
 
+    @patch("ritme.feature_space._process_train.enrich_features")
     @patch("ritme.feature_space._process_train.aggregate_microbial_features")
     @patch("ritme.feature_space._process_train.select_microbial_features")
     @patch("ritme.feature_space._process_train.transform_microbial_features")
@@ -586,6 +717,7 @@ class TestProcessTrain(unittest.TestCase):
         mock_transform_features,
         mock_select_features,
         mock_aggregate_features,
+        mock_enrich_features,
     ):
         # only no_feature_engineering is tested here since all individual
         # functions were tested above
@@ -594,12 +726,14 @@ class TestProcessTrain(unittest.TestCase):
         mock_aggregate_features.return_value = ft
         mock_select_features.return_value = ft
         mock_transform_features.return_value = ft
+
+        mock_enrich_features.return_value = ([], self.train_val)
         mock_split_data_grouped.return_value = (
             self.train_val.iloc[:2, :],
             self.train_val.iloc[2:, :],
         )
 
-        X_train, y_train, X_val, y_val, ft_col = process_train(
+        X_train, y_train, X_val, y_val = process_train(
             self.config,
             self.train_val,
             self.target,
@@ -613,8 +747,15 @@ class TestProcessTrain(unittest.TestCase):
         self._assert_called_with_df(mock_select_features, ft, self.config, "F")
         self._assert_called_with_df(mock_transform_features, ft, None)
         self._assert_called_with_df(
+            mock_enrich_features,
+            self.train_val,
+            ft.columns.tolist(),
+            self.train_val,
+            self.config,
+        )
+        self._assert_called_with_df(
             mock_split_data_grouped,
-            self.train_val[[self.host_id, self.target] + ls_ft],
+            self.train_val,
             "host_id",
             0.8,
             0,

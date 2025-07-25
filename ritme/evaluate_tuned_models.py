@@ -6,6 +6,7 @@ import pandas as pd
 import seaborn as sns
 import typer
 from matplotlib.transforms import offset_copy
+from scipy.stats import pearsonr
 from sklearn.metrics import r2_score, root_mean_squared_error
 
 from ritme._decorators import helper_function, main_function
@@ -30,14 +31,13 @@ def _predict_w_tuned_model(
 ):
     # define
     target = exp_config["target"]
-    features = [x for x in train_val.columns if x.startswith("F")]
 
     # create predictions on train_val and test set - note: ft aggregation,
     # selection and transformation are originally also performed on train_val
     # directly before splitting to train-val for hyperparameter search - so no
     # problem with doing this again here
-    train_pred = get_predictions(train_val, tuned_model, target, features, "train")
-    test_pred = get_predictions(test, tuned_model, target, features, "test")
+    train_pred = get_predictions(train_val, tuned_model, target, "train")
+    test_pred = get_predictions(test, tuned_model, target, "test")
     all_pred = pd.concat([train_pred, test_pred])
 
     return all_pred
@@ -55,6 +55,9 @@ def _calculate_metrics(all_preds: pd.DataFrame, model_type: str) -> pd.DataFrame
         metrics.loc[model_type, f"r2_{split}"] = r2_score(
             pred_split["true"], pred_split["pred"]
         )
+        metrics.loc[model_type, f"pearson_corr_{split}"] = pearsonr(
+            pred_split["true"].astype(float), pred_split["pred"]
+        )[0]
     return metrics
 
 

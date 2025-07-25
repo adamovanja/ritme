@@ -12,6 +12,7 @@ from ray.air.result import Result
 
 from ritme.feature_space._process_trac_specific import _preprocess_taxonomy_aggregation
 from ritme.feature_space.aggregate_features import aggregate_microbial_features
+from ritme.feature_space.enrich_features import enrich_features
 from ritme.feature_space.select_features import select_microbial_features
 from ritme.feature_space.transform_features import transform_microbial_features
 from ritme.model_space.static_trainables import NeuralNet
@@ -117,6 +118,8 @@ class TunedModel:
         self.path = path
         self.train_selected_fts = []
         self.ft_prefix = "F"
+        self.enriched_train_cols = []
+        self.enriched_train_other_ft_ls = []
 
     def aggregate(self, data: pd.DataFrame) -> pd.DataFrame:
         return aggregate_microbial_features(
@@ -153,39 +156,71 @@ class TunedModel:
         return data[self.train_selected_fts]
 
     def transform(self, data: pd.DataFrame) -> Any:
-        transformed = transform_microbial_features(
+        return transform_microbial_features(
             data,
             self.data_config["data_transform"],
             self.data_config["data_alr_denom_idx"],
         )
-        if isinstance(self.model, xgb.core.Booster):
-            return xgb.DMatrix(transformed)
-        elif isinstance(self.model, NeuralNet):
-            return torch.tensor(transformed.values, dtype=torch.float32)
+
+    def enrich(
+        self,
+        data: pd.DataFrame,
+        micro_ft_ls: list,
+        transformed: pd.DataFrame,
+        config: dict,
+        split: str = "train",
+    ) -> tuple[list, pd.DataFrame]:
+        other_ft_ls, enriched = enrich_features(data, micro_ft_ls, transformed, config)
+        if split == "train":
+            # save columns for test set later on
+            self.enriched_train_cols = enriched.columns.tolist()
+            self.enriched_train_other_ft_ls = other_ft_ls
+        elif len(self.enriched_train_cols) == 0:
+            raise ValueError(
+                "To run tmodel.enrich on the test set it has to be run on the train "
+                "set first."
+            )
         else:
-            return transformed.values
+            # reindex dummies to match the train set
+            enriched = enriched.reindex(
+                columns=self.enriched_train_cols, fill_value=0
+            ).copy()
+            other_ft_ls = self.enriched_train_other_ft_ls
+        return other_ft_ls, enriched
 
     def predict(self, data: pd.DataFrame, split: str) -> Any:
-        feature_ls = [x for x in data.columns if x.startswith(self.ft_prefix)]
-        aggregated = self.aggregate(data[feature_ls])
+        micro_ft_raw = [x for x in data.columns if x.startswith(self.ft_prefix)]
+        # below feature engineering only contains microbial features
+        aggregated = self.aggregate(data[micro_ft_raw])
         # selection only possible if it was run on test set before!
         selected = self.select(aggregated, split)
         transformed = self.transform(selected)
+        micro_ft_transf = transformed.columns.tolist()
+        # enrichment adds metadata to feature table
+        # enrichment only possible if it was run on test set before!
+        other_ft_ls, enriched = self.enrich(
+            data, micro_ft_raw, transformed, self.data_config, split
+        )
+
+        X = enriched[micro_ft_transf + other_ft_ls]
+
         if isinstance(self.model, NeuralNet):
             self.model.eval()
             with torch.no_grad():
-                X_t = transformed.clone().detach()
+                X_t = torch.tensor(X.values, dtype=torch.float32).clone().detach()
                 predicted = self.model(X_t)
                 predicted = self.model._prepare_predictions(predicted)
         elif isinstance(self.model, dict):
             # trac model
             log_geom, _ = _preprocess_taxonomy_aggregation(
-                transformed, self.model["matrix_a"].values
+                X.values, self.model["matrix_a"].values
             )
             alpha = self.model["model"].values
             predicted = log_geom.dot(alpha[1:]) + alpha[0]
+        elif isinstance(self.model, xgb.core.Booster):
+            predicted = self.model.predict(xgb.DMatrix(X)).flatten()
         else:
-            predicted = self.model.predict(transformed).flatten()
+            predicted = self.model.predict(X.values).flatten()
         return predicted
 
 
@@ -272,7 +307,6 @@ def get_predictions(
     data: pd.DataFrame,
     tmodel: TunedModel,
     target: str,
-    features: list,
     split: str = None,
 ) -> pd.DataFrame:
     """
@@ -282,7 +316,6 @@ def get_predictions(
         data (pd.DataFrame): The input data for prediction.
         tmodel (TunedModel): The tuned model to use for prediction.
         target (str): The target column name in the data.
-        features (list): The list of feature column names in the data.
         split (str, optional): The data split type (e.g., 'train', 'test').
         Defaults to None.
 
@@ -294,6 +327,6 @@ def get_predictions(
     saved_pred = data[[target]].copy()
     saved_pred.rename(columns={target: "true"}, inplace=True)
     # pred, split
-    saved_pred["pred"] = tmodel.predict(data[features], split)
+    saved_pred["pred"] = tmodel.predict(data, split)
     saved_pred["split"] = split
     return saved_pred

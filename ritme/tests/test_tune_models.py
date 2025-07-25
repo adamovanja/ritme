@@ -355,7 +355,7 @@ class TestMainTuneModels(unittest.TestCase):
             self.num_trials,
             self.max_concurrent_trials,
             fully_reproducible=False,
-            model_hyperparameters={},
+            model_hyperparameters={"data_enrich_with": None},
             optuna_searchspace_sampler="TPESampler",
         )
 

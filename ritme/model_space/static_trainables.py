@@ -145,7 +145,7 @@ def train_linreg(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -240,7 +240,7 @@ def train_trac(
     None
     """
     # ! process dataset: X with features & y with host_id
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
     # ! derive matrix A
@@ -300,7 +300,7 @@ def train_rf(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -344,6 +344,8 @@ class NeuralNet(LightningModule):
         self.dropout_rate = dropout_rate
         self.weight_decay = weight_decay
 
+        self.input_norm = nn.BatchNorm1d(n_units[0])
+
         self.classes = classes
         if nn_type == "classification" and classes is not None:
             self.class_to_index = {c: i for i, c in enumerate(classes)}
@@ -368,6 +370,7 @@ class NeuralNet(LightningModule):
         self.validation_targets = []
 
     def forward(self, x):
+        x = self.input_norm(x)
         for layer in self.layers:
             x = layer(x)
         return x
@@ -565,7 +568,7 @@ def train_nn(
     np.random.seed(seed_model)
 
     # Process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
 
@@ -750,7 +753,7 @@ def train_xgb(
     None
     """
     # ! process dataset
-    X_train, y_train, X_val, y_val, ft_col = process_train(
+    X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data
     )
     # Set seeds

@@ -42,8 +42,10 @@ class TestEvaluateTunedModels(unittest.TestCase):
             {
                 "rmse_train": [0.1],
                 "r2_train": [0.985],
+                "pearson_corr_train": [1.0],
                 "rmse_test": [0.1],
                 "r2_test": [0.96],
+                "pearson_corr_test": [1.0],
             },
             index=[self.model_type],
         )
@@ -61,9 +63,7 @@ class TestEvaluateTunedModels(unittest.TestCase):
         all_preds = _predict_w_tuned_model(
             self.mock_tuned_model, self.exp_config, self.train_val, self.test
         )
-        mock_get_predictions.assert_called_with(
-            ANY, ANY, "test_target", ["F1", "F2"], ANY
-        )
+        mock_get_predictions.assert_called_with(ANY, ANY, "test_target", ANY)
         assert_frame_equal(all_preds, exp_all_preds)
 
     def test_calculate_metrics(self):

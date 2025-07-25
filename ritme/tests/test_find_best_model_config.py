@@ -45,11 +45,12 @@ class TestFindBestModelConfig(unittest.TestCase):
         }
         # data
         current_dir = os.path.dirname(__file__)
-        self.ft = pd.read_csv(
+        ft_w_md = pd.read_csv(
             os.path.join(current_dir, "data/example_feature_table.tsv"),
             sep="\t",
             index_col=0,
         )
+        self.ft = ft_w_md.drop(columns=["md2"])
         self.train_val = self.ft.copy()
         self.train_val["target_column"] = [1, 2, 3, 4, 4, 4, 0, 6, 5, 8]
         self.train_val["stratify_column"] = [

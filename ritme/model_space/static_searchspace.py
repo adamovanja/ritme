@@ -24,7 +24,7 @@ def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None
         trial.suggest_float("data_selection_t", min_value, max_value, log=True)
 
 
-def get_data_eng_space(trial, train_val, tax) -> None:
+def get_data_eng_space(trial, train_val, tax, md_enrich) -> str:
     # feature aggregation
     data_aggregation_options = (
         [None]
@@ -53,13 +53,26 @@ def get_data_eng_space(trial, train_val, tax) -> None:
     trial.suggest_categorical(
         "data_transform", [None, "clr", "ilr", "alr", "pa", "rank"]
     )
-    return None
+
+    # feature enrichment
+    data_enrich_options = (
+        [None, "shannon"]
+        if md_enrich is None
+        else [None, "shannon", "shannon_and_metadata", "metadata_only"]
+    )
+    data_enrich = trial.suggest_categorical("data_enrich", data_enrich_options)
+    if data_enrich is not None:
+        data_enrich_with = md_enrich
+    else:
+        data_enrich_with = None
+    return data_enrich_with
 
 
 def get_linreg_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, str]:
-    get_data_eng_space(trial, train_val, tax)
+    md_enrich = model_hyperparameters.get("data_enrich_with", None)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
 
     # alpha controls overall regularization strength, alpha = 0 is equivalent to
     # an ordinary least square - but = 0 is not numerically reliable. large
@@ -75,13 +88,14 @@ def get_linreg_space(
         "l1_ratio", l1_ratio["min"], l1_ratio["max"], step=l1_ratio["step"]
     )
 
-    return {"model": "linreg"}
+    return {"model": "linreg", "data_enrich_with": data_enrich_with}
 
 
 def get_rf_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, str]:
-    get_data_eng_space(trial, train_val, tax)
+    md_enrich = model_hyperparameters.get("data_enrich_with", None)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
 
     # number of trees in forest: the more the higher computational costs
     n_estimators = model_hyperparameters.get(
@@ -162,7 +176,7 @@ def get_rf_space(
     bootstrap = model_hyperparameters.get("bootstrap", [True, False])
     trial.suggest_categorical("bootstrap", bootstrap)
 
-    return {"model": "rf"}
+    return {"model": "rf", "data_enrich_with": data_enrich_with}
 
 
 def get_nn_space(
@@ -172,7 +186,8 @@ def get_nn_space(
     model_name: str,
     model_hyperparameters: dict = {},
 ) -> Dict[str, str]:
-    get_data_eng_space(trial, train_val, tax)
+    md_enrich = model_hyperparameters.get("data_enrich_with", None)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
 
     # define n_hidden_layers: sample uniformly between [min,max] rounding to
     # multiples of step
@@ -248,13 +263,14 @@ def get_nn_space(
         log=es_delta_range["log"],
     )
 
-    return {"model": model_name}
+    return {"model": model_name, "data_enrich_with": data_enrich_with}
 
 
 def get_xgb_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, Any]:
-    get_data_eng_space(trial, train_val, tax)
+    md_enrich = model_hyperparameters.get("data_enrich_with", None)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
 
     # max_depth: value between 2 and 6 is often a good starting point
     max_depth = model_hyperparameters.get("max_depth", {"min": 2, "max": 10})
@@ -319,7 +335,7 @@ def get_xgb_space(
         "colsample_bytree", colsample_bytree["min"], colsample_bytree["max"]
     )
 
-    return {"model": "xgb"}
+    return {"model": "xgb", "data_enrich_with": data_enrich_with}
 
 
 def get_trac_space(
@@ -345,6 +361,7 @@ def get_trac_space(
         "data_selection_q": None,
         "data_selection_t": None,
         "data_transform": None,
+        "data_enrich": None,
     }
     return {"model": "trac", **data_eng_space_trac}
 

@@ -13,6 +13,7 @@
   ],
   "max_cuncurrent_trials": 5,
   "model_hyperparameters": {
+    "data_enrich_with": null,
     "linreg": {
       "alpha": {
         "log": true,
