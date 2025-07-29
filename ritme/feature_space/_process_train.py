@@ -33,7 +33,11 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
         if config["data_transform"] == "alr"
         else None
     )
-
+    # no data transformation if only one feature is selected
+    if len(ft_selected.columns.tolist()) == 1:
+        # ! HOTFIX: should be done more elegantly such that Optuna knows about
+        # ! this
+        config["data_transform"] = None
     ft_transformed = transform_microbial_features(
         ft_selected, config["data_transform"], config["data_alr_denom_idx"]
     )

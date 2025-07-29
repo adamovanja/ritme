@@ -761,6 +761,47 @@ class TestProcessTrain(unittest.TestCase):
             0,
         )
 
+    @patch("ritme.feature_space._process_train.enrich_features")
+    @patch("ritme.feature_space._process_train.aggregate_microbial_features")
+    @patch("ritme.feature_space._process_train.select_microbial_features")
+    @patch("ritme.feature_space._process_train.transform_microbial_features")
+    @patch("ritme.feature_space._process_train._split_data_grouped")
+    def test_process_train_one_ft_selected_no_ft_transformed(
+        self,
+        mock_split_data_grouped,
+        mock_transform_features,
+        mock_select_features,
+        mock_aggregate_features,
+        mock_enrich_features,
+    ):
+        # goal is to ensure that data_transform is set to None if only 1 feature
+        # is selected
+        ls_ft = ["F0", "F1"]
+        ft = self.train_val[ls_ft]
+        one_ft_config = self.config.copy()
+        one_ft_config["data_transform"] = "ilr"
+
+        mock_aggregate_features.return_value = ft
+        mock_select_features.return_value = ft[["F0"]]
+        mock_transform_features.return_value = ft[["F0"]]
+        mock_enrich_features.return_value = ([], self.train_val)
+        mock_split_data_grouped.return_value = (
+            self.train_val.iloc[:2, :],
+            self.train_val.iloc[2:, :],
+        )
+
+        X_train, y_train, X_val, y_val = process_train(
+            one_ft_config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+        )
+
+        # Assert ilr -> None
+        self._assert_called_with_df(mock_transform_features, ft[["F0"]], None)
+
 
 class TestProcessTracSpecific(unittest.TestCase):
     def setUp(self):

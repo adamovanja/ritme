@@ -169,8 +169,10 @@ def select_microbial_features(feat, config, ft_prefix):
     if method.endswith("_ith") or method.endswith("_topi"):
         # ! HOTFIX: should be done more elegantly such that Optuna knows about
         # ! this
-        i = _reset_i_too_large(config["data_selection_i"], feat)
-
+        config["data_selection_i"] = _reset_i_too_large(
+            config["data_selection_i"], feat
+        )
+        i = config["data_selection_i"]
     if method == "abundance_ith":
         group_ft_ls = find_features_to_group_by_abundance_ith(feat, i)
     elif method == "variance_ith":
