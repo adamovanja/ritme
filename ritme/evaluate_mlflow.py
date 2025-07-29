@@ -397,3 +397,36 @@ def extract_run_config(trials):
     varying_cols = trials.columns[trials.nunique() > 1]
     varying_cols = varying_cols.drop("artifact_uri")
     return trials[varying_cols]
+
+
+def post_process_data_transform(all_trials):
+    """
+    Post-process data_transform entry - only needed in MLflow since WandB
+    updates these automatically
+    """
+    proc_trials = all_trials.copy()
+    # none, shannon, metadata_only shannon_and_metadata
+
+    #  get number of metadata fields
+    proc_trials.loc[proc_trials["params.data_enrich"] == "None", "nb_md_fts"] = 0
+    proc_trials.loc[proc_trials["params.data_enrich"] == "shannon", "nb_md_fts"] = 1
+    proc_trials.loc[
+        proc_trials["params.data_enrich"] == "metadata_only", "nb_md_fts"
+    ] = proc_trials["params.data_enrich_with"].str.len()
+    proc_trials.loc[
+        proc_trials["params.data_enrich"] == "shannon_and_metadata", "nb_md_fts"
+    ] = (proc_trials["params.data_enrich_with"].str.len()) + 1
+
+    # from this retrieve # microbiome features
+    proc_trials["nb_microbiome_fts"] = (
+        proc_trials["metrics.nb_features"] - proc_trials["nb_md_fts"]
+    )
+
+    # wherever nb_microbiome_fts is 1, set data_transform to None
+    # this was performed in ritme - but MLflow UI did not update this automatically
+    proc_trials.loc[
+        proc_trials["nb_microbiome_fts"] == 1, "params.data_transform"
+    ] = "None"
+    # drop helper columns
+    proc_trials = proc_trials.drop(columns=["nb_md_fts", "nb_microbiome_fts"])
+    return proc_trials
