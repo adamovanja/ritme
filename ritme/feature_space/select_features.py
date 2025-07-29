@@ -128,7 +128,7 @@ def find_features_to_group_by_abundance_threshold(
 ) -> List[str]:
     """
     Finds features to sum based on a fixed threshold of abundance. Returns the
-    features with abundance lower than the specified threshold.
+    features with summed abundance lower than the specified threshold.
     """
     return _find_features_to_group_threshold(
         feature_table, threshold, measure_func=lambda x: x.sum()

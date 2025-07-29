@@ -69,7 +69,7 @@ class TestStaticSearchSpace(unittest.TestCase):
 
     @parameterized.expand(
         [
-            ("abundance", 0.05, 0.85),
+            ("abundance", 0.5, 1.45),
             ("variance", 0.01333333333333333, 0.15750000000000003),
         ]
     )
