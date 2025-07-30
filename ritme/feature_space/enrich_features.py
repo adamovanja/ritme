@@ -62,6 +62,7 @@ def enrich_features(
                     train_val_out = pd.concat([train_val_out, dummies], axis=1)
                     other_ft_ls.extend(dummies.columns.tolist())
                 else:
+                    train_val_out[feat] = col.astype(float)
                     other_ft_ls.append(feat)
 
     return other_ft_ls, train_val_out

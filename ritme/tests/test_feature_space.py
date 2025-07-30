@@ -617,6 +617,7 @@ class TestEnrichFeatures(unittest.TestCase):
         config = {"data_enrich": "metadata_only", "data_enrich_with": enrich_w_col}
 
         exp_df = self.train_val_t.copy()
+        exp_df["md2"] = exp_df["md2"].astype(float)
 
         obs_other_ft_ls, obs_df = enrich_features(
             self.train_val, microbial_fts, self.train_val_t, config
@@ -633,6 +634,7 @@ class TestEnrichFeatures(unittest.TestCase):
         exp_df = self.train_val_t.copy()
         exp_df["md1_b"] = [0.0, 1.0, 0.0]
         exp_df["md1_c"] = [0.0, 0.0, 1.0]
+        exp_df["md2"] = exp_df["md2"].astype(float)
         exp_other_ft_ls = ["md1_b", "md1_c", "md2"]
 
         obs_other_ft_ls, obs_df = enrich_features(
@@ -659,6 +661,7 @@ class TestEnrichFeatures(unittest.TestCase):
         }
         # expected
         exp_df = self.train_val_t.copy()
+        exp_df["md2"] = exp_df["md2"].astype(float)
         exp_df["shannon_entropy"] = compute_shannon_diversity(
             self.train_val, microbial_fts
         )
@@ -760,6 +763,47 @@ class TestProcessTrain(unittest.TestCase):
             0.8,
             0,
         )
+
+    @patch("ritme.feature_space._process_train.enrich_features")
+    @patch("ritme.feature_space._process_train.aggregate_microbial_features")
+    @patch("ritme.feature_space._process_train.select_microbial_features")
+    @patch("ritme.feature_space._process_train.transform_microbial_features")
+    @patch("ritme.feature_space._process_train._split_data_grouped")
+    def test_process_train_one_ft_selected_no_ft_transformed(
+        self,
+        mock_split_data_grouped,
+        mock_transform_features,
+        mock_select_features,
+        mock_aggregate_features,
+        mock_enrich_features,
+    ):
+        # goal is to ensure that data_transform is set to None if only 1 feature
+        # is selected
+        ls_ft = ["F0", "F1"]
+        ft = self.train_val[ls_ft]
+        one_ft_config = self.config.copy()
+        one_ft_config["data_transform"] = "ilr"
+
+        mock_aggregate_features.return_value = ft
+        mock_select_features.return_value = ft[["F0"]]
+        mock_transform_features.return_value = ft[["F0"]]
+        mock_enrich_features.return_value = ([], self.train_val)
+        mock_split_data_grouped.return_value = (
+            self.train_val.iloc[:2, :],
+            self.train_val.iloc[2:, :],
+        )
+
+        X_train, y_train, X_val, y_val = process_train(
+            one_ft_config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+        )
+
+        # Assert ilr -> None
+        self._assert_called_with_df(mock_transform_features, ft[["F0"]], None)
 
 
 class TestProcessTracSpecific(unittest.TestCase):

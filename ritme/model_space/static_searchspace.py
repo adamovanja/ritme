@@ -12,13 +12,13 @@ def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None
     elif data_selection.endswith("_threshold"):
         # choose thresholds based on train_val
         if data_selection.startswith("abundance"):
-            min_value = train_val.loc[:, feature_cols].min().min()
-            # get largest abundance
-            max_value = train_val.loc[:, feature_cols].max().max()
+            summed_abundances = train_val.loc[:, feature_cols].sum()
+            min_value = summed_abundances.min()
+            max_value = summed_abundances.max()
         elif data_selection.startswith("variance"):
-            min_value = train_val.loc[:, feature_cols].var().min()
-            # get second largest variance
-            max_value = train_val.loc[:, feature_cols].var().max()
+            ft_variances = train_val.loc[:, feature_cols].var()
+            min_value = ft_variances.min()
+            max_value = ft_variances.max()
         if min_value == 0:
             min_value = PSEUDOCOUNT
         trial.suggest_float("data_selection_t", min_value, max_value, log=True)

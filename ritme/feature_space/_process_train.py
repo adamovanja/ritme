@@ -33,7 +33,11 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
         if config["data_transform"] == "alr"
         else None
     )
-
+    # no data transformation if only one feature is selected
+    if len(ft_selected.columns.tolist()) == 1:
+        # ! HOTFIX: should be done more elegantly such that Optuna knows about
+        # ! this
+        config["data_transform"] = None
     ft_transformed = transform_microbial_features(
         ft_selected, config["data_transform"], config["data_alr_denom_idx"]
     )
@@ -50,7 +54,6 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
 
     # SPLIT
     train, val = _split_data_grouped(train_val_te, host_id, 0.8, seed_data)
-    X_train, y_train = train[ft_ls_used], train[target].astype(float)
-    X_val, y_val = val[ft_ls_used], val[target].astype(float)
-
+    X_train, y_train = train[ft_ls_used].astype(float), train[target].astype(float)
+    X_val, y_val = val[ft_ls_used].astype(float), val[target].astype(float)
     return (X_train.values, y_train.values, X_val.values, y_val.values)

@@ -201,8 +201,7 @@ class TunedModel:
         other_ft_ls, enriched = self.enrich(
             data, micro_ft_raw, transformed, self.data_config, split
         )
-
-        X = enriched[micro_ft_transf + other_ft_ls]
+        X = enriched[micro_ft_transf + other_ft_ls].astype(float)
 
         if isinstance(self.model, NeuralNet):
             self.model.eval()
