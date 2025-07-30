@@ -583,9 +583,10 @@ def train_nn(
         output_layer = [1]
         classes = None
     elif nn_type == "classification":
-        n_target_classes = len(np.unique(np.round(y_train)))
-        output_layer = [n_target_classes]
-        classes = sorted(np.unique(np.round(y_train)))
+        classes_train = np.unique(np.round(y_train).astype(int))
+        classes_val = np.unique(np.round(y_val).astype(int))
+        classes = sorted(set(classes_train) | set(classes_val))
+        output_layer = [len(classes)]
     elif nn_type == "ordinal_regression":
         # CORN reduces number of classes by 1
         n_target_classes = len(np.unique(np.round(y_train)))

@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, call, patch
 import numpy as np
 import pandas as pd
 import skbio
-import torch
 from parameterized import parameterized
 from ray import air, tune
 from sklearn.linear_model import LinearRegression
@@ -364,10 +363,10 @@ class TestTrainables(unittest.TestCase):
     ):
         # Setup mock return values
         mock_process_train.return_value = (
-            torch.rand(10, 5),
-            torch.tensor([0, 1, 2, 0, 1, 2, 0, 1, 2, 0], dtype=torch.long),
-            torch.rand(3, 5),
-            torch.tensor([0, 1, 0], dtype=torch.long),
+            np.random.rand(10, 5),
+            np.array([0, 1, 2, 0, 1, 2, 0, 1, 2, 0], dtype=np.int64),
+            np.random.rand(3, 5),
+            np.array([0, 1, 0], dtype=np.int64),
         )
         mock_load_data.return_value = (MagicMock(), MagicMock())
         mock_trainer_instance = mock_trainer.return_value
