@@ -617,6 +617,7 @@ class TestEnrichFeatures(unittest.TestCase):
         config = {"data_enrich": "metadata_only", "data_enrich_with": enrich_w_col}
 
         exp_df = self.train_val_t.copy()
+        exp_df["md2"] = exp_df["md2"].astype(float)
 
         obs_other_ft_ls, obs_df = enrich_features(
             self.train_val, microbial_fts, self.train_val_t, config
@@ -633,6 +634,7 @@ class TestEnrichFeatures(unittest.TestCase):
         exp_df = self.train_val_t.copy()
         exp_df["md1_b"] = [0.0, 1.0, 0.0]
         exp_df["md1_c"] = [0.0, 0.0, 1.0]
+        exp_df["md2"] = exp_df["md2"].astype(float)
         exp_other_ft_ls = ["md1_b", "md1_c", "md2"]
 
         obs_other_ft_ls, obs_df = enrich_features(
@@ -659,6 +661,7 @@ class TestEnrichFeatures(unittest.TestCase):
         }
         # expected
         exp_df = self.train_val_t.copy()
+        exp_df["md2"] = exp_df["md2"].astype(float)
         exp_df["shannon_entropy"] = compute_shannon_diversity(
             self.train_val, microbial_fts
         )
