@@ -347,10 +347,10 @@ class NeuralNet(LightningModule):
         self.input_norm = nn.BatchNorm1d(n_units[0])
 
         self.classes = classes
-        if nn_type == "classification" and classes is not None:
+        if nn_type in ["classification", "ordinal_regression"]:
             self.class_to_index = {c: i for i, c in enumerate(classes)}
             self.index_to_class = {i: c for i, c in enumerate(classes)}
-
+            self.num_classes = len(classes)
         self.layers = nn.ModuleList()
         n_layers = len(n_units)
         for i in range(n_layers - 1):
@@ -359,8 +359,6 @@ class NeuralNet(LightningModule):
                 self.layers.append(nn.ReLU())
                 if self.dropout_rate > 0:
                     self.layers.append(nn.Dropout(self.dropout_rate))
-
-        self.num_classes = n_units[-1]
 
         self.train_loss = 0
         self.val_loss = 0
@@ -384,7 +382,12 @@ class NeuralNet(LightningModule):
             mapped = [self.index_to_class[int(i)] for i in idx.detach().cpu().numpy()]
             return torch.tensor(mapped, device=predictions.device, dtype=torch.float32)
         elif self.nn_type == "ordinal_regression":
-            return corn_label_from_logits(predictions).float()
+            corn_label = corn_label_from_logits(predictions.unsqueeze(1)).float()
+            # map back to original labels
+            mapped = [
+                self.index_to_class[int(i)] for i in corn_label.detach().cpu().numpy()
+            ]
+            return torch.tensor(mapped, device=predictions.device, dtype=torch.float32)
 
     def _calculate_metrics(self, predictions, targets):
         preds = self._prepare_predictions(predictions)
@@ -402,8 +405,16 @@ class NeuralNet(LightningModule):
         # classification
         targets_rounded = torch.round(targets).long()
         if self.nn_type == "ordinal_regression":
+            # re-index to 0...C-1 for loss
+            t = targets_rounded.detach().cpu().numpy().astype(int)
+            t_idx = [self.class_to_index[v] for v in t]
+            targets_rounded = torch.tensor(
+                t_idx, device=targets.device, dtype=torch.long
+            )
             # predictions = logits
-            return corn_loss(predictions, targets_rounded, self.num_classes)
+            return corn_loss(
+                predictions.unsqueeze(1), targets_rounded, self.num_classes
+            )
         elif self.nn_type == "classification":
             # re-index to 0...C-1 for cross-entropy loss
             t = targets_rounded.detach().cpu().numpy().astype(int)
@@ -582,16 +593,16 @@ def train_nn(
     if nn_type == "regression":
         output_layer = [1]
         classes = None
-    elif nn_type == "classification":
+    else:
+        # nn_type == "classification" or nn_type == "ordinal_regression"
         classes_train = np.unique(np.round(y_train).astype(int))
         classes_val = np.unique(np.round(y_val).astype(int))
         classes = sorted(set(classes_train) | set(classes_val))
-        output_layer = [len(classes)]
-    elif nn_type == "ordinal_regression":
-        # CORN reduces number of classes by 1
-        n_target_classes = len(np.unique(np.round(y_train)))
-        output_layer = [n_target_classes - 1]
-        classes = None
+        if nn_type == "classification":
+            output_layer = [len(classes)]
+        else:  # nn_type == "ordinal_regression"
+            # CORN reduces number of classes by 1
+            output_layer = [len(classes) - 1]
 
     n_units = (
         # input layer

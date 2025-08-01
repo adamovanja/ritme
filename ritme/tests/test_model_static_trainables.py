@@ -338,7 +338,7 @@ class TestTrainables(unittest.TestCase):
         [
             ("regression", [5, 10, 5, 1], None),
             ("classification", [5, 10, 5, 3], [0, 1, 2]),
-            ("ordinal_regression", [5, 10, 5, 2], None),
+            ("ordinal_regression", [5, 10, 5, 2], [0, 1, 2]),
         ]
     )
     @patch("ritme.model_space.static_trainables._save_taxonomy")

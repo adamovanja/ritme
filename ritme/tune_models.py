@@ -378,6 +378,16 @@ def run_all_trials(
             "data_enrich_with", None
         )
 
+        # reduce number of concurrent trials in case of trac - requires too much memory
+        if model == "trac":
+            # todo: implement trac to reduce memory usage
+            max_concurrent_trials_launched = max(1, round(max_concurrent_trials / 3))
+            print(
+                f"Reducing max_concurrent_trials to {max_concurrent_trials_launched} "
+                "for trac model due to high memory requirements."
+            )
+        else:
+            max_concurrent_trials_launched = max_concurrent_trials
         result = run_trials(
             mlflow_uri,
             model,
@@ -391,7 +401,7 @@ def run_all_trials(
             tree_phylo,
             path_exp,
             num_trials,
-            max_concurrent_trials,
+            max_concurrent_trials_launched,
             fully_reproducible=fully_reproducible,
             model_hyperparameters=model_hparams_type,
             optuna_searchspace_sampler=optuna_searchspace_sampler,
