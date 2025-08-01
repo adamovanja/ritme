@@ -43,9 +43,11 @@ class TestEvaluateTunedModels(unittest.TestCase):
                 "rmse_train": [0.1],
                 "r2_train": [0.985],
                 "pearson_corr_train": [1.0],
+                "pearson_corr_train_pvalue": [1.341576e-08],
                 "rmse_test": [0.1],
                 "r2_test": [0.96],
                 "pearson_corr_test": [1.0],
+                "pearson_corr_test_pvalue": [1.0],
             },
             index=[self.model_type],
         )

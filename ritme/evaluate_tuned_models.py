@@ -55,9 +55,10 @@ def _calculate_metrics(all_preds: pd.DataFrame, model_type: str) -> pd.DataFrame
         metrics.loc[model_type, f"r2_{split}"] = r2_score(
             pred_split["true"], pred_split["pred"]
         )
-        metrics.loc[model_type, f"pearson_corr_{split}"] = pearsonr(
-            pred_split["true"].astype(float), pred_split["pred"]
-        )[0]
+        pearson_results = pearsonr(pred_split["true"].astype(float), pred_split["pred"])
+        metrics.loc[model_type, f"pearson_corr_{split}"] = pearson_results[0]
+        # two-sided alternative
+        metrics.loc[model_type, f"pearson_corr_{split}_pvalue"] = pearson_results[1]
     return metrics
 
 
@@ -127,15 +128,16 @@ def _plot_scatter_plots(
         lims = [min(x0, y0), max(x1, y1)]
         reg.axes.plot(lims, lims, ":k")
 
-        # add rmse and r2 metrics to plot
+        # add rmse, r2 and pearson corr metrics to plot
         rmse = metrics_split[f"rmse_{split}"].values[0]
         r2 = metrics_split[f"r2_{split}"].values[0]
+        r = metrics_split[f"pearson_corr_{split}"].values[0]
 
         trans = offset_copy(axs_set.transData, x=1, y=-1, units="dots")
         axs_set.text(
             lims[0],
             lims[1],
-            f"RMSE: {rmse:.2f}\nR²: {r2:.2f}",
+            f"RMSE: {rmse:.2f}\nR²: {r2:.2f}\nR: {r:.2f}",
             transform=trans,
             color=colors[split],
             ha="left",
