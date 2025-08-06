@@ -382,7 +382,10 @@ class NeuralNet(LightningModule):
             mapped = [self.index_to_class[int(i)] for i in idx.detach().cpu().numpy()]
             return torch.tensor(mapped, device=predictions.device, dtype=torch.float32)
         elif self.nn_type == "ordinal_regression":
-            corn_label = corn_label_from_logits(predictions.unsqueeze(1)).float()
+            if predictions.ndim == 1:
+                # [num_samples] must be [num_samples, 1] for corn
+                predictions = predictions.unsqueeze(1)
+            corn_label = corn_label_from_logits(predictions).float()
             # map back to original labels
             mapped = [
                 self.index_to_class[int(i)] for i in corn_label.detach().cpu().numpy()
@@ -412,9 +415,10 @@ class NeuralNet(LightningModule):
                 t_idx, device=targets.device, dtype=torch.long
             )
             # predictions = logits
-            return corn_loss(
-                predictions.unsqueeze(1), targets_rounded, self.num_classes
-            )
+            if predictions.ndim == 1:
+                # [num_samples] must be [num_samples, 1] for corn_loss
+                predictions = predictions.unsqueeze(1)
+            return corn_loss(predictions, targets_rounded, self.num_classes)
         elif self.nn_type == "classification":
             # re-index to 0...C-1 for cross-entropy loss
             t = targets_rounded.detach().cpu().numpy().astype(int)
