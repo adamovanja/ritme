@@ -599,9 +599,16 @@ def train_nn(
         classes = None
     else:
         # nn_type == "classification" or nn_type == "ordinal_regression"
-        classes_train = np.unique(np.round(y_train).astype(int))
-        classes_val = np.unique(np.round(y_val).astype(int))
+
+        # this rounds the targets in a the torch-way for consistency (np rounds
+        # differently)
+        y_tr_t = torch.from_numpy(y_train).float()
+        y_val_t = torch.from_numpy(y_val).float()
+
+        classes_train = torch.round(y_tr_t).long().unique().cpu().numpy()
+        classes_val = torch.round(y_val_t).long().unique().cpu().numpy()
         classes = sorted(set(classes_train) | set(classes_val))
+
         if nn_type == "classification":
             output_layer = [len(classes)]
         else:  # nn_type == "ordinal_regression"
