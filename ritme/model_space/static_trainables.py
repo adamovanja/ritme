@@ -794,15 +794,16 @@ def train_xgb(
     checkpoint_callback = xgb_cc(
         # tune:xgboost
         metrics={
-            "rmse_train": "train-rmse",
-            "rmse_val": "val-rmse",
             "r2_train": "train-r2",
             "r2_val": "val-r2",
+            "rmse_train": "train-rmse",
+            "rmse_val": "val-rmse",
         },
         filename="checkpoint",
         results_postprocessing_fn=lambda results: add_nb_features_to_results(
             results, X_train.shape[1]
         ),
+        frequency=1,  # Save checkpoint every iteration
     )
     patience = max(10, int(0.1 * config["n_estimators"]))
     xgb.train(
