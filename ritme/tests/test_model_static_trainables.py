@@ -283,6 +283,7 @@ class TestTrainables(unittest.TestCase):
     ):
         # Arrange
         config = {
+            "n_estimators": 100,
             "max_depth": 6,
             "min_child_weight": 3,
             "subsample": 0.9,
@@ -486,6 +487,7 @@ class TestTrainableLogging(unittest.TestCase):
             "weight_decay": 0.0,
             "early_stopping_patience": 3,
             "early_stopping_min_delta": 0.0,
+            "n_estimators": 100,
         }
         for i in range(search_space["n_hidden_layers"]):
             search_space[f"n_units_hl{i}"] = 2

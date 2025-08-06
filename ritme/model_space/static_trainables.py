@@ -382,7 +382,10 @@ class NeuralNet(LightningModule):
             mapped = [self.index_to_class[int(i)] for i in idx.detach().cpu().numpy()]
             return torch.tensor(mapped, device=predictions.device, dtype=torch.float32)
         elif self.nn_type == "ordinal_regression":
-            corn_label = corn_label_from_logits(predictions.unsqueeze(1)).float()
+            if predictions.ndim == 1:
+                # [num_samples] must be [num_samples, 1] for corn
+                predictions = predictions.unsqueeze(1)
+            corn_label = corn_label_from_logits(predictions).float()
             # map back to original labels
             mapped = [
                 self.index_to_class[int(i)] for i in corn_label.detach().cpu().numpy()
@@ -412,9 +415,10 @@ class NeuralNet(LightningModule):
                 t_idx, device=targets.device, dtype=torch.long
             )
             # predictions = logits
-            return corn_loss(
-                predictions.unsqueeze(1), targets_rounded, self.num_classes
-            )
+            if predictions.ndim == 1:
+                # [num_samples] must be [num_samples, 1] for corn_loss
+                predictions = predictions.unsqueeze(1)
+            return corn_loss(predictions, targets_rounded, self.num_classes)
         elif self.nn_type == "classification":
             # re-index to 0...C-1 for cross-entropy loss
             t = targets_rounded.detach().cpu().numpy().astype(int)
@@ -595,9 +599,16 @@ def train_nn(
         classes = None
     else:
         # nn_type == "classification" or nn_type == "ordinal_regression"
-        classes_train = np.unique(np.round(y_train).astype(int))
-        classes_val = np.unique(np.round(y_val).astype(int))
+
+        # this rounds the targets in a the torch-way for consistency (np rounds
+        # differently)
+        y_tr_t = torch.from_numpy(y_train).float()
+        y_val_t = torch.from_numpy(y_val).float()
+
+        classes_train = torch.round(y_tr_t).long().unique().cpu().numpy()
+        classes_val = torch.round(y_val_t).long().unique().cpu().numpy()
         classes = sorted(set(classes_train) | set(classes_val))
+
         if nn_type == "classification":
             output_layer = [len(classes)]
         else:  # nn_type == "ordinal_regression"
@@ -735,7 +746,7 @@ def custom_xgb_metric(
     List[Tuple[str, float]]: List of tuples containing metric names and values.
     """
     y = dtrain.get_label()
-    return [("rmse", np.sqrt(np.mean((predt - y) ** 2))), ("r2", r2_score(y, predt))]
+    return [("r2", r2_score(y, predt)), ("rmse", np.sqrt(np.mean((predt - y) ** 2)))]
 
 
 def train_xgb(
@@ -783,20 +794,27 @@ def train_xgb(
     checkpoint_callback = xgb_cc(
         # tune:xgboost
         metrics={
-            "rmse_train": "train-rmse",
-            "rmse_val": "val-rmse",
             "r2_train": "train-r2",
             "r2_val": "val-r2",
+            "rmse_train": "train-rmse",
+            "rmse_val": "val-rmse",
         },
         filename="checkpoint",
         results_postprocessing_fn=lambda results: add_nb_features_to_results(
             results, X_train.shape[1]
         ),
+        frequency=1,  # Save checkpoint every iteration
     )
+    patience = max(10, int(0.1 * config["n_estimators"]))
     xgb.train(
         config,
         dtrain,
+        num_boost_round=config[
+            "n_estimators"
+        ],  # num_boost_round is the number of boosting iterations,
+        # equal to n_estimators in scikit-learn
         evals=[(dtrain, "train"), (dval, "val")],
         callbacks=[checkpoint_callback],
         custom_metric=custom_xgb_metric,
+        early_stopping_rounds=patience,
     )
