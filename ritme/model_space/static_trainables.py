@@ -735,7 +735,7 @@ def custom_xgb_metric(
     List[Tuple[str, float]]: List of tuples containing metric names and values.
     """
     y = dtrain.get_label()
-    return [("rmse", np.sqrt(np.mean((predt - y) ** 2))), ("r2", r2_score(y, predt))]
+    return [("r2", r2_score(y, predt)), ("rmse", np.sqrt(np.mean((predt - y) ** 2)))]
 
 
 def train_xgb(
@@ -793,10 +793,16 @@ def train_xgb(
             results, X_train.shape[1]
         ),
     )
+    patience = max(10, int(0.1 * config["n_estimators"]))
     xgb.train(
         config,
         dtrain,
+        num_boost_round=config[
+            "n_estimators"
+        ],  # num_boost_round is the number of boosting iterations,
+        # equal to n_estimators in scikit-learn
         evals=[(dtrain, "train"), (dval, "val")],
         callbacks=[checkpoint_callback],
         custom_metric=custom_xgb_metric,
+        early_stopping_rounds=patience,
     )

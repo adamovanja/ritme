@@ -272,6 +272,20 @@ def get_xgb_space(
     md_enrich = model_hyperparameters.get("data_enrich_with", None)
     data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
 
+    # n_estimators: number of iterations to build trees with - by default each
+    # iteration builds one new tree (adjusted below with
+    # num_parallel_tree),num_boost_round is the number of boosting iterations,
+    # equal to n_estimators in scikit-learn
+    n_estimators = model_hyperparameters.get(
+        "n_estimators", {"min": 50, "max": 3000, "log": True}
+    )
+    trial.suggest_int(
+        "n_estimators",
+        n_estimators["min"],
+        n_estimators["max"],
+        log=n_estimators["log"],
+    )
+
     # max_depth: value between 2 and 6 is often a good starting point
     max_depth = model_hyperparameters.get("max_depth", {"min": 2, "max": 10})
     trial.suggest_int("max_depth", max_depth["min"], max_depth["max"])
@@ -293,7 +307,8 @@ def get_xgb_space(
     eta = model_hyperparameters.get("eta", {"min": 0.01, "max": 0.3})
     trial.suggest_float("eta", eta["min"], eta["max"], log=True)
 
-    # num_parallel_tree
+    # num_parallel_tree per boosting round
+    # total nb trees = n_estimators * num_parallel_tree
     num_parallel_tree = model_hyperparameters.get(
         "num_parallel_tree", {"min": 1, "max": 3, "step": 1}
     )
@@ -307,8 +322,8 @@ def get_xgb_space(
     # Additional regularization hyperparameters
     # Minimum loss reduction required for a split: Larger values make the
     # algorithm more conservative - less overfitting. 0 = no regularization
-    gamma = model_hyperparameters.get("gamma", {"min": 0.0, "max": 5.0, "step": 0.1})
-    trial.suggest_float("gamma", gamma["min"], gamma["max"], step=gamma["step"])
+    gamma = model_hyperparameters.get("gamma", {"min": 1e-3, "max": 5.0, "log": True})
+    trial.suggest_float("gamma", gamma["min"], gamma["max"], log=gamma["log"])
 
     # L1 penalty term
     reg_alpha = model_hyperparameters.get(

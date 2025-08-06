@@ -149,6 +149,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                 "xgb",
                 ss.get_xgb_space,
                 {
+                    "n_estimators": 100,
                     "max_depth": 6,
                     "min_child_weight": 2,
                     "subsample": 0.9,
@@ -280,12 +281,13 @@ class TestStaticSearchSpace(unittest.TestCase):
                 {
                     "subsample": {"min": 0.7, "max": 1.0},
                     "eta": {"min": 0.01, "max": 0.3, "log": True},
-                    "gamma": {"min": 0.0, "max": 5.0, "step": 0.1},
+                    "gamma": {"min": 1e-3, "max": 5.0, "log": True},
                     "reg_alpha": {"min": 1e-10, "max": 1.0, "log": True},
                     "reg_lambda": {"min": 1e-10, "max": 1.0, "log": True},
                     "colsample_bytree": {"min": 0.3, "max": 1.0},
                 },
                 {
+                    "n_estimators": {"min": 50, "max": 3000, "log": True},
                     "max_depth": {"min": 2, "max": 10},
                     "min_child_weight": {"min": 0, "max": 4},
                     "num_parallel_tree": {"min": 1, "max": 3, "step": 1},
@@ -381,12 +383,13 @@ class TestStaticSearchSpace(unittest.TestCase):
                 {
                     "subsample": {"min": 0.8, "max": 1.0},
                     "eta": {"min": 0.05, "max": 0.2, "log": True},
-                    "gamma": {"min": 0.1, "max": 3.0, "step": 0.1},
+                    "gamma": {"min": 0.1, "max": 3.0, "log": False},
                     "reg_alpha": {"min": 0.1, "max": 0.5, "log": True},
                     "reg_lambda": {"min": 0.1, "max": 0.5, "log": True},
                     "colsample_bytree": {"min": 0.7, "max": 0.8},
                 },
                 {
+                    "n_estimators": {"min": 5, "max": 100, "log": True},
                     "max_depth": {"min": 3, "max": 7},
                     "min_child_weight": {"min": 1, "max": 3},
                     "num_parallel_tree": {"min": 2, "max": 4, "step": 1},
