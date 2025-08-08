@@ -118,6 +118,7 @@ class TestConfigFiles(unittest.TestCase):
             (
                 "xgb",
                 {
+                    "n_estimators": ["min", "max", "log"],
                     "max_depth": ["min", "max"],
                     "min_child_weight": ["min", "max"],
                     "subsample": ["min", "max"],

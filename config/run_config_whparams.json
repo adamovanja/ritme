@@ -157,6 +157,11 @@
         "max": 4,
         "min": 0
       },
+      "n_estimators": {
+        "log": true,
+        "max": 3000,
+        "min": 50
+      },
       "num_parallel_tree": {
         "max": 3,
         "min": 1,
