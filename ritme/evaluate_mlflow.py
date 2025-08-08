@@ -430,3 +430,45 @@ def post_process_data_transform(all_trials):
     # drop helper columns
     proc_trials = proc_trials.drop(columns=["nb_md_fts", "nb_microbiome_fts"])
     return proc_trials
+
+
+def plot_trend_over_time(
+    df,
+    y_col,
+    time_col="start_time",
+    window=20,
+    title_prefix="",
+    figsize=(15, 6),
+    raw_color="gray",
+    raw_alpha=0.4,
+    trend_color="C0",
+):
+    """
+    Plot raw points and a rolling-mean trend of y_col over time_col.
+      df:         DataFrame with your data
+      y_col:      name of the metric column (e.g. "metrics.rmse_val")
+      time_col:   name of the datetime column (default "start_time")
+      window:     rolling window size
+    """
+    df = df.copy()
+    df[time_col] = pd.to_datetime(df[time_col])
+    df = df.sort_values(time_col)
+    df["smoothed"] = df[y_col].rolling(window=window, center=True, min_periods=1).mean()
+
+    plt.figure(figsize=figsize)
+    plt.scatter(df[time_col], df[y_col], color=raw_color, alpha=raw_alpha, label="Raw")
+    plt.plot(
+        df[time_col],
+        df["smoothed"],
+        color=trend_color,
+        linewidth=2,
+        label=f"Rolling mean (w={window})",
+    )
+    plt.xlabel(time_col)
+    plt.ylabel(y_col)
+    plt.title(f"{title_prefix} - {y_col} trend over {time_col}")
+    plt.xticks(rotation=45)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
