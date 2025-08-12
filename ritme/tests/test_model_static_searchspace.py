@@ -252,7 +252,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                 "linreg",
                 {
                     "alpha": {"min": 0.00001, "max": 100, "log": True},
-                    "l1_ratio": {"min": 0, "max": 1, "step": 0.1},
+                    "l1_ratio": {"min": 0, "max": 1},
                 },
                 {},
                 {},
@@ -269,7 +269,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "min_samples_leaf": {"min": 0.001, "max": 0.1, "log": True},
                     "min_impurity_decrease": {"min": 0.0, "max": 0.5, "log": False},
                 },
-                {"n_estimators": {"min": 40, "max": 200, "step": 20}},
+                {"n_estimators": {"min": 20, "max": 200}},
                 {
                     "max_depth": [4, 8, 16, 32, None],
                     "max_features": [None, "sqrt", "log2", 0.1, 0.2, 0.3, 0.5],
@@ -290,20 +290,20 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "n_estimators": {"min": 50, "max": 3000, "log": True},
                     "max_depth": {"min": 2, "max": 10},
                     "min_child_weight": {"min": 0, "max": 4},
-                    "num_parallel_tree": {"min": 1, "max": 3, "step": 1},
+                    "num_parallel_tree": {"min": 1, "max": 4},
                 },
                 {},
             ),
             (
                 "nn_reg",
                 {
-                    "dropout_rate": {"min": 0.0, "max": 0.5, "step": 0.05},
+                    "dropout_rate": {"min": 0.0, "max": 0.5},
                     "weight_decay": {"min": 1e-6, "max": 1e-2, "log": True},
                     "early_stopping_min_delta": {"min": 1e-5, "max": 1e-2, "log": True},
                 },
                 {
-                    "n_hidden_layers": {"min": 5, "max": 30, "step": 5},
-                    "early_stopping_patience": {"min": 2, "max": 10, "step": 1},
+                    "n_hidden_layers": {"min": 1, "max": 30},
+                    "early_stopping_patience": {"min": 2, "max": 30},
                 },
                 {
                     "learning_rate": [
@@ -354,7 +354,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                 "linreg",
                 {
                     "alpha": {"min": 0.05, "max": 1, "log": True},
-                    "l1_ratio": {"min": 0.2, "max": 0.5, "step": 0.1},
+                    "l1_ratio": {"min": 0.2, "max": 0.5},
                 },
                 {},
                 {},
@@ -371,7 +371,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "min_samples_leaf": {"min": 0.01, "max": 0.05, "log": True},
                     "min_impurity_decrease": {"min": 0.01, "max": 0.1, "log": True},
                 },
-                {"n_estimators": {"min": 50, "max": 150, "step": 10}},
+                {"n_estimators": {"min": 50, "max": 150}},
                 {
                     "max_depth": [5, 10, 15, None],
                     "max_features": [None, "sqrt", "log2", 0.2],
@@ -392,14 +392,14 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "n_estimators": {"min": 5, "max": 100, "log": True},
                     "max_depth": {"min": 3, "max": 7},
                     "min_child_weight": {"min": 1, "max": 3},
-                    "num_parallel_tree": {"min": 2, "max": 4, "step": 1},
+                    "num_parallel_tree": {"min": 2, "max": 4},
                 },
                 {},
             ),
             (
                 "nn_reg",
                 {
-                    "dropout_rate": {"min": 0.1, "max": 0.3, "step": 0.1},
+                    "dropout_rate": {"min": 0.1, "max": 0.3},
                     "weight_decay": {"min": 0.0001, "max": 0.001, "log": True},
                     "early_stopping_min_delta": {
                         "min": 0.001,
@@ -408,8 +408,8 @@ class TestStaticSearchSpace(unittest.TestCase):
                     },
                 },
                 {
-                    "n_hidden_layers": {"min": 2, "max": 10, "step": 2},
-                    "early_stopping_patience": {"min": 5, "max": 20, "step": 5},
+                    "n_hidden_layers": {"min": 2, "max": 10},
+                    "early_stopping_patience": {"min": 5, "max": 20},
                 },
                 {
                     "learning_rate": [0.01, 0.001, 0.0001],

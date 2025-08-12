@@ -83,10 +83,8 @@ def get_linreg_space(
     trial.suggest_float("alpha", alpha["min"], alpha["max"], log=alpha["log"])
 
     # balance between L1 and L2 reg., when =0 -> L2, when =1 -> L1
-    l1_ratio = model_hyperparameters.get("l1_ratio", {"min": 0, "max": 1, "step": 0.1})
-    trial.suggest_float(
-        "l1_ratio", l1_ratio["min"], l1_ratio["max"], step=l1_ratio["step"]
-    )
+    l1_ratio = model_hyperparameters.get("l1_ratio", {"min": 0, "max": 1})
+    trial.suggest_float("l1_ratio", l1_ratio["min"], l1_ratio["max"])
 
     return {"model": "linreg", "data_enrich_with": data_enrich_with}
 
@@ -98,15 +96,8 @@ def get_rf_space(
     data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
 
     # number of trees in forest: the more the higher computational costs
-    n_estimators = model_hyperparameters.get(
-        "n_estimators", {"min": 40, "max": 200, "step": 20}
-    )
-    trial.suggest_int(
-        "n_estimators",
-        n_estimators["min"],
-        n_estimators["max"],
-        step=n_estimators["step"],
-    )
+    n_estimators = model_hyperparameters.get("n_estimators", {"min": 20, "max": 200})
+    trial.suggest_int("n_estimators", n_estimators["min"], n_estimators["max"])
 
     # max depths of the tree: the higher the higher probab of overfitting
     # ! 4, 8, 16, None
@@ -192,13 +183,12 @@ def get_nn_space(
     # define n_hidden_layers: sample uniformly between [min,max] rounding to
     # multiples of step
     n_hidden_layers_options = model_hyperparameters.get(
-        "n_hidden_layers", {"min": 5, "max": 30, "step": 5}
+        "n_hidden_layers", {"min": 1, "max": 30}
     )
     n_hidden_layers = trial.suggest_int(
         "n_hidden_layers",
         n_hidden_layers_options["min"],
         n_hidden_layers_options["max"],
-        step=n_hidden_layers_options["step"],
     )
 
     learning_rate = model_hyperparameters.get(
@@ -220,15 +210,8 @@ def get_nn_space(
 
     # regularisation options:
     # dropout
-    dropout_range = model_hyperparameters.get(
-        "dropout_rate", {"min": 0.0, "max": 0.5, "step": 0.05}
-    )
-    trial.suggest_float(
-        "dropout_rate",
-        dropout_range["min"],
-        dropout_range["max"],
-        step=dropout_range["step"],
-    )
+    dropout_range = model_hyperparameters.get("dropout_rate", {"min": 0.0, "max": 0.5})
+    trial.suggest_float("dropout_rate", dropout_range["min"], dropout_range["max"])
 
     # weight decay
     wd_range = model_hyperparameters.get(
@@ -243,13 +226,12 @@ def get_nn_space(
 
     # early stopping patience range: number of epochs with no improvement
     es_range = model_hyperparameters.get(
-        "early_stopping_patience", {"min": 2, "max": 10, "step": 1}
+        "early_stopping_patience", {"min": 2, "max": 30}
     )
     trial.suggest_int(
         "early_stopping_patience",
         es_range["min"],
         es_range["max"],
-        step=es_range["step"],
     )
 
     # early stopping min_delta range
@@ -310,13 +292,10 @@ def get_xgb_space(
     # num_parallel_tree per boosting round
     # total nb trees = n_estimators * num_parallel_tree
     num_parallel_tree = model_hyperparameters.get(
-        "num_parallel_tree", {"min": 1, "max": 3, "step": 1}
+        "num_parallel_tree", {"min": 1, "max": 4}
     )
     trial.suggest_int(
-        "num_parallel_tree",
-        num_parallel_tree["min"],
-        num_parallel_tree["max"],
-        step=num_parallel_tree["step"],
+        "num_parallel_tree", num_parallel_tree["min"], num_parallel_tree["max"]
     )
 
     # Additional regularization hyperparameters

@@ -91,7 +91,7 @@ class TestConfigFiles(unittest.TestCase):
             (
                 "rf",
                 {
-                    "n_estimators": ["min", "max", "step"],
+                    "n_estimators": ["min", "max"],
                     "max_depth": None,
                     "min_samples_split": ["min", "max", "log"],
                     "min_weight_fraction_leaf": ["min", "max", "log"],
@@ -104,14 +104,14 @@ class TestConfigFiles(unittest.TestCase):
             (
                 "nn_all_types",
                 {
-                    "n_hidden_layers": ["min", "max", "step"],
+                    "n_hidden_layers": ["min", "max"],
                     "learning_rate": None,
                     "batch_size": None,
                     "epochs": None,
                     "n_units_hl": None,
-                    "dropout_rate": ["min", "max", "step"],
+                    "dropout_rate": ["min", "max"],
                     "weight_decay": ["min", "max", "log"],
-                    "early_stopping_patience": ["min", "max", "step"],
+                    "early_stopping_patience": ["min", "max"],
                     "early_stopping_min_delta": ["min", "max", "log"],
                 },
             ),
@@ -123,8 +123,8 @@ class TestConfigFiles(unittest.TestCase):
                     "min_child_weight": ["min", "max"],
                     "subsample": ["min", "max"],
                     "eta": ["min", "max"],
-                    "num_parallel_tree": ["min", "max", "step"],
-                    "gamma": ["min", "max", "step"],
+                    "num_parallel_tree": ["min", "max"],
+                    "gamma": ["min", "max"],
                     "reg_alpha": ["min", "max", "log"],
                     "reg_lambda": ["min", "max", "log"],
                     "colsample_bytree": ["min", "max"],
