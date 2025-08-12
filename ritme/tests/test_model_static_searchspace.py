@@ -269,9 +269,9 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "min_samples_leaf": {"min": 0.001, "max": 0.1, "log": True},
                     "min_impurity_decrease": {"min": 0.0, "max": 0.5, "log": False},
                 },
-                {"n_estimators": {"min": 20, "max": 200}},
+                {"n_estimators": {"min": 20, "max": 3000}},
                 {
-                    "max_depth": [4, 8, 16, 32, None],
+                    "max_depth": [2, 4, 8, 16, 32, None],
                     "max_features": [None, "sqrt", "log2", 0.1, 0.2, 0.3, 0.5],
                     "bootstrap": [True, False],
                 },
@@ -287,7 +287,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "colsample_bytree": {"min": 0.3, "max": 1.0},
                 },
                 {
-                    "n_estimators": {"min": 50, "max": 3000},
+                    "n_estimators": {"min": 20, "max": 3000},
                     "max_depth": {"min": 2, "max": 10},
                     "min_child_weight": {"min": 0, "max": 4},
                     "num_parallel_tree": {"min": 1, "max": 4},

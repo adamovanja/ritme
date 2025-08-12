@@ -107,12 +107,12 @@ def get_rf_space(
     data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # number of trees in forest: the more the higher computational costs
-    n_estimators = model_hyperparameters.get("n_estimators", {"min": 20, "max": 200})
+    n_estimators = model_hyperparameters.get("n_estimators", {"min": 20, "max": 3000})
     trial.suggest_int("n_estimators", n_estimators["min"], n_estimators["max"])
 
     # max depths of the tree: the higher the higher probab of overfitting
     # ! 4, 8, 16, None
-    max_depth = model_hyperparameters.get("max_depth", [4, 8, 16, 32, None])
+    max_depth = model_hyperparameters.get("max_depth", [2, 4, 8, 16, 32, None])
     trial.suggest_categorical("max_depth", max_depth)
 
     # min number of samples requires to split internal node: small
@@ -267,7 +267,7 @@ def get_xgb_space(
     # iteration builds one new tree (adjusted below with
     # num_parallel_tree),num_boost_round is the number of boosting iterations,
     # equal to n_estimators in scikit-learn
-    n_estimators = model_hyperparameters.get("n_estimators", {"min": 50, "max": 3000})
+    n_estimators = model_hyperparameters.get("n_estimators", {"min": 20, "max": 3000})
     trial.suggest_int("n_estimators", n_estimators["min"], n_estimators["max"])
 
     # max_depth: value between 2 and 6 is often a good starting point

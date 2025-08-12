@@ -115,6 +115,7 @@
         false
       ],
       "max_depth": [
+        2,
         4,
         8,
         16,
@@ -151,7 +152,7 @@
         "min": 0.0
       },
       "n_estimators": {
-        "max": 200,
+        "max": 3000,
         "min": 20
       }
     },
@@ -185,9 +186,8 @@
         "min": 0
       },
       "n_estimators": {
-        "log": true,
         "max": 3000,
-        "min": 50
+        "min": 20
       },
       "num_parallel_tree": {
         "max": 4,
