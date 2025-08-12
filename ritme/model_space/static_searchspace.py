@@ -24,42 +24,55 @@ def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None
         trial.suggest_float("data_selection_t", min_value, max_value, log=True)
 
 
-def get_data_eng_space(trial, train_val, tax, md_enrich) -> str:
+def get_data_eng_space(trial, train_val, tax, model_hyperparameters) -> str:
     # feature aggregation
-    data_aggregation_options = (
-        [None]
-        if tax is None
-        else [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
-    )
+    if "data_aggregation_options" in model_hyperparameters.keys():
+        data_aggregation_options = model_hyperparameters["data_aggregation_options"]
+    else:
+        data_aggregation_options = (
+            [None]
+            if tax is None
+            else [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
+        )
     trial.suggest_categorical("data_aggregation", data_aggregation_options)
 
     # feature selection
-    data_selection_options = [
-        None,
-        "abundance_ith",
-        "variance_ith",
-        "abundance_topi",
-        "variance_topi",
-        "abundance_quantile",
-        "variance_quantile",
-        "abundance_threshold",
-        "variance_threshold",
-    ]
+    if "data_selection" in model_hyperparameters.keys():
+        data_selection_options = model_hyperparameters["data_selection"]
+    else:
+        data_selection_options = [
+            None,
+            "abundance_ith",
+            "variance_ith",
+            "abundance_topi",
+            "variance_topi",
+            "abundance_quantile",
+            "variance_quantile",
+            "abundance_threshold",
+            "variance_threshold",
+        ]
     data_selection = trial.suggest_categorical("data_selection", data_selection_options)
     if data_selection is not None:
+        # TODO: make dependent space also adjustable by user
         _get_dependent_data_eng_space(trial, train_val, data_selection)
 
     # feature transform
-    trial.suggest_categorical(
-        "data_transform", [None, "clr", "ilr", "alr", "pa", "rank"]
-    )
+    if "data_transform" in model_hyperparameters.keys():
+        data_transform_options = model_hyperparameters["data_transform"]
+    else:
+        data_transform_options = [None, "clr", "ilr", "alr", "pa", "rank"]
+    trial.suggest_categorical("data_transform", data_transform_options)
 
     # feature enrichment
-    data_enrich_options = (
-        [None, "shannon"]
-        if md_enrich is None
-        else [None, "shannon", "shannon_and_metadata", "metadata_only"]
-    )
+    md_enrich = model_hyperparameters.get("data_enrich_with", None)
+    if "data_enrich_options" in model_hyperparameters.keys():
+        data_enrich_options = model_hyperparameters["data_enrich_options"]
+    else:
+        data_enrich_options = (
+            [None, "shannon"]
+            if md_enrich is None
+            else [None, "shannon", "shannon_and_metadata", "metadata_only"]
+        )
     data_enrich = trial.suggest_categorical("data_enrich", data_enrich_options)
     if data_enrich is not None:
         data_enrich_with = md_enrich
@@ -71,8 +84,7 @@ def get_data_eng_space(trial, train_val, tax, md_enrich) -> str:
 def get_linreg_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, str]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # alpha controls overall regularization strength, alpha = 0 is equivalent to
     # an ordinary least square - but = 0 is not numerically reliable. large
@@ -92,8 +104,7 @@ def get_linreg_space(
 def get_rf_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, str]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # number of trees in forest: the more the higher computational costs
     n_estimators = model_hyperparameters.get("n_estimators", {"min": 20, "max": 200})
@@ -177,8 +188,7 @@ def get_nn_space(
     model_name: str,
     model_hyperparameters: dict = {},
 ) -> Dict[str, str]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # define n_hidden_layers: sample uniformly between [min,max] rounding to
     # multiples of step
@@ -251,8 +261,7 @@ def get_nn_space(
 def get_xgb_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, Any]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # n_estimators: number of iterations to build trees with - by default each
     # iteration builds one new tree (adjusted below with

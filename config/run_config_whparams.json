@@ -13,7 +13,39 @@
   ],
   "max_cuncurrent_trials": 5,
   "model_hyperparameters": {
+    "data_aggregation_options": [
+      null,
+      "tax_class",
+      "tax_order",
+      "tax_family",
+      "tax_genus"
+    ],
+    "data_enrich_options": [
+      null,
+      "shannon",
+      "shannon_and_metadata",
+      "metadata_only"
+    ],
     "data_enrich_with": null,
+    "data_selection_options": [
+      null,
+      "abundance_ith",
+      "variance_ith",
+      "abundance_topi",
+      "variance_topi",
+      "abundance_quantile",
+      "variance_quantile",
+      "abundance_threshold",
+      "variance_threshold"
+    ],
+    "data_transform_options": [
+      null,
+      "clr",
+      "ilr",
+      "alr",
+      "pa",
+      "rank"
+    ],
     "linreg": {
       "alpha": {
         "log": true,
