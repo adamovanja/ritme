@@ -8,7 +8,7 @@ def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None
     if data_selection.endswith("_ith") or data_selection.endswith("_topi"):
         trial.suggest_int("data_selection_i", 1, len(feature_cols))
     elif data_selection.endswith("_quantile"):
-        trial.suggest_float("data_selection_q", 0.5, 0.9, step=0.1)
+        trial.suggest_float("data_selection_q", 0.5, 0.9)
     elif data_selection.endswith("_threshold"):
         # choose thresholds based on train_val
         if data_selection.startswith("abundance"):
@@ -258,15 +258,8 @@ def get_xgb_space(
     # iteration builds one new tree (adjusted below with
     # num_parallel_tree),num_boost_round is the number of boosting iterations,
     # equal to n_estimators in scikit-learn
-    n_estimators = model_hyperparameters.get(
-        "n_estimators", {"min": 50, "max": 3000, "log": True}
-    )
-    trial.suggest_int(
-        "n_estimators",
-        n_estimators["min"],
-        n_estimators["max"],
-        log=n_estimators["log"],
-    )
+    n_estimators = model_hyperparameters.get("n_estimators", {"min": 50, "max": 3000})
+    trial.suggest_int("n_estimators", n_estimators["min"], n_estimators["max"])
 
     # max_depth: value between 2 and 6 is often a good starting point
     max_depth = model_hyperparameters.get("max_depth", {"min": 2, "max": 10})

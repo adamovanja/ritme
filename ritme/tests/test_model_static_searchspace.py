@@ -287,7 +287,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "colsample_bytree": {"min": 0.3, "max": 1.0},
                 },
                 {
-                    "n_estimators": {"min": 50, "max": 3000, "log": True},
+                    "n_estimators": {"min": 50, "max": 3000},
                     "max_depth": {"min": 2, "max": 10},
                     "min_child_weight": {"min": 0, "max": 4},
                     "num_parallel_tree": {"min": 1, "max": 4},
@@ -389,7 +389,7 @@ class TestStaticSearchSpace(unittest.TestCase):
                     "colsample_bytree": {"min": 0.7, "max": 0.8},
                 },
                 {
-                    "n_estimators": {"min": 5, "max": 100, "log": True},
+                    "n_estimators": {"min": 5, "max": 100},
                     "max_depth": {"min": 3, "max": 7},
                     "min_child_weight": {"min": 1, "max": 3},
                     "num_parallel_tree": {"min": 2, "max": 4},
