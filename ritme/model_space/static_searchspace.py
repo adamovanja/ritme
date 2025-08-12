@@ -37,8 +37,8 @@ def get_data_eng_space(trial, train_val, tax, model_hyperparameters) -> str:
     trial.suggest_categorical("data_aggregation", data_aggregation_options)
 
     # feature selection
-    if "data_selection" in model_hyperparameters.keys():
-        data_selection_options = model_hyperparameters["data_selection"]
+    if "data_selection_options" in model_hyperparameters.keys():
+        data_selection_options = model_hyperparameters["data_selection_options"]
     else:
         data_selection_options = [
             None,
@@ -57,8 +57,8 @@ def get_data_eng_space(trial, train_val, tax, model_hyperparameters) -> str:
         _get_dependent_data_eng_space(trial, train_val, data_selection)
 
     # feature transform
-    if "data_transform" in model_hyperparameters.keys():
-        data_transform_options = model_hyperparameters["data_transform"]
+    if "data_transform_options" in model_hyperparameters.keys():
+        data_transform_options = model_hyperparameters["data_transform_options"]
     else:
         data_transform_options = [None, "clr", "ilr", "alr", "pa", "rank"]
     trial.suggest_categorical("data_transform", data_transform_options)

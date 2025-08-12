@@ -374,7 +374,10 @@ def run_all_trials(
         else:
             model_hparams_type = model_hyperparameters.get(model, {})
         # Get data hparam
-        model_hparams_type["data_enrich_with"] = model_hyperparameters.get(
+        model_hparams_type.update(
+            {k: v for k, v in model_hyperparameters.items() if k.startswith("data_")}
+        )
+        model_hparams_type["data_enrich_with"] = model_hparams_type.get(
             "data_enrich_with", None
         )
 
