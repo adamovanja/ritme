@@ -1,27 +1,77 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set, Tuple
 
 from ritme.feature_space.transform_features import PSEUDOCOUNT
 
 
-def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None:
-    feature_cols = train_val.columns.str.startswith("F")
-    if data_selection.endswith("_ith") or data_selection.endswith("_topi"):
-        trial.suggest_int("data_selection_i", 1, len(feature_cols))
-    elif data_selection.endswith("_quantile"):
+def _validate_config(config: Dict[str, Any], required: Set[str], name: str) -> None:
+    missing = required - config.keys()
+    if missing:
+        raise ValueError(f"Custom {name} missing keys: {sorted(missing)}")
+
+
+def _compute_threshold_bounds(
+    train_val, feature_mask, method: str
+) -> Tuple[float, float]:
+    if method == "abundance":
+        values = train_val.loc[:, feature_mask].sum()
+    else:  # variance
+        values = train_val.loc[:, feature_mask].var()
+    lo, hi = values.min(), values.max()
+    if lo == 0:
+        lo = PSEUDOCOUNT
+    return lo, hi
+
+
+def _suggest_integer(trial, n_features: int, custom_i: Dict[str, Any] = None) -> None:
+    if isinstance(custom_i, dict):
+        _validate_config(custom_i, {"min", "max"}, "data_selection_i")
+        trial.suggest_int("data_selection_i", custom_i["min"], custom_i["max"])
+    else:
+        trial.suggest_int("data_selection_i", 1, n_features)
+
+
+def _suggest_quantile(trial, custom_q: Dict[str, Any] = None) -> None:
+    if isinstance(custom_q, dict):
+        _validate_config(custom_q, {"min", "max"}, "data_selection_q")
+        trial.suggest_float("data_selection_q", custom_q["min"], custom_q["max"])
+    else:
         trial.suggest_float("data_selection_q", 0.5, 0.9)
+
+
+def _suggest_threshold(
+    trial, lo: float, hi: float, custom_t: Dict[str, Any] = None
+) -> None:
+    if isinstance(custom_t, dict):
+        _validate_config(custom_t, {"min", "max", "log"}, "data_selection_t")
+        trial.suggest_float(
+            "data_selection_t",
+            custom_t["min"],
+            custom_t["max"],
+            log=custom_t["log"],
+        )
+    else:
+        trial.suggest_float("data_selection_t", lo, hi, log=True)
+
+
+def _get_dependent_data_eng_space(
+    trial, train_val, data_selection: str, model_hyperparameters: Dict[str, Any]
+) -> None:
+    feature_mask = train_val.columns.str.startswith("F")
+    n_features = feature_mask.sum()
+
+    if data_selection.endswith(("_ith", "_topi")):
+        custom_i = model_hyperparameters.get("data_selection_i")
+        _suggest_integer(trial, n_features, custom_i)
+
+    elif data_selection.endswith("_quantile"):
+        custom_q = model_hyperparameters.get("data_selection_q")
+        _suggest_quantile(trial, custom_q)
+
     elif data_selection.endswith("_threshold"):
-        # choose thresholds based on train_val
-        if data_selection.startswith("abundance"):
-            summed_abundances = train_val.loc[:, feature_cols].sum()
-            min_value = summed_abundances.min()
-            max_value = summed_abundances.max()
-        elif data_selection.startswith("variance"):
-            ft_variances = train_val.loc[:, feature_cols].var()
-            min_value = ft_variances.min()
-            max_value = ft_variances.max()
-        if min_value == 0:
-            min_value = PSEUDOCOUNT
-        trial.suggest_float("data_selection_t", min_value, max_value, log=True)
+        method = "abundance" if data_selection.startswith("abundance") else "variance"
+        lo, hi = _compute_threshold_bounds(train_val, feature_mask, method)
+        custom_t = model_hyperparameters.get("data_selection_t")
+        _suggest_threshold(trial, lo, hi, custom_t)
 
 
 def get_data_eng_space(trial, train_val, tax, model_hyperparameters) -> str:
@@ -53,8 +103,9 @@ def get_data_eng_space(trial, train_val, tax, model_hyperparameters) -> str:
         ]
     data_selection = trial.suggest_categorical("data_selection", data_selection_options)
     if data_selection is not None:
-        # TODO: make dependent space also adjustable by user
-        _get_dependent_data_eng_space(trial, train_val, data_selection)
+        _get_dependent_data_eng_space(
+            trial, train_val, data_selection, model_hyperparameters
+        )
 
     # feature transform
     if "data_transform_options" in model_hyperparameters.keys():

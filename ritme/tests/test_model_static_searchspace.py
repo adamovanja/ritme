@@ -54,6 +54,145 @@ class TestStaticSearchSpace(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # default (no custom) and custom integer bounds
+            (None, 3, 1, 3),
+            ({"min": 2, "max": 4}, 3, 2, 4),
+        ]
+    )
+    def test_suggest_integer(self, custom_i, n_features, exp_min, exp_max):
+        trial = mock.Mock(suggest_int=mock.MagicMock())
+        ss._suggest_integer(trial, n_features, custom_i)
+        trial.suggest_int.assert_called_once_with("data_selection_i", exp_min, exp_max)
+
+    def test_suggest_integer_invalid(self):
+        trial = mock.Mock(suggest_int=mock.MagicMock())
+        with self.assertRaisesRegex(ValueError, "Custom data_selection_i missing keys"):
+            ss._suggest_integer(trial, 3, {"min": 1})
+
+    @parameterized.expand(
+        [
+            # default and custom quantile bounds
+            (None, 0.5, 0.9),
+            ({"min": 0.2, "max": 0.8}, 0.2, 0.8),
+        ]
+    )
+    def test_suggest_quantile(self, custom_q, exp_min, exp_max):
+        trial = mock.Mock(suggest_float=mock.MagicMock())
+        ss._suggest_quantile(trial, custom_q)
+        trial.suggest_float.assert_called_once_with(
+            "data_selection_q", exp_min, exp_max
+        )
+
+    def test_suggest_quantile_invalid(self):
+        trial = mock.Mock(suggest_float=mock.MagicMock())
+        with self.assertRaisesRegex(ValueError, "Custom data_selection_q missing keys"):
+            ss._suggest_quantile(trial, {"max": 0.8})
+
+    @parameterized.expand(
+        [
+            # default threshold (log=True) and custom
+            (0.1, 1.0, None, 0.1, 1.0, True),
+            (0.1, 1.0, {"min": 0.2, "max": 0.8, "log": False}, 0.2, 0.8, False),
+        ]
+    )
+    def test_suggest_threshold(self, lo, hi, custom_t, exp_min, exp_max, exp_log):
+        trial = mock.Mock(suggest_float=mock.MagicMock())
+        ss._suggest_threshold(trial, lo, hi, custom_t)
+        trial.suggest_float.assert_called_once_with(
+            "data_selection_t", exp_min, exp_max, log=exp_log
+        )
+
+    def test_suggest_threshold_invalid(self):
+        trial = mock.Mock(suggest_float=mock.MagicMock())
+        with self.assertRaisesRegex(ValueError, "Custom data_selection_t missing keys"):
+            ss._suggest_threshold(trial, 0.1, 1.0, {"min": 0.2, "max": 0.8})
+
+    def test_get_data_eng_space_custom_options(self):
+        trial = mock.Mock(suggest_categorical=mock.MagicMock())
+        # pick a valid subset of each default option
+        custom_opts = {
+            "data_aggregation_options": [None, "tax_class", "tax_family"],
+            "data_selection_options": [None, "abundance_ith", "variance_quantile"],
+            "data_transform_options": [None, "clr", "rank"],
+            "data_enrich_with": "meta_field",
+            "data_enrich_options": [None, "shannon"],
+        }
+        # side_effect returns one choice per suggest_categorical call
+        trial.suggest_categorical.side_effect = [
+            "tax_family",
+            "abundance_ith",
+            "clr",
+            "shannon",
+        ]
+
+        data_enrich_with = ss.get_data_eng_space(
+            trial, self.train_val, self.tax, custom_opts
+        )
+        self.assertEqual(data_enrich_with, "meta_field")
+
+        # verify categorical calls used exactly our subsets
+        trial.suggest_categorical.assert_has_calls(
+            [
+                mock.call("data_aggregation", custom_opts["data_aggregation_options"]),
+                mock.call("data_selection", custom_opts["data_selection_options"]),
+                mock.call("data_transform", custom_opts["data_transform_options"]),
+                mock.call("data_enrich", custom_opts["data_enrich_options"]),
+            ],
+            any_order=False,
+        )
+
+    @parameterized.expand(
+        [
+            # data_selection_i case (_ith or _topi)
+            (
+                "abundance_ith",
+                {"data_selection_i": {"min": 2, "max": 4}},
+                "int",
+                ("data_selection_i", 2, 4),
+            ),
+            (
+                "variance_topi",
+                {"data_selection_i": {"min": 1, "max": 3}},
+                "int",
+                ("data_selection_i", 1, 3),
+            ),
+            # data_selection_q case (_quantile)
+            (
+                "variance_quantile",
+                {"data_selection_q": {"min": 0.2, "max": 0.7}},
+                "float_q",
+                ("data_selection_q", 0.2, 0.7),
+            ),
+            # data_selection_t case (_threshold)
+            (
+                "abundance_threshold",
+                {"data_selection_t": {"min": 0.5, "max": 2.0, "log": False}},
+                "float_t",
+                ("data_selection_t", 0.5, 2.0, False),
+            ),
+        ]
+    )
+    def test_dependent_data_eng_space_custom_bounds(
+        self, data_selection, custom_bounds, kind, args
+    ):
+        trial = mock.Mock(suggest_int=mock.MagicMock(), suggest_float=mock.MagicMock())
+        # call with custom bounds
+        ss._get_dependent_data_eng_space(
+            trial, self.train_val, data_selection, custom_bounds
+        )
+
+        if kind == "int":
+            name, lo, hi = args
+            trial.suggest_int.assert_called_once_with(name, lo, hi)
+        elif kind == "float_q":
+            name, lo, hi = args
+            trial.suggest_float.assert_called_once_with(name, lo, hi)
+        else:  # kind == "float_t"
+            name, lo, hi, log = args
+            trial.suggest_float.assert_called_once_with(name, lo, hi, log=log)
+
+    @parameterized.expand(
+        [
             ("abundance_ith", "i"),
             ("variance_quantile", "q"),
             ("abundance_threshold", "t"),
@@ -61,7 +200,7 @@ class TestStaticSearchSpace(unittest.TestCase):
     )
     def test_get_dependent_data_eng_space(self, data_selection, expected_suffix):
         trial = MockTrial()
-        ss._get_dependent_data_eng_space(trial, self.train_val, data_selection)
+        ss._get_dependent_data_eng_space(trial, self.train_val, data_selection, {})
 
         hyperparam = f"data_selection_{expected_suffix}"
         self.assertIn(hyperparam, trial.params)
@@ -80,7 +219,9 @@ class TestStaticSearchSpace(unittest.TestCase):
             suggest_float=mock.MagicMock(),
         )
 
-        ss._get_dependent_data_eng_space(trial, self.train_val, f"{method}_threshold")
+        ss._get_dependent_data_eng_space(
+            trial, self.train_val, f"{method}_threshold", {}
+        )
 
         trial.suggest_float.assert_called_once_with(
             "data_selection_t", min, max, log=True

@@ -27,6 +27,10 @@
       "metadata_only"
     ],
     "data_enrich_with": null,
+    "data_selection_i": {
+      "max": 1000,
+      "min": 1
+    },
     "data_selection_options": [
       null,
       "abundance_ith",
@@ -38,6 +42,15 @@
       "abundance_threshold",
       "variance_threshold"
     ],
+    "data_selection_q": {
+      "max": 0.9,
+      "min": 0.5
+    },
+    "data_selection_t": {
+      "log": true,
+      "max": 0.1,
+      "min": 1e-05
+    },
     "data_transform_options": [
       null,
       "clr",
