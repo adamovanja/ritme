@@ -1,65 +1,129 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set, Tuple
 
 from ritme.feature_space.transform_features import PSEUDOCOUNT
 
 
-def _get_dependent_data_eng_space(trial, train_val, data_selection: str) -> None:
-    feature_cols = train_val.columns.str.startswith("F")
-    if data_selection.endswith("_ith") or data_selection.endswith("_topi"):
-        trial.suggest_int("data_selection_i", 1, len(feature_cols))
+def _validate_config(config: Dict[str, Any], required: Set[str], name: str) -> None:
+    missing = required - config.keys()
+    if missing:
+        raise ValueError(f"Custom {name} missing keys: {sorted(missing)}")
+
+
+def _compute_threshold_bounds(
+    train_val, feature_mask, method: str
+) -> Tuple[float, float]:
+    if method == "abundance":
+        values = train_val.loc[:, feature_mask].sum()
+    else:  # variance
+        values = train_val.loc[:, feature_mask].var()
+    lo, hi = values.min(), values.max()
+    if lo == 0:
+        lo = PSEUDOCOUNT
+    return lo, hi
+
+
+def _suggest_integer(trial, n_features: int, custom_i: Dict[str, Any] = None) -> None:
+    if isinstance(custom_i, dict):
+        _validate_config(custom_i, {"min", "max"}, "data_selection_i")
+        trial.suggest_int("data_selection_i", custom_i["min"], custom_i["max"])
+    else:
+        trial.suggest_int("data_selection_i", 1, n_features)
+
+
+def _suggest_quantile(trial, custom_q: Dict[str, Any] = None) -> None:
+    if isinstance(custom_q, dict):
+        _validate_config(custom_q, {"min", "max"}, "data_selection_q")
+        trial.suggest_float("data_selection_q", custom_q["min"], custom_q["max"])
+    else:
+        trial.suggest_float("data_selection_q", 0.5, 0.9)
+
+
+def _suggest_threshold(
+    trial, lo: float, hi: float, custom_t: Dict[str, Any] = None
+) -> None:
+    if isinstance(custom_t, dict):
+        _validate_config(custom_t, {"min", "max", "log"}, "data_selection_t")
+        trial.suggest_float(
+            "data_selection_t",
+            custom_t["min"],
+            custom_t["max"],
+            log=custom_t["log"],
+        )
+    else:
+        trial.suggest_float("data_selection_t", lo, hi, log=True)
+
+
+def _get_dependent_data_eng_space(
+    trial, train_val, data_selection: str, model_hyperparameters: Dict[str, Any]
+) -> None:
+    feature_mask = train_val.columns.str.startswith("F")
+    n_features = feature_mask.sum()
+
+    if data_selection.endswith(("_ith", "_topi")):
+        custom_i = model_hyperparameters.get("data_selection_i")
+        _suggest_integer(trial, n_features, custom_i)
+
     elif data_selection.endswith("_quantile"):
-        trial.suggest_float("data_selection_q", 0.5, 0.9, step=0.1)
+        custom_q = model_hyperparameters.get("data_selection_q")
+        _suggest_quantile(trial, custom_q)
+
     elif data_selection.endswith("_threshold"):
-        # choose thresholds based on train_val
-        if data_selection.startswith("abundance"):
-            summed_abundances = train_val.loc[:, feature_cols].sum()
-            min_value = summed_abundances.min()
-            max_value = summed_abundances.max()
-        elif data_selection.startswith("variance"):
-            ft_variances = train_val.loc[:, feature_cols].var()
-            min_value = ft_variances.min()
-            max_value = ft_variances.max()
-        if min_value == 0:
-            min_value = PSEUDOCOUNT
-        trial.suggest_float("data_selection_t", min_value, max_value, log=True)
+        method = "abundance" if data_selection.startswith("abundance") else "variance"
+        lo, hi = _compute_threshold_bounds(train_val, feature_mask, method)
+        custom_t = model_hyperparameters.get("data_selection_t")
+        _suggest_threshold(trial, lo, hi, custom_t)
 
 
-def get_data_eng_space(trial, train_val, tax, md_enrich) -> str:
+def get_data_eng_space(trial, train_val, tax, model_hyperparameters) -> str:
     # feature aggregation
-    data_aggregation_options = (
-        [None]
-        if tax is None
-        else [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
-    )
+    if "data_aggregation_options" in model_hyperparameters.keys():
+        data_aggregation_options = model_hyperparameters["data_aggregation_options"]
+    else:
+        data_aggregation_options = (
+            [None]
+            if tax is None
+            else [None, "tax_class", "tax_order", "tax_family", "tax_genus"]
+        )
     trial.suggest_categorical("data_aggregation", data_aggregation_options)
 
     # feature selection
-    data_selection_options = [
-        None,
-        "abundance_ith",
-        "variance_ith",
-        "abundance_topi",
-        "variance_topi",
-        "abundance_quantile",
-        "variance_quantile",
-        "abundance_threshold",
-        "variance_threshold",
-    ]
+    if "data_selection_options" in model_hyperparameters.keys():
+        data_selection_options = model_hyperparameters["data_selection_options"]
+    else:
+        data_selection_options = [
+            None,
+            "abundance_ith",
+            "variance_ith",
+            "abundance_topi",
+            "variance_topi",
+            "abundance_quantile",
+            "variance_quantile",
+            "abundance_threshold",
+            "variance_threshold",
+        ]
     data_selection = trial.suggest_categorical("data_selection", data_selection_options)
     if data_selection is not None:
-        _get_dependent_data_eng_space(trial, train_val, data_selection)
+        _get_dependent_data_eng_space(
+            trial, train_val, data_selection, model_hyperparameters
+        )
 
     # feature transform
-    trial.suggest_categorical(
-        "data_transform", [None, "clr", "ilr", "alr", "pa", "rank"]
-    )
+    if "data_transform_options" in model_hyperparameters.keys():
+        data_transform_options = model_hyperparameters["data_transform_options"]
+    else:
+        data_transform_options = [None, "clr", "ilr", "alr", "pa", "rank"]
+    trial.suggest_categorical("data_transform", data_transform_options)
 
     # feature enrichment
-    data_enrich_options = (
-        [None, "shannon"]
-        if md_enrich is None
-        else [None, "shannon", "shannon_and_metadata", "metadata_only"]
-    )
+    md_enrich = model_hyperparameters.get("data_enrich_with", None)
+    if "data_enrich_options" in model_hyperparameters.keys():
+        data_enrich_options = model_hyperparameters["data_enrich_options"]
+    else:
+        data_enrich_options = (
+            [None, "shannon"]
+            if md_enrich is None
+            else [None, "shannon", "shannon_and_metadata", "metadata_only"]
+        )
     data_enrich = trial.suggest_categorical("data_enrich", data_enrich_options)
     if data_enrich is not None:
         data_enrich_with = md_enrich
@@ -71,8 +135,7 @@ def get_data_eng_space(trial, train_val, tax, md_enrich) -> str:
 def get_linreg_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, str]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # alpha controls overall regularization strength, alpha = 0 is equivalent to
     # an ordinary least square - but = 0 is not numerically reliable. large
@@ -83,10 +146,8 @@ def get_linreg_space(
     trial.suggest_float("alpha", alpha["min"], alpha["max"], log=alpha["log"])
 
     # balance between L1 and L2 reg., when =0 -> L2, when =1 -> L1
-    l1_ratio = model_hyperparameters.get("l1_ratio", {"min": 0, "max": 1, "step": 0.1})
-    trial.suggest_float(
-        "l1_ratio", l1_ratio["min"], l1_ratio["max"], step=l1_ratio["step"]
-    )
+    l1_ratio = model_hyperparameters.get("l1_ratio", {"min": 0, "max": 1})
+    trial.suggest_float("l1_ratio", l1_ratio["min"], l1_ratio["max"])
 
     return {"model": "linreg", "data_enrich_with": data_enrich_with}
 
@@ -94,23 +155,15 @@ def get_linreg_space(
 def get_rf_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, str]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # number of trees in forest: the more the higher computational costs
-    n_estimators = model_hyperparameters.get(
-        "n_estimators", {"min": 40, "max": 200, "step": 20}
-    )
-    trial.suggest_int(
-        "n_estimators",
-        n_estimators["min"],
-        n_estimators["max"],
-        step=n_estimators["step"],
-    )
+    n_estimators = model_hyperparameters.get("n_estimators", {"min": 20, "max": 3000})
+    trial.suggest_int("n_estimators", n_estimators["min"], n_estimators["max"])
 
     # max depths of the tree: the higher the higher probab of overfitting
     # ! 4, 8, 16, None
-    max_depth = model_hyperparameters.get("max_depth", [4, 8, 16, 32, None])
+    max_depth = model_hyperparameters.get("max_depth", [2, 4, 8, 16, 32, None])
     trial.suggest_categorical("max_depth", max_depth)
 
     # min number of samples requires to split internal node: small
@@ -186,19 +239,17 @@ def get_nn_space(
     model_name: str,
     model_hyperparameters: dict = {},
 ) -> Dict[str, str]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # define n_hidden_layers: sample uniformly between [min,max] rounding to
     # multiples of step
     n_hidden_layers_options = model_hyperparameters.get(
-        "n_hidden_layers", {"min": 5, "max": 30, "step": 5}
+        "n_hidden_layers", {"min": 1, "max": 30}
     )
     n_hidden_layers = trial.suggest_int(
         "n_hidden_layers",
         n_hidden_layers_options["min"],
         n_hidden_layers_options["max"],
-        step=n_hidden_layers_options["step"],
     )
 
     learning_rate = model_hyperparameters.get(
@@ -220,15 +271,8 @@ def get_nn_space(
 
     # regularisation options:
     # dropout
-    dropout_range = model_hyperparameters.get(
-        "dropout_rate", {"min": 0.0, "max": 0.5, "step": 0.05}
-    )
-    trial.suggest_float(
-        "dropout_rate",
-        dropout_range["min"],
-        dropout_range["max"],
-        step=dropout_range["step"],
-    )
+    dropout_range = model_hyperparameters.get("dropout_rate", {"min": 0.0, "max": 0.5})
+    trial.suggest_float("dropout_rate", dropout_range["min"], dropout_range["max"])
 
     # weight decay
     wd_range = model_hyperparameters.get(
@@ -243,13 +287,12 @@ def get_nn_space(
 
     # early stopping patience range: number of epochs with no improvement
     es_range = model_hyperparameters.get(
-        "early_stopping_patience", {"min": 2, "max": 10, "step": 1}
+        "early_stopping_patience", {"min": 2, "max": 30}
     )
     trial.suggest_int(
         "early_stopping_patience",
         es_range["min"],
         es_range["max"],
-        step=es_range["step"],
     )
 
     # early stopping min_delta range
@@ -269,22 +312,14 @@ def get_nn_space(
 def get_xgb_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, Any]:
-    md_enrich = model_hyperparameters.get("data_enrich_with", None)
-    data_enrich_with = get_data_eng_space(trial, train_val, tax, md_enrich)
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
 
     # n_estimators: number of iterations to build trees with - by default each
     # iteration builds one new tree (adjusted below with
     # num_parallel_tree),num_boost_round is the number of boosting iterations,
     # equal to n_estimators in scikit-learn
-    n_estimators = model_hyperparameters.get(
-        "n_estimators", {"min": 50, "max": 3000, "log": True}
-    )
-    trial.suggest_int(
-        "n_estimators",
-        n_estimators["min"],
-        n_estimators["max"],
-        log=n_estimators["log"],
-    )
+    n_estimators = model_hyperparameters.get("n_estimators", {"min": 20, "max": 3000})
+    trial.suggest_int("n_estimators", n_estimators["min"], n_estimators["max"])
 
     # max_depth: value between 2 and 6 is often a good starting point
     max_depth = model_hyperparameters.get("max_depth", {"min": 2, "max": 10})
@@ -310,13 +345,10 @@ def get_xgb_space(
     # num_parallel_tree per boosting round
     # total nb trees = n_estimators * num_parallel_tree
     num_parallel_tree = model_hyperparameters.get(
-        "num_parallel_tree", {"min": 1, "max": 3, "step": 1}
+        "num_parallel_tree", {"min": 1, "max": 4}
     )
     trial.suggest_int(
-        "num_parallel_tree",
-        num_parallel_tree["min"],
-        num_parallel_tree["max"],
-        step=num_parallel_tree["step"],
+        "num_parallel_tree", num_parallel_tree["min"], num_parallel_tree["max"]
     )
 
     # Additional regularization hyperparameters

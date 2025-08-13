@@ -13,7 +13,52 @@
   ],
   "max_cuncurrent_trials": 5,
   "model_hyperparameters": {
+    "data_aggregation_options": [
+      null,
+      "tax_class",
+      "tax_order",
+      "tax_family",
+      "tax_genus"
+    ],
+    "data_enrich_options": [
+      null,
+      "shannon",
+      "shannon_and_metadata",
+      "metadata_only"
+    ],
     "data_enrich_with": null,
+    "data_selection_i": {
+      "max": 1000,
+      "min": 1
+    },
+    "data_selection_options": [
+      null,
+      "abundance_ith",
+      "variance_ith",
+      "abundance_topi",
+      "variance_topi",
+      "abundance_quantile",
+      "variance_quantile",
+      "abundance_threshold",
+      "variance_threshold"
+    ],
+    "data_selection_q": {
+      "max": 0.9,
+      "min": 0.5
+    },
+    "data_selection_t": {
+      "log": true,
+      "max": 0.1,
+      "min": 1e-05
+    },
+    "data_transform_options": [
+      null,
+      "clr",
+      "ilr",
+      "alr",
+      "pa",
+      "rank"
+    ],
     "linreg": {
       "alpha": {
         "log": true,
@@ -22,8 +67,7 @@
       },
       "l1_ratio": {
         "max": 1,
-        "min": 0,
-        "step": 0.1
+        "min": 0
       }
     },
     "nn_all_types": {
@@ -35,8 +79,7 @@
       ],
       "dropout_rate": {
         "max": 0.5,
-        "min": 0.0,
-        "step": 0.05
+        "min": 0.0
       },
       "early_stopping_min_delta": {
         "log": true,
@@ -44,9 +87,8 @@
         "min": 1e-05
       },
       "early_stopping_patience": {
-        "max": 10,
-        "min": 2,
-        "step": 1
+        "max": 30,
+        "min": 2
       },
       "epochs": [
         10,
@@ -65,8 +107,7 @@
       ],
       "n_hidden_layers": {
         "max": 30,
-        "min": 1,
-        "step": 5
+        "min": 1
       },
       "n_units_hl": [
         32,
@@ -87,6 +128,7 @@
         false
       ],
       "max_depth": [
+        2,
         4,
         8,
         16,
@@ -123,9 +165,8 @@
         "min": 0.0
       },
       "n_estimators": {
-        "max": 200,
-        "min": 40,
-        "step": 20
+        "max": 3000,
+        "min": 20
       }
     },
     "trac": {
@@ -145,9 +186,9 @@
         "min": 0.01
       },
       "gamma": {
+        "log": true,
         "max": 5.0,
-        "min": 0.0,
-        "step": 0.1
+        "min": 0.001
       },
       "max_depth": {
         "max": 10,
@@ -157,10 +198,13 @@
         "max": 4,
         "min": 0
       },
+      "n_estimators": {
+        "max": 3000,
+        "min": 20
+      },
       "num_parallel_tree": {
-        "max": 3,
-        "min": 1,
-        "step": 1
+        "max": 4,
+        "min": 1
       },
       "reg_alpha": {
         "log": true,
