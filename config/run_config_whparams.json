@@ -169,6 +169,11 @@
         "min": 20
       }
     },
+    "start_points_to_evaluate": [
+      {
+        "data_aggregation": "tax_genus"
+      }
+    ],
     "trac": {
       "lambda": {
         "log": true,

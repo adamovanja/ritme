@@ -49,9 +49,9 @@ DEFAULT_SCHEDULER_MAX_T = 100
 OPTUNA_SAMPLER_CLASSES = {
     "RandomSampler": RandomSampler,
     "TPESampler": TPESampler,
-    "CmaEsSampler": CmaEsSampler,
-    "GPSampler": GPSampler,
-    "QMCSampler": QMCSampler,
+    "CmaEsSampler": CmaEsSampler,  # inefficient cat.params + cond. search space
+    "GPSampler": GPSampler,  # inefficient cond. search space
+    "QMCSampler": QMCSampler,  # inefficient cat.params + cond. search space
 }
 
 
@@ -114,6 +114,7 @@ def _define_search_algo(
     seed_model: int,
     metric: str,
     mode: str,
+    num_trials: int,
 ):
     # Partial function needed to pass additional parameters
     define_search_space = partial(
@@ -132,11 +133,24 @@ def _define_search_algo(
         )
     sampler_class = OPTUNA_SAMPLER_CLASSES[optuna_searchspace_sampler]
 
+    sampler_kwargs = {"seed": seed_model}
+    if sampler_class in (TPESampler, CmaEsSampler, GPSampler):
+        # These samplers can use n_startup_trials to better explore the space
+        sampler_kwargs["n_startup_trials"] = min(10, num_trials // 5)
+
+    # if provided extract starting points for config
+    if "start_points_to_evaluate" in model_hyperparameters.keys():
+        # [{"a": 6.5, "b": 5e-4}, {"a": 7.5, "b": 1e-3}]
+        start_points = model_hyperparameters["start_points_to_evaluate"]
+    else:
+        start_points = None
+
     return OptunaSearch(
         space=define_search_space,
-        sampler=sampler_class(seed=seed_model),
+        sampler=sampler_class(**sampler_kwargs),
         metric=metric,
         mode=mode,
+        points_to_evaluate=start_points,
     )
 
 
@@ -270,6 +284,7 @@ def run_trials(
         seed_model,
         metric,
         mode,
+        num_trials,
     )
 
     storage_path = os.path.abspath(path2exp)
