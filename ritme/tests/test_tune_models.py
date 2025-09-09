@@ -119,6 +119,7 @@ class TestHelpersTuneModels(unittest.TestCase):
             seed_model,
             metric,
             mode,
+            10,
         )
 
         self.assertIsInstance(search_algo, OptunaSearch)
@@ -154,6 +155,7 @@ class TestHelpersTuneModels(unittest.TestCase):
                 42,
                 "accuracy",
                 "max",
+                10,
             )
 
     @patch.dict(os.environ, {"WANDB_API_KEY": "test_api_key"})
