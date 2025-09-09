@@ -137,6 +137,10 @@ def _define_search_algo(
     if sampler_class in (TPESampler, CmaEsSampler, GPSampler):
         # These samplers can use n_startup_trials to better explore the space
         sampler_kwargs["n_startup_trials"] = min(10, num_trials // 5)
+    if sampler_class is TPESampler:
+        # handles conditional search spaces well
+        sampler_kwargs["multivariate"] = True
+        sampler_kwargs["group"] = True
 
     # if provided extract starting points for config
     if "start_points_to_evaluate" in model_hyperparameters.keys():
