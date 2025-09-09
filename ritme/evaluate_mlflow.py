@@ -472,3 +472,33 @@ def plot_trend_over_time(
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+
+
+def boxplot_metric(trials, metric_col, metric_name, group_col, group_name):
+    """Plot distribution of metric within each group using a boxplot,
+    sorted by increasing median, hiding outliers."""
+    # compute color map and sort groups by median of the metric
+    _, color_map = create_color_map(trials, group_col)
+    medians = trials.groupby(group_col)[metric_col].median().sort_values()
+    order = medians.index.tolist()
+
+    fig, ax = plt.subplots(figsize=(15, 6), dpi=400)
+    sns.boxplot(
+        x=metric_col,
+        y=group_col,
+        data=trials,
+        orient="h",
+        order=order,
+        palette=color_map,
+        width=0.6,
+        showfliers=False,
+        linewidth=1.5,
+        ax=ax,
+    )
+
+    ax.set_xlabel(metric_name, labelpad=10)
+    ax.set_ylabel(group_name, labelpad=10)
+    ax.set_title(f"Distribution of {metric_name} by {group_name}", pad=15)
+
+    plt.tight_layout()
+    plt.show()
