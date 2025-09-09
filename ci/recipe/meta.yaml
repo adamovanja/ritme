@@ -20,6 +20,7 @@ requirements:
 
   run:
     - python
+    - cmaes
     - grpcio==1.65.5
     - importlib-metadata
     - lightning
