@@ -141,6 +141,7 @@ def _define_search_algo(
         # handles conditional search spaces well
         sampler_kwargs["multivariate"] = True
         sampler_kwargs["group"] = True
+        sampler_kwargs["constant_liar"] = True
 
     # if provided extract starting points for config
     if "start_points_to_evaluate" in model_hyperparameters.keys():
