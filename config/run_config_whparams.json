@@ -68,7 +68,17 @@
       "l1_ratio": {
         "max": 1,
         "min": 0
-      }
+      },
+      "start_points_to_evaluate": [
+        {
+          "alpha": 0.1,
+          "data_aggregation": "tax_class",
+          "data_enrich": null,
+          "data_selection": "abundance_threshold",
+          "data_transform": "clr",
+          "l1_ratio": 0.5
+        }
+      ]
     },
     "nn_all_types": {
       "batch_size": [
@@ -169,11 +179,6 @@
         "min": 20
       }
     },
-    "start_points_to_evaluate": [
-      {
-        "data_aggregation": "tax_genus"
-      }
-    ],
     "trac": {
       "lambda": {
         "log": true,
