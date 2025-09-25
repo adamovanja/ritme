@@ -87,7 +87,23 @@ class TestConfigFiles(unittest.TestCase):
 
     @parameterized.expand(
         [
-            ("linreg", {"alpha": ["min", "max"], "l1_ratio": ["min", "max"]}),
+            (
+                "linreg",
+                {
+                    "alpha": ["min", "max"],
+                    "l1_ratio": ["min", "max"],
+                    "start_points_to_evaluate": [
+                        {
+                            "alpha": 0.1,
+                            "data_aggregation": "tax_class",
+                            "data_enrich": None,
+                            "data_selection": "abundance_threshold",
+                            "data_transform": "clr",
+                            "l1_ratio": 0.5,
+                        }
+                    ],
+                },
+            ),
             (
                 "rf",
                 {
