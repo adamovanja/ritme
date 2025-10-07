@@ -1,3 +1,5 @@
+import ast
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.express as px
@@ -410,12 +412,24 @@ def post_process_data_transform(all_trials):
     #  get number of metadata fields
     proc_trials.loc[proc_trials["params.data_enrich"] == "None", "nb_md_fts"] = 0
     proc_trials.loc[proc_trials["params.data_enrich"] == "shannon", "nb_md_fts"] = 1
-    proc_trials.loc[
-        proc_trials["params.data_enrich"] == "metadata_only", "nb_md_fts"
-    ] = proc_trials["params.data_enrich_with"].str.len()
-    proc_trials.loc[
-        proc_trials["params.data_enrich"] == "shannon_and_metadata", "nb_md_fts"
-    ] = (proc_trials["params.data_enrich_with"].str.len()) + 1
+
+    if "params.data_enrich_with" in proc_trials.columns:
+        nb_enrich_fts = (
+            proc_trials["params.data_enrich_with"]
+            .where(
+                proc_trials["params.data_enrich_with"].notna()
+                & (proc_trials["params.data_enrich_with"] != "None"),
+                "[]",
+            )
+            .map(ast.literal_eval)
+            .str.len()
+        )
+        proc_trials.loc[
+            proc_trials["params.data_enrich"] == "metadata_only", "nb_md_fts"
+        ] = nb_enrich_fts
+        proc_trials.loc[
+            proc_trials["params.data_enrich"] == "shannon_and_metadata", "nb_md_fts"
+        ] = (nb_enrich_fts + 1)
 
     # from this retrieve # microbiome features
     proc_trials["nb_microbiome_fts"] = (
