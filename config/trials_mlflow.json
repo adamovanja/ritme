@@ -17,10 +17,10 @@
       "body-site"
     ]
   },
-  "num_trials": 2,
   "optuna_searchspace_sampler": "TPESampler",
   "seed_data": 12,
   "seed_model": 12,
   "target": "month",
+  "time_budget_s": 300,
   "tracking_uri": "mlruns"
 }

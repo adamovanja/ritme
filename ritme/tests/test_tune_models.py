@@ -119,7 +119,6 @@ class TestHelpersTuneModels(unittest.TestCase):
             seed_model,
             metric,
             mode,
-            10,
         )
 
         self.assertIsInstance(search_algo, OptunaSearch)
@@ -155,7 +154,6 @@ class TestHelpersTuneModels(unittest.TestCase):
                 42,
                 "accuracy",
                 "max",
-                10,
             )
 
     @patch.dict(os.environ, {"WANDB_API_KEY": "test_api_key"})
@@ -237,7 +235,7 @@ class TestMainTuneModels(unittest.TestCase):
         self.tax = pd.DataFrame()
         self.tree_phylo = skbio.TreeNode()
         self.path2exp = "/tmp/experiment"
-        self.num_trials = 5
+        self.time_budget_s = 5
         self.max_concurrent_trials = 2
         self.model_hyperparameters = {}
         self.mlflow_uri = "mlruns"
@@ -272,7 +270,7 @@ class TestMainTuneModels(unittest.TestCase):
             tax=self.tax,
             tree_phylo=self.tree_phylo,
             path2exp=self.path2exp,
-            num_trials=self.num_trials,
+            time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
             fully_reproducible=False,
             model_hyperparameters=self.model_hyperparameters,
@@ -300,7 +298,7 @@ class TestMainTuneModels(unittest.TestCase):
             tree_phylo=self.tree_phylo,
             mlflow_uri=self.mlflow_uri,
             path_exp=self.path2exp,
-            num_trials=self.num_trials,
+            time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
@@ -331,7 +329,7 @@ class TestMainTuneModels(unittest.TestCase):
             tree_phylo=tree_phylo,
             mlflow_uri=self.mlflow_uri,
             path_exp=self.path2exp,
-            num_trials=self.num_trials,
+            time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
@@ -354,7 +352,7 @@ class TestMainTuneModels(unittest.TestCase):
             tax,
             tree_phylo,
             self.path2exp,
-            self.num_trials,
+            self.time_budget_s,
             self.max_concurrent_trials,
             fully_reproducible=False,
             model_hyperparameters={"data_enrich_with": None},
