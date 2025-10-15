@@ -186,9 +186,8 @@ def find_best_model_config(
         tree_phylo,
         path_tracker,
         path_exp,
-        # number of trials to run per model type * grid_search parameters in
-        # @_static_searchspace
-        config["num_trials"],
+        # time_budget for search
+        config["time_budget_s"],
         config["max_cuncurrent_trials"],
         model_types=config["ls_model_types"],
         fully_reproducible=config["fully_reproducible"],

@@ -114,7 +114,6 @@ def _define_search_algo(
     seed_model: int,
     metric: str,
     mode: str,
-    num_trials: int,
 ):
     # Partial function needed to pass additional parameters
     define_search_space = partial(
@@ -136,7 +135,7 @@ def _define_search_algo(
     sampler_kwargs = {"seed": seed_model}
     if sampler_class in (TPESampler, CmaEsSampler, GPSampler):
         # These samplers can use n_startup_trials to better explore the space
-        sampler_kwargs["n_startup_trials"] = min(10, num_trials // 5)
+        sampler_kwargs["n_startup_trials"] = 200
     if sampler_class is TPESampler:
         # handles conditional search spaces well
         sampler_kwargs["multivariate"] = True
@@ -223,7 +222,7 @@ def run_trials(
     tax: pd.DataFrame,
     tree_phylo: skbio.TreeNode,
     path2exp: str,
-    num_trials: int,
+    time_budget_s: int,
     max_concurrent_trials: int,
     fully_reproducible: bool = False,
     model_hyperparameters: dict = None,
@@ -235,8 +234,6 @@ def run_trials(
     if model_hyperparameters is None:
         model_hyperparameters = {}
 
-    # Since each trial starts its own threads, this should not be set too high
-    max_concurrent_trials = min(num_trials, max_concurrent_trials)
     if resources is None:
         # If not a SLURM process, default values are used
         resources = _get_resources(max_concurrent_trials)
@@ -289,7 +286,6 @@ def run_trials(
         seed_model,
         metric,
         mode,
-        num_trials,
     )
 
     storage_path = os.path.abspath(path2exp)
@@ -331,7 +327,9 @@ def run_trials(
             # Define the scheduler
             scheduler=scheduler,
             # Number of trials to run - schedulers might decide to run more trials
-            num_samples=num_trials,
+            num_samples=-1,
+            # time restriction for the whole experiment
+            time_budget_s=time_budget_s,
             # Set max concurrent trials to launch
             max_concurrent_trials=max_concurrent_trials,
             # Define search algorithm
@@ -357,7 +355,7 @@ def run_all_trials(
     tree_phylo: skbio.TreeNode,
     mlflow_uri: str,
     path_exp: str,
-    num_trials: int,
+    time_budget_s: int,
     max_concurrent_trials: int,
     model_types: list = [
         "xgb",
@@ -423,7 +421,7 @@ def run_all_trials(
             tax,
             tree_phylo,
             path_exp,
-            num_trials,
+            time_budget_s,
             max_concurrent_trials_launched,
             fully_reproducible=fully_reproducible,
             model_hyperparameters=model_hparams_type,
