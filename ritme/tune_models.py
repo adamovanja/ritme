@@ -135,7 +135,8 @@ def _define_search_algo(
     sampler_kwargs = {"seed": seed_model}
     if sampler_class in (TPESampler, CmaEsSampler, GPSampler):
         # These samplers can use n_startup_trials to better explore the space
-        sampler_kwargs["n_startup_trials"] = 200
+        # todo: expose this paraemter to user such that it can be configured
+        sampler_kwargs["n_startup_trials"] = 1000
     if sampler_class is TPESampler:
         # handles conditional search spaces well
         sampler_kwargs["multivariate"] = True
