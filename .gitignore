@@ -166,6 +166,7 @@ experiments/ritme_ma2_test
 experiments/trials_mlflow
 experiments/trials_mlflow1
 experiments/trials_wandb
+experiments/ritme_example_usage_test_dummy.ipynb
 experiments/ritme_example_usage_debug.ipynb
 experiments/ritme_example_usage_test.ipynb
 experiments/data_splits
