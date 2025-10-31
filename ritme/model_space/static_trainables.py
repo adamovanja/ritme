@@ -679,7 +679,7 @@ def train_nn(
                 "loss_train": "train_loss",
             },
             filename="checkpoint",
-            on="validation_end",
+            on="train_end",
             nb_features=X_train.shape[1],
             report_every_n_epochs=config["epochs"] // 5,
             checkpoint_every_n_epochs=config["epochs"] // 10,
