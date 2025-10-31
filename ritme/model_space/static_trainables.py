@@ -659,7 +659,7 @@ def train_nn(
                 "loss_train": "train_loss",
             },
             filename="checkpoint",
-            on="validation_end",
+            on="train_end",
             nb_features=X_train.shape[1],
         ),
         EarlyStopping(
