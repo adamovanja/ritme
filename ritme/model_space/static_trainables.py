@@ -538,15 +538,12 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
         self,
         metrics: Optional[Union[str, List[str], Dict[str, str]]] = None,
         filename: str = "checkpoint",
-        save_checkpoints: bool = True,
         on: Union[str, List[str]] = "validation_end",
         nb_features: int = None,
         report_every_n_epochs: int = 5,
         checkpoint_every_n_epochs: Optional[int] = None,
     ):
-        super().__init__(
-            metrics=metrics, filename=filename, save_checkpoints=save_checkpoints, on=on
-        )
+        super().__init__(metrics=metrics, filename=filename, on=on)
         self.nb_features = nb_features
         # Throttle how often we report and checkpoint to Ray to reduce I/O load
         # Default: report every 5 epochs, checkpoint every 10 epochs
@@ -584,7 +581,7 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
         if not report_dict:
             return
         # Conditionally attach a checkpoint to the Ray report
-        if self.save_checkpoints and self._should_checkpoint(trainer):
+        if self._should_checkpoint(trainer):
             with self._get_checkpoint(trainer) as checkpoint:
                 train.report(report_dict, checkpoint=checkpoint)
         else:
