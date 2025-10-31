@@ -17,7 +17,7 @@ from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from lightning import LightningModule, Trainer, seed_everything
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping
 from ray import train
 from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
@@ -641,14 +641,6 @@ def train_nn(
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     callbacks = [
-        ModelCheckpoint(
-            monitor="val_rmse",
-            mode="min",
-            save_top_k=1,
-            save_weights_only=False,
-            dirpath=checkpoint_dir,  # Automatically set dirpath
-            filename="{epoch}-{val_rmse:.2f}",
-        ),
         NNTuneReportCheckpointCallback(
             metrics={
                 "rmse_val": "val_rmse",
@@ -659,7 +651,7 @@ def train_nn(
                 "loss_train": "train_loss",
             },
             filename="checkpoint",
-            on="validation_end",
+            on="train_end",
             nb_features=X_train.shape[1],
         ),
         EarlyStopping(
