@@ -26,9 +26,6 @@ from ray.tune.search.optuna import OptunaSearch
 from ritme.model_space import static_searchspace as ss
 from ritme.model_space import static_trainables as st
 
-# Set environment variable
-os.environ["TUNE_WARN_EXCESSIVE_EXPERIMENT_CHECKPOINT_SYNC_THRESHOLD_S"] = "0"
-
 # Constants
 MODEL_TRAINABLES = {
     # model_type: trainable
@@ -318,7 +315,7 @@ def run_trials(
             checkpoint_config=air.CheckpointConfig(
                 checkpoint_score_attribute=metric,
                 checkpoint_score_order=mode,
-                num_to_keep=3,
+                num_to_keep=1,
             ),
             callbacks=callbacks,
         ),
