@@ -17,7 +17,7 @@ from classo import Classo
 from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from lightning import LightningModule, Trainer, seed_everything
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping
 from ray import train
 from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
@@ -541,24 +541,54 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
         save_checkpoints: bool = True,
         on: Union[str, List[str]] = "validation_end",
         nb_features: int = None,
+        report_every_n_epochs: int = 5,
+        checkpoint_every_n_epochs: Optional[int] = None,
     ):
         super().__init__(
             metrics=metrics, filename=filename, save_checkpoints=save_checkpoints, on=on
         )
         self.nb_features = nb_features
+        # Throttle how often we report and checkpoint to Ray to reduce I/O load
+        # Default: report every 5 epochs, checkpoint every 10 epochs
+        self.report_every_n_epochs = max(1, report_every_n_epochs)
+        self.checkpoint_every_n_epochs = (
+            max(1, checkpoint_every_n_epochs)
+            if checkpoint_every_n_epochs is not None
+            else self.report_every_n_epochs * 2
+        )
+
+    def _should_checkpoint(self, trainer: Trainer) -> bool:
+        # current_epoch is 0-based; convert to 1-based for human-friendly modulo
+        epoch = int(getattr(trainer, "current_epoch", 0)) + 1
+        # checkpoint on schedule, on last epoch, or when trainer signals stop
+        return (
+            epoch % self.checkpoint_every_n_epochs == 0
+            or getattr(trainer, "should_stop", False)
+            or (hasattr(trainer, "max_epochs") and epoch >= int(trainer.max_epochs))
+        )
 
     def _handle(self, trainer: Trainer, pl_module: LightningModule):
         # CUSTOM: includes also nb_features in report
         if trainer.sanity_checking:
             return
 
+        # Throttle reporting frequency to reduce Ray result writes
+        epoch = int(getattr(trainer, "current_epoch", 0)) + 1
+        if epoch % self.report_every_n_epochs != 0 and not self._should_checkpoint(
+            trainer
+        ):
+            return
+
         report_dict = self._get_report_dict(trainer, pl_module)
         report_dict["nb_features"] = self.nb_features
         if not report_dict:
             return
-
-        with self._get_checkpoint(trainer) as checkpoint:
-            train.report(report_dict, checkpoint=checkpoint)
+        # Conditionally attach a checkpoint to the Ray report
+        if self.save_checkpoints and self._should_checkpoint(trainer):
+            with self._get_checkpoint(trainer) as checkpoint:
+                train.report(report_dict, checkpoint=checkpoint)
+        else:
+            train.report(report_dict)
 
 
 def train_nn(
@@ -641,14 +671,7 @@ def train_nn(
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     callbacks = [
-        ModelCheckpoint(
-            monitor="val_rmse",
-            mode="min",
-            save_top_k=1,
-            save_weights_only=False,
-            dirpath=checkpoint_dir,  # Automatically set dirpath
-            filename="{epoch}-{val_rmse:.2f}",
-        ),
+        # ray tune checkpoint suffices - no pytorch lightning checkpoint needed
         NNTuneReportCheckpointCallback(
             metrics={
                 "rmse_val": "val_rmse",
@@ -661,6 +684,8 @@ def train_nn(
             filename="checkpoint",
             on="validation_end",
             nb_features=X_train.shape[1],
+            report_every_n_epochs=config["epochs"] // 5,
+            checkpoint_every_n_epochs=config["epochs"] // 10,
         ),
         EarlyStopping(
             monitor="val_loss",
