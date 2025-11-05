@@ -795,8 +795,7 @@ def train_xgb(
         results_postprocessing_fn=lambda results: add_nb_features_to_results(
             results, X_train.shape[1]
         ),
-        frequency=0,
-        checkpoint_at_end=True,
+        frequency=1,
     )
     patience = max(10, int(0.1 * config["n_estimators"]))
     xgb.train(
