@@ -13,6 +13,7 @@ from ritme.split_train_test import (
     _ft_remove_zero_features,
     _ft_rename_microbial_features,
     _load_data,
+    _load_data_multi,
     _split_data_grouped,
     cli_split_train_test,
     split_train_test,
@@ -210,3 +211,129 @@ class TestMainFunctions(unittest.TestCase):
                 f"Train and test splits were saved in {output_path}.",
                 stdout.getvalue().strip(),
             )
+
+
+class TestMultiSnapshotFunctions(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        # two snapshots metadata (same samples)
+        self.md_t0 = pd.DataFrame(
+            {
+                "host_id": ["h1", "h2"],
+                "supertarget": [1.0, 2.0],
+                "covariate": [0, 1],
+            },
+            index=["SR1", "SR2"],
+        )
+        self.md_t1 = pd.DataFrame(
+            {
+                "host_id": ["h1", "h2"],
+                "supertarget": [1.5, 2.5],
+                "covariate": [1, 0],
+            },
+            index=["SR1", "SR2"],
+        )
+        # feature tables: t0 already relative, t-1 absolute (will be converted)
+        self.ft_t0 = pd.DataFrame(
+            {
+                "0": [0.6, 0.2],
+                "1": [0.4, 0.8],
+            },
+            index=["SR1", "SR2"],
+        )
+        self.ft_t1_abs = pd.DataFrame(
+            {
+                "0": [60, 20],
+                "1": [40, 80],
+            },
+            index=["SR1", "SR2"],
+        )
+
+        # mismatch metadata for error test
+        self.md_t1_mismatch = self.md_t1.copy()
+        self.md_t1_mismatch.index = ["SR3", "SR4"]
+
+        # temp directory for CLI test
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_md_t0_path = os.path.join(self.tmpdir.name, "md_t0.tsv")
+        self.tmp_md_t1_path = os.path.join(self.tmpdir.name, "md_t1.tsv")
+        self.md_t0.to_csv(self.tmp_md_t0_path, sep="\t")
+        self.md_t1.to_csv(self.tmp_md_t1_path, sep="\t")
+
+        self.tmp_ft_t0_path = os.path.join(self.tmpdir.name, "ft_t0.tsv")
+        self.tmp_ft_t1_path = os.path.join(self.tmpdir.name, "ft_t1.tsv")
+        self.ft_t0.to_csv(self.tmp_ft_t0_path, sep="\t")
+        self.ft_t1_abs.to_csv(self.tmp_ft_t1_path, sep="\t")
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_split_train_test_multi_snapshot_suffixing(self):
+        train_val, test = split_train_test(
+            [self.md_t0, self.md_t1], [self.ft_t0, self.ft_t1_abs], None, 0.5, 42
+        )
+        # Columns should be suffixed with time labels t0 and t-1
+        self.assertTrue(any(col.endswith("__t0") for col in train_val.columns))
+        self.assertTrue(any(col.endswith("__t-1") for col in train_val.columns))
+        # Microbial feature columns start with F and have suffix
+        ft_cols = [c for c in train_val.columns if c.startswith("F")]
+        self.assertTrue(all("__t" in c for c in ft_cols))
+        # Relative abundance conversion applied to second snapshot (absolute input)
+        ft_t1_cols = [c for c in ft_cols if c.endswith("__t-1")]
+        # Sum per sample across t-1 features should be 1.0
+        sums_t1 = train_val[ft_t1_cols].sum(axis=1).round(3)
+        self.assertTrue(sums_t1.eq(1.0).all())
+
+    def test_split_train_test_multi_snapshot_index_mismatch_metadata(self):
+        with self.assertRaisesRegex(
+            ValueError, r"Indices of provided metadata dataframe at position 1"
+        ):
+            _ = split_train_test(
+                [self.md_t0, self.md_t1_mismatch], [self.ft_t0, self.ft_t1_abs]
+            )
+
+    def test_split_train_test_multi_snapshot_index_mismatch_features(self):
+        ft_t1_mismatch = self.ft_t1_abs.copy()
+        ft_t1_mismatch.index = ["SR3", "SR4"]
+        with self.assertRaisesRegex(
+            ValueError, r"Indices of provided feature table dataframe at position 1"
+        ):
+            _ = split_train_test([self.md_t0, self.md_t1], [self.ft_t0, ft_t1_mismatch])
+
+    def test_cli_split_train_test_multi_snapshot(self):
+        out_dir = os.path.join(self.tmpdir.name, "out")
+        md_paths = f"{self.tmp_md_t0_path},{self.tmp_md_t1_path}"
+        ft_paths = f"{self.tmp_ft_t0_path},{self.tmp_ft_t1_path}"
+        with patch("sys.stdout", new=StringIO()) as stdout:
+            cli_split_train_test(out_dir, md_paths, ft_paths, None, 0.5, 101)
+            self.assertIn(
+                f"Train and test splits were saved in {out_dir}.",
+                stdout.getvalue().strip(),
+            )
+        # Verify files written
+        self.assertTrue(os.path.exists(os.path.join(out_dir, "train_val.pkl")))
+        self.assertTrue(os.path.exists(os.path.join(out_dir, "test.pkl")))
+
+    def test_split_train_test_mismatched_types_error(self):
+        # md is a sequence, ft is a DataFrame -> should error
+        with self.assertRaisesRegex(
+            ValueError,
+            r"md and ft must both be DataFrames or both be sequences of DataFrames.",
+        ):
+            _ = split_train_test([self.md_t0, self.md_t1], self.ft_t0)
+
+        # md is a DataFrame, ft is a sequence -> should error
+        with self.assertRaisesRegex(
+            ValueError,
+            r"md and ft must both be DataFrames or both be sequences of DataFrames.",
+        ):
+            _ = split_train_test(self.md_t0, [self.ft_t0, self.ft_t1_abs])
+
+    def test_load_data_multi_mismatched_counts_error(self):
+        # Mismatched number of metadata and feature table paths
+        paths_md = ["a.tsv", "b.tsv"]
+        paths_ft = ["c.tsv"]
+        with self.assertRaisesRegex(
+            ValueError, r"Number of metadata and feature table paths must match."
+        ):
+            _ = _load_data_multi(paths_md, paths_ft)

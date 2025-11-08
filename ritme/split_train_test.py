@@ -149,8 +149,9 @@ def _merge_time_snapshots(
         md_prepared.append(md_s)
 
     merged_ft = pd.concat(ft_prepared, axis=1)
+    merged_md = pd.concat(md_prepared, axis=1)
 
-    return md_prepared, merged_ft
+    return merged_md, merged_ft
 
 
 @helper_function
