@@ -5,6 +5,7 @@ import unittest
 from functools import partial
 from unittest.mock import MagicMock, Mock, patch
 
+import numpy as np
 import pandas as pd
 import skbio
 from parameterized import parameterized
@@ -358,6 +359,71 @@ class TestMainTuneModels(unittest.TestCase):
             model_hyperparameters={"data_enrich_with": None},
             optuna_searchspace_sampler="TPESampler",
         )
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_remove_trac_due_to_snapshots(self, mock_run_trials):
+        # create dataframe with snapshot columns
+        self.train_val = pd.DataFrame(
+            {
+                "F1__t0": [0.1, 0.2],
+                "F2__t0": [0.3, 0.4],
+                "meta": [1, 2],
+                self.target: [0.5, 0.6],
+                self.host_id: ["a", "b"],
+            }
+        )
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_run_trials.return_value = mock_result
+        model_types = ["xgb", "trac"]
+        results = run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            model_types=model_types,
+            model_hyperparameters=self.model_hyperparameters,
+        )
+        self.assertIn("xgb", results)
+        self.assertNotIn("trac", results)
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nan_snapshots_restrict_xgb(self, mock_run_trials):
+        # dataframe with NaN in snapshot features
+        self.train_val = pd.DataFrame(
+            {
+                "F1__t0": [0.1, np.nan],
+                "F2__t0": [0.3, 0.4],
+                "meta": [1, 2],
+                self.target: [0.5, 0.6],
+                self.host_id: ["a", "b"],
+            }
+        )
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_run_trials.return_value = mock_result
+        model_types = ["xgb", "rf", "trac"]
+        results = run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            model_types=model_types,
+            model_hyperparameters=self.model_hyperparameters,
+        )
+        self.assertEqual(list(results.keys()), ["xgb"])
 
 
 if __name__ == "__main__":
