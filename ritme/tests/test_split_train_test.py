@@ -178,7 +178,7 @@ class TestMainFunctions(unittest.TestCase):
         train, test = split_train_test(self.md, self.ft_rel, "host_id", 0.5, 123)
         train_exp = self.data_rel.iloc[[0, 2], :].copy()
         test_exp = self.data_rel.iloc[[1, 3], :].copy()
-        # add prefix "F" to expected
+        # add F prefix
         train_exp.columns = [
             f"F{col}" if col not in self.md.columns else col
             for col in train_exp.columns
@@ -186,6 +186,9 @@ class TestMainFunctions(unittest.TestCase):
         test_exp.columns = [
             f"F{col}" if col not in self.md.columns else col for col in test_exp.columns
         ]
+        # add __t0 suffix
+        train_exp.columns = [f"{col}__t0" for col in train_exp.columns]
+        test_exp.columns = [f"{col}__t0" for col in test_exp.columns]
         assert_frame_equal(train, train_exp)
         assert_frame_equal(test, test_exp)
 
@@ -195,6 +198,14 @@ class TestMainFunctions(unittest.TestCase):
             Warning, r".*table contains absolute instead of relative abundances"
         ):
             _, _ = split_train_test(self.md, ft_abx, "host_id", 0.5, 123)
+
+    def test_split_train_test_group_by_missing_error(self):
+        # Provide non-existent group_by_column
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Group by column 'foobar' not found in data.",
+        ):
+            _ = split_train_test(self.md, self.ft_rel, "foobar", 0.5, 123)
 
     def test_cli_split_train_test_absolute(self):
         with patch("sys.stdout", new=StringIO()) as stdout:
@@ -337,3 +348,21 @@ class TestMultiSnapshotFunctions(unittest.TestCase):
             ValueError, r"Number of metadata and feature table paths must match."
         ):
             _ = _load_data_multi(paths_md, paths_ft)
+
+    def test_split_train_test_feature_set_mismatch(self):
+        # Create a mismatch in feature IDs across snapshots
+        ft_t1_mismatch_cols = pd.DataFrame(
+            {
+                "0": [60, 20],
+                "X": [40, 80],  # different feature id
+            },
+            index=["SR1", "SR2"],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Feature column sets must match across all snapshots; mismatch found",
+        ):
+            _ = split_train_test(
+                [self.md_t0, self.md_t1],
+                [self.ft_t0, ft_t1_mismatch_cols],
+            )

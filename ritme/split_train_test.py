@@ -133,6 +133,15 @@ def _merge_time_snapshots(
     _verify_identical_indices(md_list, kind="metadata")
     _verify_identical_indices(ft_list, kind="feature table")
 
+    # feature column sets must match across snapshots
+    base_cols = set(ft_list[0].columns)
+    for i, ft in enumerate(ft_list[1:], start=1):
+        if set(ft.columns) != base_cols:
+            raise ValueError(
+                "Feature column sets must match across all snapshots; mismatch "
+                f"found at position {i}."
+            )
+
     time_labels = _generate_time_labels(len(ft_list))
 
     # Prepare and suffix features for each snapshot
@@ -247,8 +256,12 @@ def split_train_test(
     """
     # Support single-snapshot and multi-snapshot inputs
     if isinstance(md, pd.DataFrame) and isinstance(ft, pd.DataFrame):
-        md_base = md
-        ft_merged = _prepare_single_feature_table(ft)
+        # For consistency, suffix both metadata and microbial feature columns with __t0
+        time_label = "t0"
+        md_base = md.copy()
+        md_base.columns = [f"{c}__{time_label}" for c in md_base.columns]
+        ft_single = _prepare_single_feature_table(ft)
+        ft_merged = _append_time_suffix_to_features(ft_single, time_label)
     else:
         # Expect sequences for both
         if not isinstance(md, Sequence) or not isinstance(ft, Sequence):
@@ -260,9 +273,17 @@ def split_train_test(
     # merge md and feature table (inner join on sample ids)
     data = md_base.join(ft_merged, how="inner")
 
+    # Resolve group_by_column to suffixed name if needed (host_id -> host_id__t0)
+    group_col = group_by_column
+    if group_by_column is not None and group_by_column not in data.columns:
+        alt = f"{group_by_column}__t0"
+        if alt in data.columns:
+            group_col = alt
+        else:
+            raise ValueError(f"Group by column '{group_by_column}' not found in data.")
     # split
     train_val, test = _split_data_grouped(
-        data, group_by_column=group_by_column, train_size=train_size, seed=seed
+        data, group_by_column=group_col, train_size=train_size, seed=seed
     )
 
     return train_val, test
