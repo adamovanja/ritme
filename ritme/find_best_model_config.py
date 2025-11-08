@@ -59,8 +59,14 @@ def _process_taxonomy(tax: pd.DataFrame, ft: pd.DataFrame) -> pd.DataFrame:
     # rename taxonomy to match "F" feature names
     df_tax.index = df_tax.index.map(lambda x: "F" + str(x))
 
-    # filter the taxonomy based on the feature table
-    df_tax_f = df_tax[df_tax.index.isin(ft.columns.tolist())]
+    # Only reference the t0 snapshot feature set - since they must be identical
+    # to other snapshots if present
+    ft_cols = ft.columns.tolist()
+    ft_t0 = [c for c in ft_cols if c.endswith("__t0")]  # t0 snapshot columns
+
+    # strip time suffix if present
+    ft_cols_t0 = [c.split("__", 1)[0] for c in ft_t0]
+    df_tax_f = df_tax[df_tax.index.isin(ft_cols_t0)]
 
     if df_tax_f.shape[0] == 0:
         raise ValueError("Taxonomy data does not match with feature table.")
@@ -81,7 +87,13 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
     # the input ids
     # Remove the first letter of each column name: "F" to match phylotree
     ft_i = ft.copy()
-    ft_i.columns = [col[1:] for col in ft_i.columns]
+
+    # Only reference the t0 snapshot feature set - since they must be identical
+    # to other snapshots if present
+    t0_cols = ft_i.columns[ft_i.columns.str.endswith("__t0")]
+    ft_i = ft_i[t0_cols]
+    # remove time suffix and then strip the 'F' prefix
+    ft_i.columns = [col.split("__", 1)[0][1:] for col in ft_i.columns]
     art_ft_i = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft_i)
 
     art_phylo = q2.Artifact.import_data("Phylogeny[Rooted]", phylo_tree)
@@ -94,7 +106,7 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
 
     # ensure that # leaves in tree == feature table dimension
     num_leaves = tree_phylo_f.count(tips=True)
-    assert num_leaves == ft.shape[1]
+    assert num_leaves == ft_i.shape[1]
 
     return tree_phylo_f
 
