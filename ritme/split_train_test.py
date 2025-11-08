@@ -1,5 +1,6 @@
 import os
 import warnings
+from typing import List, Sequence, Tuple, Union
 
 import pandas as pd
 import qiime2 as q2
@@ -55,6 +56,103 @@ def _ft_get_relative_abundance(ft: pd.DataFrame) -> pd.DataFrame:
     return ft_rel
 
 
+# ----------------------------------------------------------------------------
+# Multi-snapshot helpers
+
+
+@helper_function
+def _verify_identical_indices(df_list: Sequence[pd.DataFrame], kind: str) -> None:
+    """
+    Verify that all dataframes in df_list have identical indices.
+    Raises a ValueError if a mismatch is found.
+    """
+    if not df_list:
+        raise ValueError(f"No {kind} dataframes provided.")
+    base_index = df_list[0].index
+    for i, df in enumerate(df_list[1:], start=1):
+        if not base_index.equals(df.index):
+            raise ValueError(
+                f"Indices of provided {kind} dataframe at position {i} do not "
+                "match the first one."
+            )
+
+
+@helper_function
+def _generate_time_labels(n: int) -> List[str]:
+    """Generate time labels ['t0', 't-1', 't-2', ...] for n snapshots."""
+    return ["t0"] + [f"t-{i}" for i in range(1, n)]
+
+
+@helper_function
+def _append_time_suffix_to_features(ft: pd.DataFrame, time_label: str) -> pd.DataFrame:
+    """
+    Append a time suffix to microbial feature columns keeping 'F' prefix first,
+    e.g., 'F123' -> 'F123__t0'.
+    """
+    ft_suffixed = ft.copy()
+    ft_suffixed.columns = [f"{col}__{time_label}" for col in ft_suffixed.columns]
+    return ft_suffixed
+
+
+@helper_function
+def _prepare_single_feature_table(ft: pd.DataFrame) -> pd.DataFrame:
+    """Apply standard preprocessing to a single snapshot feature table."""
+    ft_prep = _ft_rename_microbial_features(ft, "F")
+    ft_prep = _ft_remove_zero_features(ft_prep)
+    relative_abundances = ft_prep.sum(axis=1).round(3).eq(1.0).all()
+    if not relative_abundances:
+        warnings.warn(
+            "Provided feature table contains absolute instead of relative abundances. "
+            "Hence, converting it to relative abundances..."
+        )
+        ft_prep = _ft_get_relative_abundance(ft_prep)
+    return ft_prep
+
+
+@helper_function
+def _merge_time_snapshots(
+    md_list: Sequence[pd.DataFrame], ft_list: Sequence[pd.DataFrame]
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Merge multiple metadata and feature tables denoting time snapshots.
+
+    Assumptions:
+    - Order corresponds to time labels t0, t-1, t-2, ...
+
+    Returns
+    -------
+    md_prepared: pd.DataFrame
+        Metadata suffixed by their time labels, e.g., 'age__t0', 'age__t-1'.
+    merged_ft: pd.DataFrame
+        Feature table with microbial columns suffixed by their time labels.
+    """
+    if len(md_list) != len(ft_list):
+        raise ValueError(
+            "Number of metadata files must match number of feature tables."
+        )
+    _verify_identical_indices(md_list, kind="metadata")
+    _verify_identical_indices(ft_list, kind="feature table")
+
+    time_labels = _generate_time_labels(len(ft_list))
+
+    # Prepare and suffix features for each snapshot
+    ft_prepared: List[pd.DataFrame] = []
+    # Prepare and suffix metadata for each snapshot
+    md_prepared: List[pd.DataFrame] = []
+    for ft, tlabel in zip(ft_list, time_labels):
+        ft_p = _prepare_single_feature_table(ft)
+        ft_s = _append_time_suffix_to_features(ft_p, tlabel)
+        ft_prepared.append(ft_s)
+    for md, tlabel in zip(md_list, time_labels):
+        md_s = md.copy()
+        md_s.columns = [f"{col}__{tlabel}" for col in md_s.columns]
+        md_prepared.append(md_s)
+
+    merged_ft = pd.concat(ft_prepared, axis=1)
+
+    return md_prepared, merged_ft
+
+
 @helper_function
 def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -69,6 +167,22 @@ def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     elif path2ft.endswith(".qza"):
         ft = q2.Artifact.load(path2ft).view(pd.DataFrame)
     return md, ft
+
+
+@helper_function
+def _load_data_multi(
+    paths_md: Sequence[str], paths_ft: Sequence[str]
+) -> Tuple[List[pd.DataFrame], List[pd.DataFrame]]:
+    """Load multiple metadata and feature table files."""
+    if len(paths_md) != len(paths_ft):
+        raise ValueError("Number of metadata and feature table paths must match.")
+    md_list: List[pd.DataFrame] = []
+    ft_list: List[pd.DataFrame] = []
+    for pmd, pft in zip(paths_md, paths_ft):
+        md, ft = _load_data(pmd, pft)
+        md_list.append(md)
+        ft_list.append(ft)
+    return md_list, ft_list
 
 
 @helper_function
@@ -105,8 +219,8 @@ def _split_data_grouped(
 # ----------------------------------------------------------------------------
 @main_function
 def split_train_test(
-    md: pd.DataFrame,
-    ft: pd.DataFrame,
+    md: Union[pd.DataFrame, Sequence[pd.DataFrame]],
+    ft: Union[pd.DataFrame, Sequence[pd.DataFrame]],
     group_by_column: str = None,
     train_size: float = 0.8,
     seed: int = 42,
@@ -130,20 +244,20 @@ def split_train_test(
     Returns:
         tuple: A tuple containing train and test dataframes.
     """
-    # preprocess feature table
-    ft = _ft_rename_microbial_features(ft, "F")
-    ft = _ft_remove_zero_features(ft)
+    # Support single-snapshot and multi-snapshot inputs
+    if isinstance(md, pd.DataFrame) and isinstance(ft, pd.DataFrame):
+        md_base = md
+        ft_merged = _prepare_single_feature_table(ft)
+    else:
+        # Expect sequences for both
+        if not isinstance(md, Sequence) or not isinstance(ft, Sequence):
+            raise ValueError(
+                "md and ft must both be DataFrames or both be sequences of DataFrames."
+            )
+        md_base, ft_merged = _merge_time_snapshots(md, ft)
 
-    relative_abundances = ft.sum(axis=1).round(3).eq(1.0).all()
-    if not relative_abundances:
-        warnings.warn(
-            "Provided feature table contains absolute instead of relative abundances. "
-            "Hence, converting it to relative abundances..."
-        )
-        ft = _ft_get_relative_abundance(ft)
-
-    # merge md and ft
-    data = md.join(ft, how="inner")
+    # merge md and feature table (inner join on sample ids)
+    data = md_base.join(ft_merged, how="inner")
 
     # split
     train_val, test = _split_data_grouped(
@@ -182,9 +296,17 @@ def cli_split_train_test(
         Writes the train and test splits to "train_val.pkl" and "test.pkl" files
         in the specified output path.
     """
-    md, ft = _load_data(path_to_md, path_to_ft)
-
-    train_val, test = split_train_test(md, ft, group_by_column, train_size, seed)
+    # Support comma-separated lists of files for multi-snapshot input
+    if "," in path_to_md or "," in path_to_ft:
+        paths_md = [p.strip() for p in path_to_md.split(",")]
+        paths_ft = [p.strip() for p in path_to_ft.split(",")]
+        md_list, ft_list = _load_data_multi(paths_md, paths_ft)
+        train_val, test = split_train_test(
+            md_list, ft_list, group_by_column, train_size, seed
+        )
+    else:
+        md, ft = _load_data(path_to_md, path_to_ft)
+        train_val, test = split_train_test(md, ft, group_by_column, train_size, seed)
 
     # write to file
     if not os.path.exists(output_path):
