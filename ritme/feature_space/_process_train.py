@@ -14,9 +14,7 @@ from ritme.split_train_test import _split_data_grouped
 
 
 def _slice_snapshot(ft_all: pd.DataFrame, time_label: str) -> pd.DataFrame:
-    """
-    Return snapshot slice of microbial features and strip time suffix if present.
-    """
+    """Return snapshot slice of all columns and strip time suffix if present."""
     suffix = f"__{time_label}"
     cols = [c for c in ft_all.columns if c.endswith(suffix)]
     snap = ft_all[cols].copy()
@@ -32,6 +30,7 @@ def _add_suffix(df: pd.DataFrame, time_label: str) -> pd.DataFrame:
 
 
 def process_train(config, train_val, target, host_id, tax, seed_data):
+    """Process training data per snapshot with unsuffixed internals, then suffix."""
     feat_prefix = "F"
     microbial_ft_ls = [x for x in train_val if x.startswith(feat_prefix)]
 
@@ -43,21 +42,24 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     microbial_ft_ls_transf_all: List[str] = []
     other_ft_ls_all: List[str] = []
 
-    # Per-snapshot: aggregate -> select -> transform -> enrich
+    # Per-snapshot: aggregate -> select -> transform -> enrich (unsuffixed)
     denom_idx_map = {}
     for tlabel in time_labels:
-        # Slice raw microbial features for this snapshot
-        snap_raw = _slice_snapshot(train_val[microbial_ft_ls], tlabel)
+        # Slice full snapshot (microbial + metadata), unsuffixed
+        snap_all = _slice_snapshot(train_val, tlabel)
+        snap_micro_ls = [c for c in snap_all.columns if c.startswith(feat_prefix)]
+        snap_ft_unsuff = snap_all[snap_micro_ls]
+        snap_md_unsuff = snap_all.drop(columns=snap_micro_ls)
 
-        # AGGREGATE
+        # AGGREGATE (unsuffixed)
         snap_agg = aggregate_microbial_features(
-            snap_raw, config["data_aggregation"], tax
+            snap_ft_unsuff, config["data_aggregation"], tax
         )
 
-        # SELECT
+        # SELECT (unsuffixed)
         snap_sel = select_microbial_features(snap_agg, config, feat_prefix)
 
-        # TRANSFORM. If only one feature, skip transform.
+        # TRANSFORM (unsuffixed). If only one feature, skip transform.
         if len(snap_sel.columns) == 1:
             snap_transf = snap_sel.copy()
             denom_idx = None
@@ -73,45 +75,25 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
                 snap_sel, config["data_transform"], denom_idx
             )
 
-        # Add time suffix to transformed columns
-        snap_transf_s = _add_suffix(snap_transf, tlabel)
-        microbial_ft_ls_transf_all.extend(snap_transf_s.columns.tolist())
-        # Join transformed snapshot with metadata of the same snapshot for enrichment
-        md_cols_t = [
-            c
-            for c in train_val.columns
-            if (not c.startswith(feat_prefix)) and c.endswith(f"__{tlabel}")
-        ]
-        train_val_t_snap = train_val[md_cols_t].join(snap_transf_s)
-
-        # Build list of raw microbial features (with suffix) for this snapshot
-        microbial_ft_ls_t = [
-            c
-            for c in train_val.columns
-            if c.startswith(feat_prefix) and c.endswith(f"__{tlabel}")
-        ]
-
-        # ENRICH per snapshot (Shannon + metadata as configured)
-        other_ft_ls_snap, enriched_snap = enrich_features(
-            train_val, microbial_ft_ls_t, train_val_t_snap, config
+        # ENRICH on unsuffixed snapshot
+        other_ft_ls_snap_unsuff, enriched_unsuff = enrich_features(
+            snap_all,
+            snap_micro_ls,
+            snap_transf.join(snap_md_unsuff),
+            config,
         )
 
-        # Suffix newly created generic columns (e.g., shannon_entropy) with time
-        # label add add same columns to newly created dataframe enriched_snap
-        rename_map = {}
-        for col in other_ft_ls_snap:
-            if "__t" not in col:
-                rename_map[col] = f"{col}__{tlabel}"
-        if rename_map:
-            enriched_snap = enriched_snap.rename(columns=rename_map)
-            other_ft_ls_snap = [rename_map.get(c, c) for c in other_ft_ls_snap]
+        # Suffix once for the whole enriched snapshot
+        enriched_suff = _add_suffix(enriched_unsuff, tlabel)
 
-        # Append all enriched snapshot columns - we rely on prior suffixing to
-        # keep names unique per snapshot.
-        train_val_accum = train_val_accum.join(enriched_snap, how="left")
+        # Track transformed microbial and other features (suffixed)
+        microbial_ft_ls_transf_all.extend(
+            [f"{c}__{tlabel}" for c in snap_transf.columns]
+        )
+        other_ft_ls_all.extend([f"{c}__{tlabel}" for c in other_ft_ls_snap_unsuff])
 
-        # Extend other feature list
-        other_ft_ls_all.extend(other_ft_ls_snap)
+        # Append enriched suffixed snapshot to accumulator
+        train_val_accum = train_val_accum.join(enriched_suff, how="left")
 
     if config["data_transform"] == "alr":
         config["data_alr_denom_idx_map"] = denom_idx_map

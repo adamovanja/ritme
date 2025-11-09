@@ -784,16 +784,30 @@ class TestProcessTrain(unittest.TestCase):
         mock_select_features.return_value = raw_unsuffixed
         mock_transform_features.return_value = raw_unsuffixed
 
-        # Enrichment returns metadata + transformed features (already suffixed)
-        enriched_snapshot = self.train_val[
-            [
-                "host_id__t0",
-                "target__t0",
-                "F0__t0",
-                "F1__t0",
-            ]
-        ].copy()
-        mock_enrich_features.return_value = ([], enriched_snapshot)
+        # Build expected unsuffixed snapshot for enrichment call
+        snap_all_unsuff = pd.DataFrame(
+            {
+                "host_id": self.train_val["host_id__t0"].values,
+                "target": self.train_val["target__t0"].values,
+                "F0": self.train_val["F0__t0"].values,
+                "F1": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
+        )
+        snap_md_unsuff = snap_all_unsuff.drop(columns=["F0", "F1"])  # host_id, target
+        transf_plus_md_unsuff = raw_unsuffixed.join(snap_md_unsuff)
+
+        # Enrichment now returns UNSUFFIXED snapshot; process_train will suffix once
+        enriched_unsuff = pd.DataFrame(
+            {
+                "host_id": self.train_val["host_id__t0"].values,
+                "target": self.train_val["target__t0"].values,
+                "F0": self.train_val["F0__t0"].values,
+                "F1": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
+        )
+        mock_enrich_features.return_value = ([], enriched_unsuff)
 
         # After accumulation, split should be called on train_val_accum.
         # That object contains enriched columns.
@@ -821,14 +835,24 @@ class TestProcessTrain(unittest.TestCase):
         self._assert_called_with_df(mock_transform_features, raw_unsuffixed, None)
         self._assert_called_with_df(
             mock_enrich_features,
-            self.train_val,
-            ["F0__t0", "F1__t0"],
-            self.train_val,
+            snap_all_unsuff,
+            ["F0", "F1"],
+            transf_plus_md_unsuff,
             self.config,
+        )
+        # Expect split called with suffixed enriched snapshot (single suffix)
+        enriched_suff_exp = pd.DataFrame(
+            {
+                "host_id__t0": self.train_val["host_id__t0"].values,
+                "target__t0": self.train_val["target__t0"].values,
+                "F0__t0": self.train_val["F0__t0"].values,
+                "F1__t0": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
         )
         self._assert_called_with_df(
             mock_split_data_grouped,
-            enriched_snapshot,
+            enriched_suff_exp,
             "host_id__t0",
             0.8,
             0,

@@ -431,13 +431,13 @@ class TestTrainableLogging(unittest.TestCase):
         self.X = np.random.randn(1000, 10)
         self.y = np.sum(self.X, axis=1) + np.random.randn(1000) * 0.1
         self.features = [f"F{i}" for i in range(10)]
-        self.train_val = pd.DataFrame(self.X, columns=[f"F{i}" for i in range(10)])
-        self.train_val["target"] = self.y
-        self.train_val["host_id"] = np.random.randint(0, 5, 1000)
+        self.train_val = pd.DataFrame(self.X, columns=[f"F{i}__t0" for i in range(10)])
+        self.train_val["target__t0"] = self.y
+        self.train_val["host_id__t0"] = np.random.randint(0, 5, 1000)
         self.seed_data = 42
         self.seed_model = 42
-        self.host_id = "host_id"
-        self.target = "target"
+        self.host_id = "host_id__t0"
+        self.target = "target__t0"
         self.tax = pd.DataFrame([])
         self.tree_phylo = skbio.TreeNode()
 
