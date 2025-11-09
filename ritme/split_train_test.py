@@ -1,6 +1,6 @@
 import os
 import warnings
-from typing import List, Sequence, Tuple, Union
+from typing import List, Sequence, Tuple
 
 import pandas as pd
 import qiime2 as q2
@@ -16,7 +16,20 @@ from ritme.feature_space.utils import _biom_to_df, _df_to_biom
 def _ft_rename_microbial_features(
     ft: pd.DataFrame, feature_prefix: str
 ) -> pd.DataFrame:
-    """Append feature_prefix to all microbial feature names"""
+    """Append a prefix to all microbial feature names.
+
+    Parameters
+    ----------
+    ft : pd.DataFrame
+        Feature table with columns denoting microbial features.
+    feature_prefix : str
+        Prefix to prepend to each feature id (e.g., "F").
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``ft`` with renamed columns.
+    """
     ft_renamed = ft.copy()
     ft_renamed.columns = [f"{feature_prefix}{i}" for i in ft.columns.tolist()]
     return ft_renamed
@@ -24,7 +37,10 @@ def _ft_rename_microbial_features(
 
 @helper_function
 def _ft_remove_zero_features(ft: pd.DataFrame) -> pd.DataFrame:
-    """Remove features that are all zero."""
+    """Remove features that are all zero.
+
+    Emits a warning listing the dropped features when any are removed.
+    """
     ft_removed = ft.copy()
     drop_fts = ft_removed.loc[:, ft_removed.sum(axis=0) == 0.0].columns.tolist()
     if len(drop_fts) > 0:
@@ -37,8 +53,12 @@ def _ft_remove_zero_features(ft: pd.DataFrame) -> pd.DataFrame:
 
 @helper_function
 def _ft_get_relative_abundance(ft: pd.DataFrame) -> pd.DataFrame:
-    """
-    Transform feature table from absolute to relative abundance.
+    """Transform a feature table from absolute to relative abundances.
+
+    Notes
+    -----
+    Uses BIOM's ``Table.norm(axis="sample")`` for normalization.
+    Asserts that each row sums to 1.0 (rounded to 3 decimals).
     """
 
     # biom.norm faster than skbio.stats.composition.closure
@@ -96,7 +116,7 @@ def _append_time_suffix_to_features(ft: pd.DataFrame, time_label: str) -> pd.Dat
 
 @helper_function
 def _prepare_single_feature_table(ft: pd.DataFrame) -> pd.DataFrame:
-    """Apply standard preprocessing to a single snapshot feature table."""
+    """Apply standard preprocessing to a feature table."""
     ft_prep = _ft_rename_microbial_features(ft, "F")
     ft_prep = _ft_remove_zero_features(ft_prep)
     relative_abundances = ft_prep.sum(axis=1).round(3).eq(1.0).all()
@@ -113,18 +133,25 @@ def _prepare_single_feature_table(ft: pd.DataFrame) -> pd.DataFrame:
 def _merge_time_snapshots(
     md_list: Sequence[pd.DataFrame], ft_list: Sequence[pd.DataFrame]
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Merge multiple metadata and feature tables denoting time snapshots.
+    """Merge per-snapshot metadata and feature tables with time suffixes.
 
-    Assumptions:
-    - Order corresponds to time labels t0, t-1, t-2, ...
+    Assumptions
+    -----------
+    - ``md_list`` and ``ft_list`` have identical indices across snapshots.
+    - Input order corresponds to time labels: ``t0, t-1, t-2, ...``.
+    - Feature column sets are identical across snapshots.
+
+    Behavior
+    --------
+    - Each feature table is preprocessed (rename with prefix "F", removal of
+      all-zero features, relative abundance conversion if needed) then suffixed
+      with its time label (e.g. ``F123__t0``).
+    - Metadata columns are suffixed with their time label (e.g. ``age__t-1``).
 
     Returns
     -------
-    md_prepared: pd.DataFrame
-        Metadata suffixed by their time labels, e.g., 'age__t0', 'age__t-1'.
-    merged_ft: pd.DataFrame
-        Feature table with microbial columns suffixed by their time labels.
+    tuple[pd.DataFrame, pd.DataFrame]
+        (merged_metadata, merged_features) with time-suffixed columns.
     """
     if len(md_list) != len(ft_list):
         raise ValueError(
@@ -133,7 +160,6 @@ def _merge_time_snapshots(
     _verify_identical_indices(md_list, kind="metadata")
     _verify_identical_indices(ft_list, kind="feature table")
 
-    # feature column sets must match across snapshots
     base_cols = set(ft_list[0].columns)
     for i, ft in enumerate(ft_list[1:], start=1):
         if set(ft.columns) != base_cols:
@@ -143,14 +169,10 @@ def _merge_time_snapshots(
             )
 
     time_labels = _generate_time_labels(len(ft_list))
-
-    # Prepare and suffix features for each snapshot
     ft_prepared: List[pd.DataFrame] = []
-    # Prepare and suffix metadata for each snapshot
     md_prepared: List[pd.DataFrame] = []
     for ft, tlabel in zip(ft_list, time_labels):
-        ft_p = _prepare_single_feature_table(ft)
-        ft_s = _append_time_suffix_to_features(ft_p, tlabel)
+        ft_s = _append_time_suffix_to_features(ft, tlabel)
         ft_prepared.append(ft_s)
     for md, tlabel in zip(md_list, time_labels):
         md_s = md.copy()
@@ -159,14 +181,26 @@ def _merge_time_snapshots(
 
     merged_ft = pd.concat(ft_prepared, axis=1)
     merged_md = pd.concat(md_prepared, axis=1)
-
     return merged_md, merged_ft
 
 
 @helper_function
 def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Load data from provided paths
+    """Load metadata and feature table from disk.
+
+    Parameters
+    ----------
+    path2md : str
+        Path to a tab-delimited metadata file (``.tsv``) with sample ids in the
+        index column.
+    path2ft : str
+        Path to a feature table as ``.tsv`` (tab-delimited, samples as rows)
+        or a QIIME2 artifact ``.qza`` that can be viewed as a DataFrame.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        (metadata, feature_table).
     """
     # read metadata
     md = pd.read_csv(path2md, sep="\t", index_col=0)
@@ -180,19 +214,137 @@ def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 @helper_function
-def _load_data_multi(
-    paths_md: Sequence[str], paths_ft: Sequence[str]
+def _generate_host_time_snapshots_from_df(
+    md: pd.DataFrame,
+    ft: pd.DataFrame,
+    time_col: str,
+    host_col: str,
+    s: int,
+    feature_prefix: str = "F",
+    missing_mode: str = "nan",
 ) -> Tuple[List[pd.DataFrame], List[pd.DataFrame]]:
-    """Load multiple metadata and feature table files."""
-    if len(paths_md) != len(paths_ft):
-        raise ValueError("Number of metadata and feature table paths must match.")
-    md_list: List[pd.DataFrame] = []
-    ft_list: List[pd.DataFrame] = []
-    for pmd, pft in zip(paths_md, paths_ft):
-        md, ft = _load_data(pmd, pft)
-        md_list.append(md)
-        ft_list.append(ft)
-    return md_list, ft_list
+    """Generate per-host sliding-window snapshots: [t0, t-1, ..., t-s].
+
+    Each returned snapshot pair (metadata and features) shares the same index:
+    the sample ids corresponding to each t0 instance (one per host-time).
+    This aligns rows across snapshots for downstream modeling and allows every
+    observed time to act as its own t0.
+
+    Important
+    ---------
+    - Snapshot times are computed from the numeric values in ``time_col``.
+    - When a target past time is missing:
+        * ``missing_mode='nan'`` retains the row, filling features and metadata
+          with ``NA`` (host id and the computed target time are still set).
+        * ``missing_mode='exclude'`` omits that t0 instance unless all required
+          past times are present.
+    - Feature snapshots are preprocessed via :func:`_prepare_single_feature_table`
+      (prefix "F", remove all-zero features, convert to relative if needed) and
+      include only microbial feature columns (prefixed with ``feature_prefix``).
+    - Metadata snapshots keep the original metadata columns.
+
+    Parameters
+    ----------
+    md, ft : pd.DataFrame
+        Metadata and feature table with identical indices (sample ids).
+    time_col : str
+        Column in ``md`` with numeric time ordering (integers recommended).
+    host_col : str
+        Column in ``md`` identifying host/trajectory.
+    s : int
+        Number of previous snapshots to include (total snapshots = ``s+1``).
+    feature_prefix : str, default "F"
+        Prefix identifying microbial features after preprocessing.
+    missing_mode : {"exclude", "nan"}
+        Handling of missing earlier snapshots.
+
+    Returns
+    -------
+    tuple[list[pd.DataFrame], list[pd.DataFrame]]
+        Lists of metadata and feature DataFrames for offsets ``0..s``.
+    """
+    if missing_mode not in {"exclude", "nan"}:
+        raise ValueError("missing_mode must be one of {'exclude','nan'}")
+    if time_col not in md.columns or host_col not in md.columns:
+        raise ValueError(
+            f"Metadata must contain columns '{time_col}' and '{host_col}'."
+        )
+    if not md.index.equals(ft.index):
+        raise ValueError("Metadata and feature table indices must match.")
+
+    ft_prepared = _prepare_single_feature_table(ft)
+    microbial_cols = [c for c in ft_prepared.columns if c.startswith(feature_prefix)]
+
+    # ! Build per-host mapping time -> sample index (numeric times required)
+    # ! -> host_time_to_idx
+    # ! -> host_all_times
+    host_groups = md.groupby(host_col, sort=False)
+    host_time_to_idx: dict[str, dict[int, str]] = {}
+    host_all_times: dict[str, List[int]] = {}
+    for host, sub_md in host_groups:
+        times_num = pd.to_numeric(sub_md[time_col], errors="coerce")
+        if times_num.isna().any():
+            raise ValueError(
+                "Non-numeric times detected for host "
+                f"'{host}'. Provide integer/float times for sliding window generation."
+            )
+        # Preserve order ascending
+        ordered = sorted(set(int(t) for t in times_num.tolist()))
+        mapping: dict[int, str] = {}
+        # If duplicate times exist, keep last occurrence (overwrite semantics)
+        for idx, tval in zip(sub_md.index, times_num):
+            mapping[int(tval)] = idx
+        host_time_to_idx[host] = mapping
+        host_all_times[host] = ordered
+
+    # ! Construct list of (host, t0_time) instances (each time value becomes a t0)
+    # ! -> instance_specs
+    instance_specs: List[tuple[str, int]] = []
+    for host, times_list in host_all_times.items():
+        for t0_time in times_list:  # every time point acts as its own t0
+            # Determine required contiguous window times
+            target_times = [t0_time - i for i in range(0, s + 1)]
+            if missing_mode == "exclude" and not all(
+                tt in host_time_to_idx[host] for tt in target_times
+            ):
+                # Skip this t0 instance if any required past time missing
+                continue
+            instance_specs.append((host, t0_time))
+
+    if missing_mode == "exclude" and len(instance_specs) == 0:
+        raise ValueError(
+            "No (host, t0) instances have complete contiguous windows for requested s."
+        )
+
+    # Canonical index: use sample id corresponding to each t0 instance
+    canonical_index: List[str] = [
+        host_time_to_idx[host][t0_time] for host, t0_time in instance_specs
+    ]
+
+    meta_snapshots: List[pd.DataFrame] = []
+    ft_snapshots: List[pd.DataFrame] = []
+    # Build snapshots for offsets 0..s (0 = t0)
+    for offset in range(s + 1):
+        md_rows: List[pd.Series] = []
+        ft_rows: List[pd.Series] = []
+        for host, t0_time in instance_specs:
+            target_time = t0_time - offset
+            sample_idx = host_time_to_idx[host].get(target_time)
+            if sample_idx is not None:
+                md_rows.append(md.loc[sample_idx].copy())
+                ft_rows.append(ft_prepared.loc[sample_idx, microbial_cols].copy())
+            else:
+                md_row = pd.Series({c: pd.NA for c in md.columns})
+                md_row[host_col] = host
+                md_row[time_col] = target_time
+                md_rows.append(md_row)
+                ft_rows.append(pd.Series({c: pd.NA for c in microbial_cols}))
+        md_snap = pd.DataFrame(md_rows, index=canonical_index)
+        ft_snap = pd.DataFrame(ft_rows, index=canonical_index, columns=microbial_cols)
+        meta_snapshots.append(md_snap)
+        ft_snapshots.append(ft_snap)
+
+    return meta_snapshots, ft_snapshots
 
 
 @helper_function
@@ -202,12 +354,22 @@ def _split_data_grouped(
     train_size: float,
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Randomly split data into train and test sets, with optional grouping.
+
+    Behavior
+    --------
+    - If ``train_size == 0.0``, no split is performed: train is empty (0 rows,
+      same columns) and test contains all rows.
+    - If ``group_by_column`` is provided, rows sharing a group value are kept
+      together to prevent leakage.
+    - Otherwise a standard random split is performed.
     """
-    Randomly splits the provided data into train and test sets, grouping rows by
-    the specified `group_by_column`. Grouping ensures that rows with the same
-    group value are not spread across multiple subsets, preventing data leakage.
-    If no grouping is provided, a standard random split is performed.
-    """
+    # Special-case: return everything as test
+    if train_size == 0.0:
+        train = data.iloc[0:0].copy()
+        test = data.copy()
+        print(f"Train: {train.shape}, Test: {test.shape}")
+        return train, test
     if group_by_column is None:
         train, test = train_test_split(data, train_size=train_size, random_state=seed)
     else:
@@ -229,46 +391,83 @@ def _split_data_grouped(
 # ----------------------------------------------------------------------------
 @main_function
 def split_train_test(
-    md: Union[pd.DataFrame, Sequence[pd.DataFrame]],
-    ft: Union[pd.DataFrame, Sequence[pd.DataFrame]],
+    md: pd.DataFrame,
+    ft: pd.DataFrame,
     group_by_column: str = None,
     train_size: float = 0.8,
     seed: int = 42,
+    # Optional snapshot generation from single md/ft
+    time_col: str | None = None,
+    host_col: str | None = None,
+    n_prev: int | None = None,
+    missing_mode: str = "exclude",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Merge metadata and feature table and split into train-test sets. Split can
-    be performed with grouping by column "group_by_column" (e.g. host_id), this
-    ensures that rows with the same group value are not spread across multiple
-    subsets, preventing data leakage. All feature columns in ft are prefixed
-    with an "F".
+    """Prepare a modeling table and split into train/test sets.
 
-    Args:
-    md (pd.DataFrame): Metadata dataframe.
-    ft (pd.DataFrame): Feature table dataframe.
-    group_by_column (str, optional): Column in metadata by which the split
-    should be grouped. Defaults to None.
-    train_size (float, optional): The proportion of the dataset to include
-    in the train split. Defaults to 0.8.
-    seed (int, optional): Random seed for reproducibility. Defaults to 42.
+    Behavior
+    --------
+    - When ``time_col``, ``host_col`` and ``n_prev`` are provided, the function
+      first generates sliding-window snapshots per host/time using
+      :func:`_generate_host_time_snapshots_from_df`, then merges them with
+      time-suffixed columns (``__t0``, ``__t-1``, ...). Otherwise, it treats the
+      input as a single ``t0`` snapshot and simply suffixes columns with
+      ``__t0``.
+    - Feature columns are always prefixed with ``F`` and preprocessed (all-zero
+      removal, relative abundance conversion if needed).
+    - If ``group_by_column`` does not exist in the suffixed table, its ``__t0``
+      counterpart (e.g., ``host_id__t0``) is used for grouping.
+        - If ``train_size == 0.0``, all processed rows are returned in the test
+            set and the train set is empty.
 
-    Returns:
-        tuple: A tuple containing train and test dataframes.
+    Parameters
+    ----------
+    md : pd.DataFrame
+        Metadata table (samples as rows). When temporal arguments are provided,
+        must contain ``time_col`` and ``host_col``.
+    ft : pd.DataFrame
+        Feature table (samples as rows), will be preprocessed.
+    group_by_column : str, optional
+        Column by which to group the split (e.g. ``host_id``). Prevents leakage
+        across groups. Default ``None``.
+    train_size : float, optional
+        Proportion for the train split. Default ``0.8``.
+    seed : int, optional
+        Random seed. Default ``42``.
+    time_col : str, optional
+        Metadata column for time. Enables temporal snapshotting when set.
+    host_col : str, optional
+        Metadata column identifying host/trajectory. Required when
+        ``time_col`` is set.
+    n_prev : int, optional
+        Number of previous snapshots to include (total snapshots = ``n_prev+1``)
+        when temporal snapshotting is enabled.
+    missing_mode : {"exclude", "nan"}
+        Handling of missing earlier snapshots in temporal mode. Default
+        ``"exclude"``.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        Train/validation and test DataFrames with time-suffixed columns.
     """
-    # Support single-snapshot and multi-snapshot inputs
-    if isinstance(md, pd.DataFrame) and isinstance(ft, pd.DataFrame):
-        # For consistency, suffix both metadata and microbial feature columns with __t0
+    # Expand into multiple snapshots if temporal parameters are provided;
+    # otherwise treat as a single t0 snapshot.
+    if time_col and host_col and n_prev is not None and n_prev >= 0:
+        md_list, ft_list = _generate_host_time_snapshots_from_df(
+            md,
+            ft,
+            time_col=time_col,
+            host_col=host_col,
+            s=n_prev,
+            missing_mode=missing_mode,
+        )
+        md_base, ft_merged = _merge_time_snapshots(md_list, ft_list)
+    else:
         time_label = "t0"
         md_base = md.copy()
         md_base.columns = [f"{c}__{time_label}" for c in md_base.columns]
         ft_single = _prepare_single_feature_table(ft)
         ft_merged = _append_time_suffix_to_features(ft_single, time_label)
-    else:
-        # Expect sequences for both
-        if not isinstance(md, Sequence) or not isinstance(ft, Sequence):
-            raise ValueError(
-                "md and ft must both be DataFrames or both be sequences of DataFrames."
-            )
-        md_base, ft_merged = _merge_time_snapshots(md, ft)
 
     # merge md and feature table (inner join on sample ids)
     data = md_base.join(ft_merged, how="inner")
@@ -297,38 +496,37 @@ def cli_split_train_test(
     group_by_column: str = None,
     train_size: float = 0.8,
     seed: int = 42,
+    # Optional snapshot generation from single md/ft
+    time_col: str = None,
+    host_col: str = None,
+    n_prev: int = None,
+    missing_mode: str = None,
 ):
-    """
-    Merge metadata and feature table and split into train-test sets. Split can
-    be performed with grouping by column "group_by_column" (e.g. host_id), this
-    ensures that rows with the same group value are not spread across multiple
-    subsets, preventing data leakage. All feature columns in path_to_ft are
-    prefixed with an "F".
+    """CLI wrapper for :func:`split_train_test` supporting temporal mode.
 
-    Args:
-        output_path (str): Path to save output to.
-        path_to_md (str): Path to metadata file.
-        path_to_ft (str): Path to feature table file.
-        group_by_column (str, optional): Column in metadata by which the split
-        should be grouped. Defaults to None.
-        train_size (float, optional): The proportion of the dataset to include
-        in the train split. Defaults to 0.8.
-        seed (int, optional): Random seed for reproducibility. Defaults to 42.
-    Side Effects:
-        Writes the train and test splits to "train_val.pkl" and "test.pkl" files
-        in the specified output path.
+    Notes
+    -----
+    - ``path_to_md``: tab-delimited ``.tsv`` with sample ids as index.
+    - ``path_to_ft``: ``.tsv`` or QIIME2 ``.qza`` artifact convertible to DataFrame.
+    - Temporal arguments trigger sliding-window snapshot generation and time
+      suffixing (``__t0``, ``__t-1``, ...).
+
+    Side Effects
+    ------------
+    Writes ``train_val.pkl`` and ``test.pkl`` into ``output_path``.
     """
-    # Support comma-separated lists of files for multi-snapshot input
-    if "," in path_to_md or "," in path_to_ft:
-        paths_md = [p.strip() for p in path_to_md.split(",")]
-        paths_ft = [p.strip() for p in path_to_ft.split(",")]
-        md_list, ft_list = _load_data_multi(paths_md, paths_ft)
-        train_val, test = split_train_test(
-            md_list, ft_list, group_by_column, train_size, seed
-        )
-    else:
-        md, ft = _load_data(path_to_md, path_to_ft)
-        train_val, test = split_train_test(md, ft, group_by_column, train_size, seed)
+    md, ft = _load_data(path_to_md, path_to_ft)
+    train_val, test = split_train_test(
+        md,
+        ft,
+        group_by_column,
+        train_size,
+        seed,
+        time_col=time_col,
+        host_col=host_col,
+        n_prev=n_prev,
+        missing_mode=missing_mode,
+    )
 
     # write to file
     if not os.path.exists(output_path):
