@@ -270,7 +270,13 @@ def _generate_host_time_snapshots_from_df(
             f"Metadata must contain columns '{time_col}' and '{host_col}'."
         )
     if not md.index.equals(ft.index):
-        raise ValueError("Metadata and feature table indices must match.")
+        warnings.warn(
+            "Metadata and feature table indices must match -"
+            "Merging is performed to achieve this."
+        )
+        common_idx = md.index.intersection(ft.index)
+        md = md.loc[common_idx]
+        ft = ft.loc[common_idx]
 
     ft_prepared = _prepare_single_feature_table(ft)
     microbial_cols = [c for c in ft_prepared.columns if c.startswith(feature_prefix)]
