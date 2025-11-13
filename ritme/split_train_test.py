@@ -478,6 +478,10 @@ def split_train_test(
     # merge md and feature table (inner join on sample ids)
     data = md_base.join(ft_merged, how="inner")
 
+    if missing_mode == "exclude":
+        # merging could add all-zero features - remove
+        data = _ft_remove_zero_features(data)
+
     # Resolve group_by_column to suffixed name if needed (host_id -> host_id__t0)
     group_col = group_by_column
     if group_by_column is not None and group_by_column not in data.columns:
