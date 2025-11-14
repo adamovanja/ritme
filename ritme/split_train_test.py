@@ -478,7 +478,7 @@ def split_train_test(
     # merge md and feature table (inner join on sample ids)
     data = md_base.join(ft_merged, how="inner")
 
-    if missing_mode == "exclude":
+    if missing_mode == "exclude" and train_size != 0.0:
         # merging could add all-zero features - remove
         data = _ft_remove_zero_features(data)
 
