@@ -239,16 +239,18 @@ class TestFindBestModelConfig(unittest.TestCase):
             # assert_called_once method below
             args, _ = mock_run_all_trials.call_args
             assert_frame_equal(args[0], self.train_val)
-            assert_frame_equal(args[5], self.tax_renamed)
-            self.assertEqual(str(args[6]), str(self.tree_phylo_filtered))
+            # After adding stratify_by positional arg, tax and phylo shift one index
+            assert_frame_equal(args[6], self.tax_renamed)
+            self.assertEqual(str(args[7]), str(self.tree_phylo_filtered))
             mock_run_all_trials.assert_called_once_with(
-                ANY,
+                ANY,  # train_val
                 self.config["target"],
                 self.config["group_by_column"],
+                None,  # stratify_by absent
                 self.config["seed_data"],
                 self.config["seed_model"],
-                ANY,
-                ANY,
+                ANY,  # processed tax
+                ANY,  # processed phylo
                 os.path.join(temp_dir, "test_experiment", "mlruns"),
                 os.path.join(temp_dir, "test_experiment"),
                 self.config["time_budget_s"],
@@ -259,11 +261,29 @@ class TestFindBestModelConfig(unittest.TestCase):
                 optuna_searchspace_sampler="TPESampler",
             )
 
-            mock_retrieve_n_init_best_models.assert_called_once_with(
-                mock_run_all_trials.return_value, self.train_val
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_with_stratify_by(
+        self, mock_retrieve_n_init_best_models, mock_run_all_trials
+    ):
+        config_w_strat = self.config.copy()
+        config_w_strat["stratify_by"] = ["stratify_column__t0"]
+        mock_run_all_trials.return_value = {"model1": "result1", "model2": "result2"}
+        mock_retrieve_n_init_best_models.return_value = {
+            "model1": "best_model1",
+            "model2": "best_model2",
+        }
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            best_model_dic, path_exp = find_best_model_config(
+                config_w_strat, self.train_val, self.tax, tree_phylo, temp_dir
             )
+            args, _ = mock_run_all_trials.call_args
+            self.assertEqual(args[3], ["stratify_column__t0"])  # stratify_by
+            mock_run_all_trials.assert_called_once()
             self.assertEqual(
-                best_model_dic, {"model1": "best_model1", "model2": "best_model2"}
+                best_model_dic,
+                {"model1": "best_model1", "model2": "best_model2"},
             )
             self.assertTrue(path_exp.startswith(f"{temp_dir}/test_experiment"))
 

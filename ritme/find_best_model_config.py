@@ -192,6 +192,7 @@ def find_best_model_config(
         train_val,
         config["target"],
         config["group_by_column"],
+        config.get("stratify_by", None),
         config["seed_data"],
         config["seed_model"],
         tax,
