@@ -156,6 +156,117 @@ class TestDataHelpers(unittest.TestCase):
         assert_frame_equal(test_obs, self.data_rel)
         # Ensure dtypes preserved (implicit via assert_frame_equal)
 
+    def test_split_data_stratify_single_column(self):
+        """Stratify by a single categorical column preserves distribution."""
+        # Use 'covariate' for stratification
+        train_obs, test_obs = _split_data_grouped(
+            self.data_rel,
+            group_by_column=None,
+            train_size=0.5,
+            seed=321,
+            stratify_by=["covariate"],
+        )
+        # All unique classes must appear in both splits (each class has >=2 samples)
+        cov_unique = set(self.data_rel["covariate"].unique())
+        cov_train = set(train_obs["covariate"].unique())
+        cov_test = set(test_obs["covariate"].unique())
+        self.assertTrue(cov_unique == cov_train == cov_test)
+
+    def test_split_data_stratify_multi_column(self):
+        """Stratify by joint distribution of two columns."""
+        # Create a small dataset with joint categories
+        df = pd.DataFrame(
+            {
+                "A": ["x", "x", "y", "y"],
+                "B": [1, 1, 2, 2],
+                "val": [10, 11, 12, 13],
+            }
+        )
+        train_obs, test_obs = _split_data_grouped(
+            df,
+            None,
+            0.5,
+            7,
+            stratify_by=["A", "B"],
+        )
+        # Each joint category count is 2; 50% split should keep one instance
+        # per category in train and one in test.
+        joint_train = train_obs.apply(lambda r: f"{r['A']}_{r['B']}", axis=1).tolist()
+        joint_test = test_obs.apply(lambda r: f"{r['A']}_{r['B']}", axis=1).tolist()
+        self.assertEqual(len(joint_train), 2)
+        self.assertEqual(len(joint_test), 2)
+        # No overlap duplicates within a split
+        self.assertEqual(len(set(joint_train)), 2)
+        self.assertEqual(len(set(joint_test)), 2)
+        # Combined cover all joint classes present in original data
+        self.assertEqual(set(joint_train + joint_test), {"x_1", "y_2"})
+
+    def test_split_data_stratify_missing_column_error(self):
+        with self.assertRaisesRegex(ValueError, r"Stratification columns not found"):
+            _split_data_grouped(
+                self.data_rel,
+                None,
+                0.5,
+                111,
+                stratify_by=["does_not_exist"],
+            )
+
+    def test_split_data_group_and_stratify_error(self):
+        # Grouped+stratified requires >=2 groups per class. Here class 0 has only
+        # one host ('c'), so expect an error from sklearn.
+        with self.assertRaises(ValueError):
+            _split_data_grouped(
+                self.data_rel,
+                group_by_column="host_id",
+                train_size=0.5,
+                seed=222,
+                stratify_by=["covariate"],
+            )
+
+    def test_grouped_stratify_inconsistent_group_error(self):
+        # Create groups where stratify columns vary within a group -> error
+        df = pd.DataFrame(
+            {
+                "host": ["h1", "h1", "h2", "h2"],
+                "label": [0, 1, 0, 0],
+                "x": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, r"must be constant within each group"):
+            _split_data_grouped(
+                df,
+                group_by_column="host",
+                train_size=0.5,
+                seed=1,
+                stratify_by=["label"],
+            )
+
+    def test_grouped_stratify_simple_balance(self):
+        # Build dataset with 4 hosts, two per class; 50% split should yield 1 per class
+        df = pd.DataFrame(
+            {
+                "host": ["h1", "h2", "h3", "h4"],
+                "label": [0, 0, 1, 1],
+                "feat": [10, 11, 12, 13],
+            }
+        )
+        # Duplicate rows per host to simulate multiple samples; same label within group
+        df = pd.concat([df, df], ignore_index=True)
+        train_obs, test_obs = _split_data_grouped(
+            df, group_by_column="host", train_size=0.5, seed=42, stratify_by=["label"]
+        )
+        # Check group separation
+        self.assertEqual(
+            len(set(train_obs["host"]).intersection(set(test_obs["host"]))), 0
+        )
+        # Check class balance per split (1 host per class)
+        train_labels = train_obs.drop_duplicates("host")["label"].value_counts()
+        test_labels = test_obs.drop_duplicates("host")["label"].value_counts()
+        self.assertEqual(train_labels.get(0, 0), 1)
+        self.assertEqual(train_labels.get(1, 0), 1)
+        self.assertEqual(test_labels.get(0, 0), 1)
+        self.assertEqual(test_labels.get(1, 0), 1)
+
     def test_split_data_no_group_train_size_zero(self):
         """train_size==0.0 => empty train, full test (no grouping)."""
         train_obs, test_obs = _split_data_grouped(self.data_rel, None, 0.0, 555)
@@ -217,7 +328,7 @@ class TestMainFunctions(unittest.TestCase):
         # Provide non-existent group_by_column
         with self.assertRaisesRegex(
             ValueError,
-            r"Group by column 'foobar' not found in data.",
+            r"Column 'foobar' not found in data",
         ):
             _ = split_train_test(self.md, self.ft_rel, "foobar", 0.5, 123)
 
@@ -253,6 +364,35 @@ class TestMainFunctions(unittest.TestCase):
         assert_frame_equal(test, test_exp)
         # Columns of train should match columns of test
         self.assertListEqual(train.columns.tolist(), test.columns.tolist())
+
+    def test_split_train_test_public_stratify_non_grouped(self):
+        # Stratify by covariate; ensure both classes appear in both splits
+        train, test = split_train_test(
+            self.md,
+            self.ft_rel,
+            group_by_column=None,
+            train_size=0.5,
+            seed=999,
+            stratify_by=["covariate"],
+        )
+        cov_col_train = [c for c in train.columns if c.startswith("covariate")][0]
+        cov_col_test = [c for c in test.columns if c.startswith("covariate")][0]
+        cov_train = set(train[cov_col_train])
+        cov_test = set(test[cov_col_test])
+        self.assertEqual(cov_train, {0, 1})
+        self.assertEqual(cov_test, {0, 1})
+
+    def test_split_train_test_public_stratify_grouped_error(self):
+        # With grouping, class 0 has only one host in fixture -> expect error
+        with self.assertRaises(ValueError):
+            _ = split_train_test(
+                self.md,
+                self.ft_rel,
+                group_by_column="host_id",
+                train_size=0.5,
+                seed=123,
+                stratify_by=["covariate"],
+            )
 
 
 class TestSplitTrainTestTemporalSnapshots(unittest.TestCase):

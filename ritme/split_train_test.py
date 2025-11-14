@@ -5,7 +5,11 @@ from typing import List, Sequence, Tuple
 import pandas as pd
 import qiime2 as q2
 import typer
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
+from sklearn.model_selection import (
+    GroupShuffleSplit,
+    StratifiedShuffleSplit,
+    train_test_split,
+)
 
 from ritme._decorators import helper_function, main_function
 from ritme.feature_space.utils import _biom_to_df, _df_to_biom
@@ -354,11 +358,49 @@ def _generate_host_time_snapshots_from_df(
 
 
 @helper_function
+def _resolve_column_to_t0(df: pd.DataFrame, col: str | None) -> str | None:
+    """Resolve an input column name to its '__t0' form if needed.
+
+    Behavior
+    --------
+    - If ``col`` is None, return None.
+    - If ``col`` exists in ``df.columns``, return it unchanged.
+    - Else, try ``f"{col}__t0"``; if it exists, return the suffixed name.
+    - Otherwise, raise ValueError indicating the column is not found.
+    """
+    if col is None:
+        return None
+    if col in df.columns:
+        return col
+    alt = f"{col}__t0"
+    if alt in df.columns:
+        return alt
+    raise ValueError(f"Column '{col}' not found in data (nor as '{alt}').")
+
+
+@helper_function
+def _resolve_columns_to_t0(
+    df: pd.DataFrame, cols: Sequence[str] | None
+) -> list[str] | None:
+    """Resolve a list of column names to their '__t0' forms when needed.
+
+    Returns None if ``cols`` is None. Preserves order.
+    """
+    if cols is None:
+        return None
+    resolved: list[str] = []
+    for c in cols:
+        resolved.append(_resolve_column_to_t0(df, c))
+    return resolved
+
+
+@helper_function
 def _split_data_grouped(
     data: pd.DataFrame,
     group_by_column: str,
     train_size: float,
     seed: int,
+    stratify_by: Sequence[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Randomly split data into train and test sets, with optional grouping.
 
@@ -369,6 +411,10 @@ def _split_data_grouped(
     - If ``group_by_column`` is provided, rows sharing a group value are kept
       together to prevent leakage.
     - Otherwise a standard random split is performed.
+    - If ``stratify_by`` is provided (list of column names), stratified
+        splitting is applied to preserve the joint distribution of the specified
+        columns. When grouping is used, stratification happens at the group level
+        (each group must have consistent values for the stratify columns).
     """
     # Special-case: return everything as test
     if train_size == 0.0:
@@ -376,19 +422,75 @@ def _split_data_grouped(
         test = data.copy()
         print(f"Train: {train.shape}, Test: {test.shape}")
         return train, test
+    if stratify_by is not None and len(stratify_by) == 0:
+        stratify_by = None
+
     if group_by_column is None:
-        train, test = train_test_split(data, train_size=train_size, random_state=seed)
+        stratify_labels = None
+        if stratify_by is not None:
+            missing = [c for c in stratify_by if c not in data.columns]
+            if missing:
+                raise ValueError(
+                    "Stratification columns not found in data: " + ", ".join(missing)
+                )
+            # Build composite label; use a unique separator unlikely to appear.
+            stratify_labels = data[stratify_by].astype(str).agg("__§__".join, axis=1)
+        train, test = train_test_split(
+            data,
+            train_size=train_size,
+            random_state=seed,
+            stratify=stratify_labels,
+        )
     else:
         if len(data[group_by_column].unique()) == 1:
             raise ValueError(
                 f"Only one unique value of '{group_by_column}' available in dataset."
             )
+        if stratify_by is None:
+            gss = GroupShuffleSplit(
+                n_splits=1, train_size=train_size, random_state=seed
+            )
+            split = gss.split(data, groups=data[group_by_column])
+            train_idx, test_idx = next(split)
+            train, test = data.iloc[train_idx], data.iloc[test_idx]
+        else:
+            # Validate columns
+            missing = [c for c in stratify_by if c not in data.columns]
+            if missing:
+                raise ValueError(
+                    "Stratification columns not found in data: " + ", ".join(missing)
+                )
+            # Build group-level labels and ensure consistency within groups
+            grp = data.groupby(group_by_column, sort=False)
+            group_ids: List[str] = []
+            group_labels: List[str] = []
+            group_to_rows: dict[str, pd.Index] = {}
+            for gid, sub in grp:
+                label_series = sub[stratify_by].astype(str).agg("__§__".join, axis=1)
+                unique_labels = label_series.unique().tolist()
+                if len(unique_labels) != 1:
+                    raise ValueError(
+                        "Stratification columns must be constant within each group; "
+                        f"found multiple values for group '{gid}'."
+                    )
+                group_ids.append(gid)
+                group_labels.append(unique_labels[0])
+                group_to_rows[gid] = sub.index
 
-        gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=seed)
-        split = gss.split(data, groups=data[group_by_column])
-        train_idx, test_idx = next(split)
+            # Perform stratified split on groups
+            sss = StratifiedShuffleSplit(
+                n_splits=1, train_size=train_size, random_state=seed
+            )
+            # Create a dummy X with same length as groups
+            X = pd.Series(group_labels)
+            y = pd.Series(group_labels)
+            grp_train_idx, grp_test_idx = next(sss.split(X, y))
 
-        train, test = data.iloc[train_idx], data.iloc[test_idx]
+            train_groups = [group_ids[i] for i in grp_train_idx]
+            test_groups = [group_ids[i] for i in grp_test_idx]
+
+            train = data.loc[data[group_by_column].isin(train_groups)]
+            test = data.loc[data[group_by_column].isin(test_groups)]
 
     print(f"Train: {train.shape}, Test: {test.shape}")
     return train, test
@@ -402,6 +504,7 @@ def split_train_test(
     group_by_column: str = None,
     train_size: float = 0.8,
     seed: int = 42,
+    stratify_by: Sequence[str] | None = None,
     # Optional snapshot generation from single md/ft
     time_col: str | None = None,
     host_col: str | None = None,
@@ -439,6 +542,12 @@ def split_train_test(
         Proportion for the train split. Default ``0.8``.
     seed : int, optional
         Random seed. Default ``42``.
+    stratify_by : Sequence[str], optional
+        Columns to use for stratification. When grouping is used, the
+        stratification is performed at the group level and the specified
+        columns must be constant within each group. Column names can be
+        provided without time suffix; they will be resolved to ``__t0`` if
+        needed.
     time_col : str, optional
         Metadata column for time. Enables temporal snapshotting when set.
     host_col : str, optional
@@ -482,17 +591,17 @@ def split_train_test(
         # merging could add all-zero features - remove
         data = _ft_remove_zero_features(data)
 
-    # Resolve group_by_column to suffixed name if needed (host_id -> host_id__t0)
-    group_col = group_by_column
-    if group_by_column is not None and group_by_column not in data.columns:
-        alt = f"{group_by_column}__t0"
-        if alt in data.columns:
-            group_col = alt
-        else:
-            raise ValueError(f"Group by column '{group_by_column}' not found in data.")
+    # Resolve group_by_column and stratify_by to suffixed names if needed
+    # (e.g., host_id -> host_id__t0)
+    group_col = _resolve_column_to_t0(data, group_by_column)
+    strat_cols = _resolve_columns_to_t0(data, stratify_by)
     # split
     train_val, test = _split_data_grouped(
-        data, group_by_column=group_col, train_size=train_size, seed=seed
+        data,
+        group_by_column=group_col,
+        train_size=train_size,
+        seed=seed,
+        stratify_by=strat_cols,
     )
 
     return train_val, test
@@ -511,6 +620,7 @@ def cli_split_train_test(
     host_col: str = None,
     n_prev: int = None,
     missing_mode: str = None,
+    stratify_by: str = None,
 ):
     """CLI wrapper for :func:`split_train_test` supporting temporal mode.
 
@@ -526,12 +636,18 @@ def cli_split_train_test(
     Writes ``train_val.pkl`` and ``test.pkl`` into ``output_path``.
     """
     md, ft = _load_data(path_to_md, path_to_ft)
+    # Parse stratify_by string into list if provided (comma-separated)
+    strat_cols = None
+    if stratify_by:
+        strat_cols = [c.strip() for c in stratify_by.split(",") if c.strip()]
+
     train_val, test = split_train_test(
         md,
         ft,
         group_by_column,
         train_size,
         seed,
+        stratify_by=strat_cols,
         time_col=time_col,
         host_col=host_col,
         n_prev=n_prev,

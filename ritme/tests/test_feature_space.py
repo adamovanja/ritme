@@ -738,6 +738,7 @@ class TestProcessTrain(unittest.TestCase):
             {
                 "host_id__t0": ["c", "b", "c", "a"],
                 "target__t0": [1, 2, 1, 2],
+                "covariate__t0": [0, 1, 0, 1],
                 "F0__t0": [0.12, 0.23, 0.33, 0.44],
                 "F1__t0": [0.1, 0.2, 0.3, 0.4],
             },
@@ -749,6 +750,7 @@ class TestProcessTrain(unittest.TestCase):
         self.host_id = "host_id__t0"
         self.seed_data = 0
         self.tax = pd.DataFrame()
+        self.strat_cols = ["covariate__t0"]
 
     def _assert_called_with_df(self, mock_method, *expected_args):
         actual_args = mock_method.call_args[0]
@@ -785,28 +787,21 @@ class TestProcessTrain(unittest.TestCase):
         mock_transform_features.return_value = raw_unsuffixed
 
         # Build expected unsuffixed snapshot for enrichment call
-        snap_all_unsuff = pd.DataFrame(
-            {
-                "host_id": self.train_val["host_id__t0"].values,
-                "target": self.train_val["target__t0"].values,
-                "F0": self.train_val["F0__t0"].values,
-                "F1": self.train_val["F1__t0"].values,
-            },
-            index=self.train_val.index,
-        )
-        snap_md_unsuff = snap_all_unsuff.drop(columns=["F0", "F1"])  # host_id, target
+        snap_all_unsuff = self.train_val.copy()
+        snap_all_unsuff.columns = [
+            col.replace("__t0", "") for col in snap_all_unsuff.columns
+        ]
+
+        snap_md_unsuff = snap_all_unsuff.drop(
+            columns=["F0", "F1"]
+        )  # host_id, target & covariate
         transf_plus_md_unsuff = raw_unsuffixed.join(snap_md_unsuff)
 
         # Enrichment now returns UNSUFFIXED snapshot; process_train will suffix once
-        enriched_unsuff = pd.DataFrame(
-            {
-                "host_id": self.train_val["host_id__t0"].values,
-                "target": self.train_val["target__t0"].values,
-                "F0": self.train_val["F0__t0"].values,
-                "F1": self.train_val["F1__t0"].values,
-            },
-            index=self.train_val.index,
-        )
+        enriched_unsuff = self.train_val.copy()
+        enriched_unsuff.columns = [
+            col.replace("__t0", "") for col in enriched_unsuff.columns
+        ]
         mock_enrich_features.return_value = ([], enriched_unsuff)
 
         # After accumulation, split should be called on train_val_accum.
@@ -845,6 +840,7 @@ class TestProcessTrain(unittest.TestCase):
             {
                 "host_id__t0": self.train_val["host_id__t0"].values,
                 "target__t0": self.train_val["target__t0"].values,
+                "covariate__t0": self.train_val["covariate__t0"].values,
                 "F0__t0": self.train_val["F0__t0"].values,
                 "F1__t0": self.train_val["F1__t0"].values,
             },
@@ -892,8 +888,8 @@ class TestProcessTrain(unittest.TestCase):
         ].copy()
         mock_enrich_features.return_value = ([], enriched_snapshot)
         mock_split_data_grouped.return_value = (
-            self.train_val.iloc[:2, :3],
-            self.train_val.iloc[2:, :3],
+            self.train_val.loc[self.train_val.index[:2], ["F0__t0", "target__t0"]],
+            self.train_val.loc[self.train_val.index[2:], ["F0__t0", "target__t0"]],
         )
 
         X_train, y_train, X_val, y_val = process_train(
@@ -937,6 +933,47 @@ class TestProcessTrain(unittest.TestCase):
         # Indices should be valid within original (unsuffixed) 3-column snapshot
         for v in cfg["data_alr_denom_idx_map"].values():
             self.assertTrue(v in [0, 1, 2])
+
+    @patch("ritme.feature_space._process_train._split_data_grouped")
+    @patch("ritme.feature_space._process_train.transform_microbial_features")
+    @patch("ritme.feature_space._process_train.select_microbial_features")
+    @patch("ritme.feature_space._process_train.aggregate_microbial_features")
+    @patch("ritme.feature_space._process_train.enrich_features")
+    def test_process_train_stratify_by_passed_verbatim(
+        self,
+        mock_enrich_features,
+        mock_aggregate_features,
+        mock_select_features,
+        mock_transform_features,
+        mock_split_data_grouped,
+    ):
+        # Mock stages to keep focus on split invocation
+        raw_unsuffixed = pd.DataFrame(
+            {
+                "F0": self.train_val["F0__t0"].values,
+                "F1": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
+        )
+        mock_aggregate_features.return_value = raw_unsuffixed
+        mock_select_features.return_value = raw_unsuffixed
+        mock_transform_features.return_value = raw_unsuffixed
+        mock_enrich_features.return_value = ([], self.train_val)
+        mock_split_data_grouped.return_value = (
+            self.train_val.iloc[:2, :],
+            self.train_val.iloc[2:, :],
+        )
+        process_train(
+            self.config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=self.strat_cols,
+        )
+        _args, _kwargs = mock_split_data_grouped.call_args
+        self.assertEqual(_kwargs.get("stratify_by"), self.strat_cols)
 
 
 class TestProcessTracSpecific(unittest.TestCase):

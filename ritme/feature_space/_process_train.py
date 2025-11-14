@@ -29,8 +29,18 @@ def _add_suffix(df: pd.DataFrame, time_label: str) -> pd.DataFrame:
     return df_s
 
 
-def process_train(config, train_val, target, host_id, tax, seed_data):
-    """Process training data per snapshot with unsuffixed internals, then suffix."""
+def process_train(
+    config,
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    tax: pd.DataFrame,
+    seed_data: int,
+    stratify_by: list[str] | None = None,
+) -> tuple:
+    """Process training data per snapshot (aggregate/select/transform/enrich) and
+    perform a grouped (and optionally stratified) split.
+    """
     feat_prefix = "F"
     microbial_ft_ls = [x for x in train_val if x.startswith(feat_prefix)]
 
@@ -102,7 +112,16 @@ def process_train(config, train_val, target, host_id, tax, seed_data):
     ft_ls_used = microbial_ft_ls_transf_all + other_ft_ls_all
 
     # SPLIT
-    train, val = _split_data_grouped(train_val_accum, host_id, 0.8, seed_data)
-    X_train, y_train = train[ft_ls_used].astype(float), train[target].astype(float)
-    X_val, y_val = val[ft_ls_used].astype(float), val[target].astype(float)
+    train, val = _split_data_grouped(
+        train_val_accum,
+        host_id,
+        0.8,
+        seed_data,
+        stratify_by=stratify_by,
+    )
+
+    X_train = train[ft_ls_used].astype(float)
+    y_train = train[target].astype(float)
+    X_val = val[ft_ls_used].astype(float)
+    y_val = val[target].astype(float)
     return (X_train.values, y_train.values, X_val.values, y_val.values)
