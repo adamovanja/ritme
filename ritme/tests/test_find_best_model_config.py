@@ -51,9 +51,12 @@ class TestFindBestModelConfig(unittest.TestCase):
             index_col=0,
         )
         self.ft = ft_w_md.drop(columns=["md2"])
-        self.train_val = self.ft.copy()
-        self.train_val["target_column"] = [1, 2, 3, 4, 4, 4, 0, 6, 5, 8]
-        self.train_val["stratify_column"] = [
+        # single-snapshot convention: add __t0 suffix to microbial and metadata
+        self.ft_t0 = self.ft.copy()
+        self.ft_t0.columns = [c + "__t0" for c in self.ft.columns]
+        self.train_val = self.ft_t0.copy()
+        self.train_val["target_column__t0"] = [1, 2, 3, 4, 4, 4, 0, 6, 5, 8]
+        self.train_val["stratify_column__t0"] = [
             "a",
             "a",
             "a",
@@ -128,14 +131,14 @@ class TestFindBestModelConfig(unittest.TestCase):
         assert_series_equal(loaded_tax["Taxon"], self.tax["Taxon"])
 
     def test_process_taxonomy_rename(self):
-        processed_tax = _process_taxonomy(self.tax, self.ft)
+        processed_tax = _process_taxonomy(self.tax, self.ft_t0)
 
         assert_series_equal(processed_tax["Taxon"], self.tax_renamed["Taxon"])
 
     def test_process_taxonomy_filter(self):
         tax_more_ft = self.tax.copy()
         tax_more_ft.loc["7", :] = tax_more_ft.loc["6", :].copy()
-        processed_tax = _process_taxonomy(tax_more_ft, self.ft)
+        processed_tax = _process_taxonomy(tax_more_ft, self.ft_t0)
 
         assert_series_equal(processed_tax["Taxon"], self.tax_renamed["Taxon"])
 
@@ -145,7 +148,7 @@ class TestFindBestModelConfig(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "Taxonomy data does not match with feature table."
         ):
-            _process_taxonomy(tax_not_matched, self.ft)
+            _process_taxonomy(tax_not_matched, self.ft_t0)
 
     @patch("ritme.find_best_model_config.q2.Artifact")
     def test_load_phylogeny(self, mock_artifact):
@@ -155,7 +158,34 @@ class TestFindBestModelConfig(unittest.TestCase):
 
     def test_process_phylogeny(self):
         tree_phylo = skbio.TreeNode.read([self.tree_str])
-        processed_tree = _process_phylogeny(tree_phylo, self.ft)
+        processed_tree = _process_phylogeny(tree_phylo, self.ft_t0)
+        self.assertEqual(str(processed_tree).strip(), self.tree_str_filtered)
+
+    def test_process_taxonomy_with_time_suffixes(self):
+        # feature table with temporal suffixes (duplicate base features over time)
+        # duplicate columns to simulate second snapshot t-1
+        ft_time_t1 = self.ft.copy()
+        ft_time_t1.columns = [c + "__t-1" for c in ft_time_t1.columns]
+        ft_time_t0 = self.ft.copy()
+        ft_time_t0.columns = [c + "__t0" for c in ft_time_t0.columns]
+        ft_merged = pd.concat([ft_time_t0, ft_time_t1], axis=1)
+
+        processed_tax = _process_taxonomy(self.tax, ft_merged)
+        # Expect same taxonomy rows as base (no duplication, suffix stripping works)
+        assert_series_equal(processed_tax["Taxon"], self.tax_renamed["Taxon"])
+
+    def test_process_phylogeny_with_time_suffixes(self):
+        # feature table with time suffixes
+        ft_time_t0 = self.ft.copy()
+        ft_time_t0.columns = [c + "__t0" for c in ft_time_t0.columns]
+        ft_time_t1 = self.ft.copy()
+        ft_time_t1.columns = [c + "__t-1" for c in ft_time_t1.columns]
+        ft_merged = pd.concat([ft_time_t0, ft_time_t1], axis=1)
+
+        # Use original tree (with extra leaf 7) so filtering logic is exercised
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        processed_tree = _process_phylogeny(tree_phylo, ft_merged)
+        # After suffix stripping the structure should still match filtered tree
         self.assertEqual(str(processed_tree).strip(), self.tree_str_filtered)
 
     def test_define_model_tracker_mlflow(self):
@@ -209,16 +239,18 @@ class TestFindBestModelConfig(unittest.TestCase):
             # assert_called_once method below
             args, _ = mock_run_all_trials.call_args
             assert_frame_equal(args[0], self.train_val)
-            assert_frame_equal(args[5], self.tax_renamed)
-            self.assertEqual(str(args[6]), str(self.tree_phylo_filtered))
+            # After adding stratify_by positional arg, tax and phylo shift one index
+            assert_frame_equal(args[6], self.tax_renamed)
+            self.assertEqual(str(args[7]), str(self.tree_phylo_filtered))
             mock_run_all_trials.assert_called_once_with(
-                ANY,
+                ANY,  # train_val
                 self.config["target"],
                 self.config["group_by_column"],
+                None,  # stratify_by absent
                 self.config["seed_data"],
                 self.config["seed_model"],
-                ANY,
-                ANY,
+                ANY,  # processed tax
+                ANY,  # processed phylo
                 os.path.join(temp_dir, "test_experiment", "mlruns"),
                 os.path.join(temp_dir, "test_experiment"),
                 self.config["time_budget_s"],
@@ -229,11 +261,29 @@ class TestFindBestModelConfig(unittest.TestCase):
                 optuna_searchspace_sampler="TPESampler",
             )
 
-            mock_retrieve_n_init_best_models.assert_called_once_with(
-                mock_run_all_trials.return_value, self.train_val
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_with_stratify_by(
+        self, mock_retrieve_n_init_best_models, mock_run_all_trials
+    ):
+        config_w_strat = self.config.copy()
+        config_w_strat["stratify_by"] = ["stratify_column__t0"]
+        mock_run_all_trials.return_value = {"model1": "result1", "model2": "result2"}
+        mock_retrieve_n_init_best_models.return_value = {
+            "model1": "best_model1",
+            "model2": "best_model2",
+        }
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            best_model_dic, path_exp = find_best_model_config(
+                config_w_strat, self.train_val, self.tax, tree_phylo, temp_dir
             )
+            args, _ = mock_run_all_trials.call_args
+            self.assertEqual(args[3], ["stratify_column__t0"])  # stratify_by
+            mock_run_all_trials.assert_called_once()
             self.assertEqual(
-                best_model_dic, {"model1": "best_model1", "model2": "best_model2"}
+                best_model_dic,
+                {"model1": "best_model1", "model2": "best_model2"},
             )
             self.assertTrue(path_exp.startswith(f"{temp_dir}/test_experiment"))
 

@@ -215,6 +215,7 @@ def run_trials(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
+    stratify_by: list[str] | None,
     seed_data: int,
     seed_model: int,
     tax: pd.DataFrame,
@@ -299,6 +300,7 @@ def run_trials(
                 train_val=train_val,
                 target=target,
                 host_id=host_id,
+                stratify_by=stratify_by,
                 seed_data=seed_data,
                 seed_model=seed_model,
                 tax=tax,
@@ -347,6 +349,7 @@ def run_all_trials(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
+    stratify_by: list[str] | None,
     seed_data: int,
     seed_model: int,
     tax: pd.DataFrame,
@@ -370,8 +373,27 @@ def run_all_trials(
 ) -> dict[str, ResultGrid]:
     results_all = {}
 
-    # If tax + phylogeny empty, we can't run trac
+    # First apply snapshot-related constraints for models
     model_types = model_types.copy()
+    has_snapshots = any("__t" in col for col in train_val.columns)
+    snap_ft_cols = [c for c in train_val.columns if c.startswith("F") and "__t" in c]
+    has_snapshot_nans = (
+        pd.isna(train_val[snap_ft_cols]).values.any() if snap_ft_cols else False
+    )
+    if has_snapshots and has_snapshot_nans:
+        # Restrict to xgb only when NaNs in snapshot feature tables
+        if "xgb" not in model_types:
+            print("NaNs in snapshot features detected. Using only 'xgb'.")
+        else:
+            if len(model_types) != 1:
+                print("NaNs in snapshot features detected. Restricting to 'xgb'.")
+        model_types = ["xgb"]
+    elif has_snapshots and "trac" in model_types:
+        # Remove trac when dynamic snapshots present
+        model_types.remove("trac")
+        print("Snapshots detected; removing 'trac' from model types.")
+
+    # Now remove trac if taxonomy/phylogeny missing
     if (tax is None or tree_phylo is None) and "trac" in model_types:
         model_types.remove("trac")
         print(
@@ -414,6 +436,7 @@ def run_all_trials(
             train_val,
             target,
             host_id,
+            stratify_by,
             seed_data,
             seed_model,
             tax,
