@@ -1,4 +1,5 @@
 # ritme
+[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2025.12.08.693045-B31B1B.svg)](https://doi.org/10.64898/2025.12.08.693045)
 [![DOI](https://zenodo.org/badge/601045059.svg)](https://doi.org/10.5281/zenodo.14149081)
 ![CI](https://github.com/adamovanja/ritme/actions/workflows/ci.yml/badge.svg)
 [![codecov](https://codecov.io/gh/adamovanja/ritme/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/ritme)
@@ -80,10 +81,13 @@ We provide example templates to help you evaluate your *ritme* models for both s
 ## Note on reproducibility
 When you enable `"fully_reproducible": true` in your experiment configuration, all runs on identical hardware will produce fully reproducible results, albeit with a potential impact on efficiency and performance. This guarantee becomes particularly relevant when executing a large number of trials in parallel. (For small-scale experiments — e.g. with 2 trials — you will often observe identical results even with `"fully_reproducible": false`.)
 
+## Citation
+If you use *ritme* in your research, please cite it using:
+
+Adamov, A., Mueller, C. L., & Bokulich, N. (2025). Target-driven optimization of feature representation and model selection for microbiome sequencing data with ritme. bioRxiv, 2025.12.08.693045. https://doi.org/10.64898/2025.12.08.693045
+
 ## Contact
 In case of questions or comments feel free to raise an issue in this repository.
 
 ## License
-If you use this software, please cite it using the metadata from `CITATION.cff`.
-
 *ritme* is released under a BSD-3-Clause license. See LICENSE for more details.

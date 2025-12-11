@@ -1,11 +1,25 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "If you use ritme in your research, please cite it using:\nAdamov, A., Mueller, C. L., & Bokulich, N. (2025). Target-driven optimization of feature representation and model selection for microbiome sequencing data with ritme. bioRxiv, 2025.12.08.693045. https://doi.org/10.64898/2025.12.08.693045"
 authors:
   - family-names: Adamov
     given-names: Anja
     orcid: https://orcid.org/0000-0002-7506-1583
 title: "ritme"
-version: 1.0.0
+version: 1.2.8
 doi: 10.5281/zenodo.14149081
-date-released: 2024-11-13
 url: "https://github.com/adamovanja/ritme"
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Adamov
+      given-names: Anja
+      orcid: https://orcid.org/0000-0002-7506-1583
+    - family-names: Mueller
+      given-names: Christian L.
+    - family-names: Bokulich
+      given-names: Nicholas
+  title: "Target-driven optimization of feature representation and model selection for microbiome sequencing data with ritme"
+  year: 2025
+  journal: bioRxiv
+  doi: 10.64898/2025.12.08.693045
+  url: "https://doi.org/10.64898/2025.12.08.693045"
