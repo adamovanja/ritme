@@ -6,8 +6,6 @@
 
 An optimized framework for finding the best feature representation and model class of next generation sequencing data in relation to a target of interest.
 
-If you use this software, please cite it using the metadata from `CITATION.cff`.
-
 ## Setup
 *ritme* is available as a conda package on [anaconda.org](https://anaconda.org/adamova/ritme). To install it run the following command:
 
