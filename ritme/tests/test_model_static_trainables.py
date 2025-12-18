@@ -133,6 +133,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -140,7 +141,13 @@ class TestTrainables(unittest.TestCase):
 
         # assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_scaler_trf.assert_called_once()
         mock_elasticnet.assert_called_once_with(
@@ -187,6 +194,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -195,7 +203,13 @@ class TestTrainables(unittest.TestCase):
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_create_matrix.assert_called_once()
         assert mock_preprocess_taxonomy.call_count == 2
@@ -241,6 +255,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -248,7 +263,13 @@ class TestTrainables(unittest.TestCase):
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_rf.assert_called_once_with(
             n_estimators=config["n_estimators"],
@@ -317,6 +338,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -324,7 +346,13 @@ class TestTrainables(unittest.TestCase):
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_dmatrix.assert_has_calls(
             [
@@ -404,13 +432,20 @@ class TestTrainables(unittest.TestCase):
             self.tax,
             seed_data,
             seed_model,
+            None,
             nn_type=nn_type,
         )
 
         # Assertions to verify the expected behavior
         mock_seed_everything.assert_called_once_with(seed_model, workers=True)
         mock_process_train.assert_called_once_with(
-            config, train_val, target, host_id, self.tax, seed_data
+            config,
+            train_val,
+            target,
+            host_id,
+            self.tax,
+            seed_data,
+            stratify_by=None,
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(
@@ -431,13 +466,13 @@ class TestTrainableLogging(unittest.TestCase):
         self.X = np.random.randn(1000, 10)
         self.y = np.sum(self.X, axis=1) + np.random.randn(1000) * 0.1
         self.features = [f"F{i}" for i in range(10)]
-        self.train_val = pd.DataFrame(self.X, columns=[f"F{i}" for i in range(10)])
-        self.train_val["target"] = self.y
-        self.train_val["host_id"] = np.random.randint(0, 5, 1000)
+        self.train_val = pd.DataFrame(self.X, columns=[f"F{i}__t0" for i in range(10)])
+        self.train_val["target__t0"] = self.y
+        self.train_val["host_id__t0"] = np.random.randint(0, 5, 1000)
         self.seed_data = 42
         self.seed_model = 42
-        self.host_id = "host_id"
-        self.target = "target"
+        self.host_id = "host_id__t0"
+        self.target = "target__t0"
         self.tax = pd.DataFrame([])
         self.tree_phylo = skbio.TreeNode()
 
@@ -503,6 +538,7 @@ class TestTrainableLogging(unittest.TestCase):
                     host_id=self.host_id,
                     seed_data=self.seed_data,
                     seed_model=self.seed_model,
+                    stratify_by=None,
                     tax=self.tax,
                     tree_phylo=self.tree_phylo,
                 ),

@@ -12,6 +12,7 @@ from ritme.split_train_test import (
     _ft_get_relative_abundance,
     _ft_remove_zero_features,
     _ft_rename_microbial_features,
+    _generate_host_time_snapshots_from_df,
     _load_data,
     _split_data_grouped,
     cli_split_train_test,
@@ -147,6 +148,131 @@ class TestDataHelpers(unittest.TestCase):
         assert_frame_equal(train_obs, self.data_rel.iloc[[1, 2], :])
         assert_frame_equal(test_obs, self.data_rel.iloc[[3, 0], :])
 
+    def test_split_data_grouped_train_size_zero(self):
+        """train_size==0.0 => empty train, full test (grouped)."""
+        train_obs, test_obs = _split_data_grouped(self.data_rel, "host_id", 0.0, 999)
+        self.assertEqual(train_obs.shape[0], 0)
+        # All columns preserved; test identical to original
+        assert_frame_equal(test_obs, self.data_rel)
+        # Ensure dtypes preserved (implicit via assert_frame_equal)
+
+    def test_split_data_stratify_single_column(self):
+        """Stratify by a single categorical column preserves distribution."""
+        # Use 'covariate' for stratification
+        train_obs, test_obs = _split_data_grouped(
+            self.data_rel,
+            group_by_column=None,
+            train_size=0.5,
+            seed=321,
+            stratify_by=["covariate"],
+        )
+        # All unique classes must appear in both splits (each class has >=2 samples)
+        cov_unique = set(self.data_rel["covariate"].unique())
+        cov_train = set(train_obs["covariate"].unique())
+        cov_test = set(test_obs["covariate"].unique())
+        self.assertTrue(cov_unique == cov_train == cov_test)
+
+    def test_split_data_stratify_multi_column(self):
+        """Stratify by joint distribution of two columns."""
+        # Create a small dataset with joint categories
+        df = pd.DataFrame(
+            {
+                "A": ["x", "x", "y", "y"],
+                "B": [1, 1, 2, 2],
+                "val": [10, 11, 12, 13],
+            }
+        )
+        train_obs, test_obs = _split_data_grouped(
+            df,
+            None,
+            0.5,
+            7,
+            stratify_by=["A", "B"],
+        )
+        # Each joint category count is 2; 50% split should keep one instance
+        # per category in train and one in test.
+        joint_train = train_obs.apply(lambda r: f"{r['A']}_{r['B']}", axis=1).tolist()
+        joint_test = test_obs.apply(lambda r: f"{r['A']}_{r['B']}", axis=1).tolist()
+        self.assertEqual(len(joint_train), 2)
+        self.assertEqual(len(joint_test), 2)
+        # No overlap duplicates within a split
+        self.assertEqual(len(set(joint_train)), 2)
+        self.assertEqual(len(set(joint_test)), 2)
+        # Combined cover all joint classes present in original data
+        self.assertEqual(set(joint_train + joint_test), {"x_1", "y_2"})
+
+    def test_split_data_stratify_missing_column_error(self):
+        with self.assertRaisesRegex(ValueError, r"Stratification columns not found"):
+            _split_data_grouped(
+                self.data_rel,
+                None,
+                0.5,
+                111,
+                stratify_by=["does_not_exist"],
+            )
+
+    def test_split_data_group_and_stratify_error(self):
+        # Grouped+stratified requires >=2 groups per class. Here class 0 has only
+        # one host ('c'), so expect an error from sklearn.
+        with self.assertRaises(ValueError):
+            _split_data_grouped(
+                self.data_rel,
+                group_by_column="host_id",
+                train_size=0.5,
+                seed=222,
+                stratify_by=["covariate"],
+            )
+
+    def test_grouped_stratify_inconsistent_group_error(self):
+        # Create groups where stratify columns vary within a group -> error
+        df = pd.DataFrame(
+            {
+                "host": ["h1", "h1", "h2", "h2"],
+                "label": [0, 1, 0, 0],
+                "x": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, r"must be constant within each group"):
+            _split_data_grouped(
+                df,
+                group_by_column="host",
+                train_size=0.5,
+                seed=1,
+                stratify_by=["label"],
+            )
+
+    def test_grouped_stratify_simple_balance(self):
+        # Build dataset with 4 hosts, two per class; 50% split should yield 1 per class
+        df = pd.DataFrame(
+            {
+                "host": ["h1", "h2", "h3", "h4"],
+                "label": [0, 0, 1, 1],
+                "feat": [10, 11, 12, 13],
+            }
+        )
+        # Duplicate rows per host to simulate multiple samples; same label within group
+        df = pd.concat([df, df], ignore_index=True)
+        train_obs, test_obs = _split_data_grouped(
+            df, group_by_column="host", train_size=0.5, seed=42, stratify_by=["label"]
+        )
+        # Check group separation
+        self.assertEqual(
+            len(set(train_obs["host"]).intersection(set(test_obs["host"]))), 0
+        )
+        # Check class balance per split (1 host per class)
+        train_labels = train_obs.drop_duplicates("host")["label"].value_counts()
+        test_labels = test_obs.drop_duplicates("host")["label"].value_counts()
+        self.assertEqual(train_labels.get(0, 0), 1)
+        self.assertEqual(train_labels.get(1, 0), 1)
+        self.assertEqual(test_labels.get(0, 0), 1)
+        self.assertEqual(test_labels.get(1, 0), 1)
+
+    def test_split_data_no_group_train_size_zero(self):
+        """train_size==0.0 => empty train, full test (no grouping)."""
+        train_obs, test_obs = _split_data_grouped(self.data_rel, None, 0.0, 555)
+        self.assertEqual(train_obs.shape[0], 0)
+        assert_frame_equal(test_obs, self.data_rel)
+
 
 class TestMainFunctions(unittest.TestCase):
     def setUp(self):
@@ -177,7 +303,7 @@ class TestMainFunctions(unittest.TestCase):
         train, test = split_train_test(self.md, self.ft_rel, "host_id", 0.5, 123)
         train_exp = self.data_rel.iloc[[0, 2], :].copy()
         test_exp = self.data_rel.iloc[[1, 3], :].copy()
-        # add prefix "F" to expected
+        # add F prefix
         train_exp.columns = [
             f"F{col}" if col not in self.md.columns else col
             for col in train_exp.columns
@@ -185,6 +311,9 @@ class TestMainFunctions(unittest.TestCase):
         test_exp.columns = [
             f"F{col}" if col not in self.md.columns else col for col in test_exp.columns
         ]
+        # add __t0 suffix
+        train_exp.columns = [f"{col}__t0" for col in train_exp.columns]
+        test_exp.columns = [f"{col}__t0" for col in test_exp.columns]
         assert_frame_equal(train, train_exp)
         assert_frame_equal(test, test_exp)
 
@@ -195,6 +324,14 @@ class TestMainFunctions(unittest.TestCase):
         ):
             _, _ = split_train_test(self.md, ft_abx, "host_id", 0.5, 123)
 
+    def test_split_train_test_group_by_missing_error(self):
+        # Provide non-existent group_by_column
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Column 'foobar' not found in data",
+        ):
+            _ = split_train_test(self.md, self.ft_rel, "foobar", 0.5, 123)
+
     def test_cli_split_train_test_absolute(self):
         with patch("sys.stdout", new=StringIO()) as stdout:
             output_path = self.tmpdir.name
@@ -202,11 +339,305 @@ class TestMainFunctions(unittest.TestCase):
                 output_path,
                 self.tmp_md_path,
                 self.tmp_ft_rel_path,
-                "host_id",
-                0.5,
-                123,
+                group_by_column="host_id",
+                train_size=0.5,
+                seed=123,
             )
             self.assertIn(
                 f"Train and test splits were saved in {output_path}.",
                 stdout.getvalue().strip(),
+            )
+
+    def test_split_train_test_train_size_zero(self):
+        """train_size==0.0 => empty train, full test with suffix/prefix handling."""
+        train, test = split_train_test(self.md, self.ft_rel, "host_id", 0.0, 321)
+        # Train empty
+        self.assertEqual(train.shape[0], 0)
+        # Build expected test DataFrame
+        test_exp = self.data_rel.copy()
+        # Feature columns already relative; ensure F prefix applied only to
+        # microbial features
+        test_exp.columns = [
+            f"F{col}" if col in self.ft_rel.columns else col for col in test_exp.columns
+        ]
+        test_exp.columns = [f"{c}__t0" for c in test_exp.columns]
+        assert_frame_equal(test, test_exp)
+        # Columns of train should match columns of test
+        self.assertListEqual(train.columns.tolist(), test.columns.tolist())
+
+    def test_split_train_test_public_stratify_non_grouped(self):
+        # Stratify by covariate; ensure both classes appear in both splits
+        train, test = split_train_test(
+            self.md,
+            self.ft_rel,
+            group_by_column=None,
+            train_size=0.5,
+            seed=999,
+            stratify_by=["covariate"],
+        )
+        cov_col_train = [c for c in train.columns if c.startswith("covariate")][0]
+        cov_col_test = [c for c in test.columns if c.startswith("covariate")][0]
+        cov_train = set(train[cov_col_train])
+        cov_test = set(test[cov_col_test])
+        self.assertEqual(cov_train, {0, 1})
+        self.assertEqual(cov_test, {0, 1})
+
+    def test_split_train_test_public_stratify_grouped_error(self):
+        # With grouping, class 0 has only one host in fixture -> expect error
+        with self.assertRaises(ValueError):
+            _ = split_train_test(
+                self.md,
+                self.ft_rel,
+                group_by_column="host_id",
+                train_size=0.5,
+                seed=123,
+                stratify_by=["covariate"],
+            )
+
+
+class TestSplitTrainTestTemporalSnapshots(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        # Two hosts with times 2 and 3 so only time=3 qualifies as t0 when s=1 (exclude)
+        self.md = pd.DataFrame(
+            {
+                "host_id": ["h1", "h1", "h2", "h2"],
+                "time": [2, 3, 2, 3],
+                "supertarget": [1, 2, 3, 4],
+                "covariate": [0, 1, 0, 1],
+            },
+            index=["H1_T2", "H1_T3", "H2_T2", "H2_T3"],
+        )
+        self.ft = pd.DataFrame(
+            {
+                "0": [0.6, 0.7, 0.5, 0.4],
+                "1": [0.4, 0.3, 0.5, 0.6],
+            },
+            index=self.md.index,
+        )
+
+    def test_temporal_exclude_mode(self):
+        train_val, test = split_train_test(
+            self.md,
+            self.ft,
+            group_by_column="host_id",
+            train_size=0.5,
+            seed=123,
+            time_col="time",
+            host_col="host_id",
+            n_prev=1,
+            missing_mode="exclude",
+        )
+        # Only one t0 per host (time=3), so rows == number of hosts
+        self.assertEqual(train_val.shape[0] + test.shape[0], 2)
+        # Host grouping respected (no overlap)
+        overlap = set(train_val["host_id__t0"]).intersection(set(test["host_id__t0"]))
+        self.assertEqual(len(overlap), 0)
+        # Feature columns have suffixes for t0 and t-1
+        ft_cols = [c for c in train_val.columns if c.startswith("F")]
+        self.assertTrue(any(c.endswith("__t0") for c in ft_cols))
+        self.assertTrue(any(c.endswith("__t-1") for c in ft_cols))
+        # Metadata columns suffixed
+        self.assertIn("host_id__t0", train_val.columns)
+        self.assertIn("supertarget__t0", train_val.columns)
+        self.assertIn("covariate__t0", train_val.columns)
+
+    def test_temporal_nan_mode(self):
+        # Add a host with a single time (will yield NaNs for t-1)
+        md2 = pd.DataFrame(
+            {
+                "host_id": ["h1", "h1", "h2"],
+                "time": [2, 3, 5],
+                "supertarget": [1, 2, 9],
+                "covariate": [0, 1, 1],
+            },
+            index=["H1_T2", "H1_T3", "H2_T5"],
+        )
+        ft2 = pd.DataFrame(
+            {
+                "0": [0.6, 0.7, 0.2],
+                "1": [0.4, 0.3, 0.8],
+            },
+            index=md2.index,
+        )
+        train_val, test = split_train_test(
+            md2,
+            ft2,
+            group_by_column="host_id",
+            train_size=0.67,
+            seed=42,
+            time_col="time",
+            host_col="host_id",
+            n_prev=1,
+            missing_mode="nan",
+        )
+
+        # Build expected full merged dataframe (then split by indices)
+        idx = ["H1_T2", "H1_T3", "H2_T5"]
+        cols = [
+            "host_id__t0",
+            "time__t0",
+            "supertarget__t0",
+            "covariate__t0",
+            "host_id__t-1",
+            "time__t-1",
+            "supertarget__t-1",
+            "covariate__t-1",
+            "F0__t0",
+            "F1__t0",
+            "F0__t-1",
+            "F1__t-1",
+        ]
+
+        exp = pd.DataFrame(index=idx, columns=cols)
+        # t0 metadata
+        exp.loc[:, "host_id__t0"] = ["h1", "h1", "h2"]
+        exp.loc[:, "time__t0"] = [2, 3, 5]
+        exp.loc[:, "supertarget__t0"] = [1, 2, 9]
+        exp.loc[:, "covariate__t0"] = [0, 1, 1]
+        # t-1 metadata (NaNs for missing, host_id/time filled)
+        exp.loc[:, "host_id__t-1"] = ["h1", "h1", "h2"]
+        exp.loc[:, "time__t-1"] = [1, 2, 4]
+        exp.loc[:, "supertarget__t-1"] = [pd.NA, 1, pd.NA]
+        exp.loc[:, "covariate__t-1"] = [pd.NA, 0, pd.NA]
+        # t0 features
+        exp.loc[:, "F0__t0"] = [0.6, 0.7, 0.2]
+        exp.loc[:, "F1__t0"] = [0.4, 0.3, 0.8]
+        # t-1 features
+        exp.loc[:, "F0__t-1"] = [pd.NA, 0.6, pd.NA]
+        exp.loc[:, "F1__t-1"] = [pd.NA, 0.4, pd.NA]
+
+        # Ensure numeric dtypes where appropriate
+        for c in ["time__t0", "supertarget__t0", "covariate__t0", "time__t-1"]:
+            exp[c] = exp[c].astype(int)
+        for c in ["F0__t0", "F1__t0"]:
+            exp[c] = exp[c].astype(float)
+
+        # Expected split for seed=42 and grouping by host_id__t0:
+        # train -> h1 rows (H1_T2, H1_T3); test -> h2 row (H2_T5)
+        exp_train_val = exp.loc[["H1_T2", "H1_T3"]]
+        exp_test = exp.loc[["H2_T5"]]
+
+        assert_frame_equal(train_val, exp_train_val)
+        assert_frame_equal(test, exp_test)
+
+
+class TestGenerateHostTimeSnapshots(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        # Single host with times 2,3,5,8
+        self.md = pd.DataFrame(
+            {
+                "host_id": ["h1", "h1", "h1", "h1"],
+                "time": [2, 3, 5, 8],
+                "cov": ["a", "b", "c", "d"],
+            },
+            index=["S2", "S3", "S5", "S8"],
+        )
+        # Features: 2 informative cols summing to 1.0, plus one all-zero col
+        # to be removed
+        self.ft = pd.DataFrame(
+            {
+                "0": [0.7, 0.2, 1.0, 0.4],
+                "1": [0.3, 0.8, 0.0, 0.6],
+                "2": [0.0, 0.0, 0.0, 0.0],
+            },
+            index=["S2", "S3", "S5", "S8"],
+        )
+
+    def test_nan_mode_sliding_windows_s1(self):
+        md_list, ft_list = _generate_host_time_snapshots_from_df(
+            self.md,
+            self.ft,
+            time_col="time",
+            host_col="host_id",
+            s=1,
+            missing_mode="nan",
+        )
+
+        # Expect two snapshots: t0 and t-1
+        self.assertEqual(len(md_list), 2)
+        self.assertEqual(len(ft_list), 2)
+
+        md_t0, md_t1 = md_list
+        ft_t0, ft_t1 = ft_list
+
+        # Canonical index must be t0 sample ids in ascending time order
+        self.assertListEqual(md_t0.index.tolist(), ["S2", "S3", "S5", "S8"])
+        self.assertListEqual(md_t1.index.tolist(), ["S2", "S3", "S5", "S8"])
+
+        # t0 times equal original times
+        self.assertListEqual(md_t0["time"].tolist(), [2, 3, 5, 8])
+        # t-1 times should be t0-1 for each instance
+        self.assertListEqual(md_t1["time"].tolist(), [1, 2, 4, 7])
+
+        # Non-missing carry forward real rows: for t0=3, t-1=2 exists ->
+        # cov from S2 ('a')
+        self.assertEqual(md_t1.loc["S3", "cov"], "a")
+        # Missing t-1 for t0=5 -> cov should be NA; features all NA
+        self.assertTrue(pd.isna(md_t1.loc["S5", "cov"]))
+
+        # Features should be prepared (renamed to F*, zero-only column removed)
+        self.assertListEqual(sorted(ft_t0.columns.tolist()), ["F0", "F1"])
+        self.assertListEqual(sorted(ft_t1.columns.tolist()), ["F0", "F1"])
+        # Missing t-1 for t0=5/8 -> entire feature row NaN
+        self.assertTrue(ft_t1.loc["S5"].isna().all())
+        self.assertTrue(ft_t1.loc["S8"].isna().all())
+
+    def test_exclude_mode_s1(self):
+        md_list, ft_list = _generate_host_time_snapshots_from_df(
+            self.md,
+            self.ft,
+            time_col="time",
+            host_col="host_id",
+            s=1,
+            missing_mode="exclude",
+        )
+
+        md_t0, md_t1 = md_list
+
+        # Only t0=3 has t-1 available (2). Others are excluded.
+        # canonical index = t0 sample id S3
+        for x in ft_list + md_list:
+            self.assertEqual(x.shape[0], 1)
+            self.assertListEqual(x.index.tolist(), ["S3"])
+        self.assertEqual(md_t0.loc["S3", "time"], 3)
+        self.assertEqual(md_t1.loc["S3", "time"], 2)
+
+    def test_error_non_numeric_time(self):
+        md_bad = self.md.copy()
+        md_bad["time"] = ["x", "y", "z", "w"]
+        with self.assertRaisesRegex(
+            ValueError, r"Non-numeric times detected for host 'h1'"
+        ):
+            _ = _generate_host_time_snapshots_from_df(
+                md_bad, self.ft, time_col="time", host_col="host_id", s=1
+            )
+
+    def test_exclude_mode_no_instances_error(self):
+        # Construct md where no t0 has a complete window of size s=2
+        md2 = pd.DataFrame(
+            {
+                "host_id": ["h1", "h1", "h2"],
+                "time": [1, 4, 3],
+            },
+            index=["S1", "S4", "S3"],
+        )
+        ft2 = pd.DataFrame(
+            {
+                "0": [0.5, 0.5, 0.7],
+                "1": [0.5, 0.5, 0.3],
+            },
+            index=["S1", "S4", "S3"],
+        )
+        with self.assertRaisesRegex(
+            ValueError, r"No \(host, t0\) instances have complete contiguous windows"
+        ):
+            _ = _generate_host_time_snapshots_from_df(
+                md2,
+                ft2,
+                time_col="time",
+                host_col="host_id",
+                s=2,
+                missing_mode="exclude",
             )

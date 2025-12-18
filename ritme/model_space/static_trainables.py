@@ -125,6 +125,7 @@ def train_linreg(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
+    stratify_by: List[str] | None,
     seed_data: int,
     seed_model: int,
     tax: pd.DataFrame = pd.DataFrame(),
@@ -146,7 +147,7 @@ def train_linreg(
     """
     # ! process dataset: X with features & y with host_id
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, tax, seed_data
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
 
     # ! model
@@ -220,6 +221,7 @@ def train_trac(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
+    stratify_by: List[str] | None,
     seed_data: int,
     seed_model: int,
     tax: pd.DataFrame,
@@ -241,7 +243,7 @@ def train_trac(
     """
     # ! process dataset: X with features & y with host_id
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, tax, seed_data
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
     # ! derive matrix A
     # todo: adjust A_df here already
@@ -280,6 +282,7 @@ def train_rf(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
+    stratify_by: List[str] | None,
     seed_data: int,
     seed_model: int,
     tax: pd.DataFrame = pd.DataFrame(),
@@ -301,7 +304,7 @@ def train_rf(
     """
     # ! process dataset
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, tax, seed_data
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
 
     # ! model
@@ -569,6 +572,7 @@ def train_nn(
     tax,
     seed_data,
     seed_model,
+    stratify_by,
     nn_type="regression",
 ):
     # Force deterministic algorithms and disable benchmark
@@ -584,7 +588,7 @@ def train_nn(
 
     # Process dataset
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, tax, seed_data
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
 
     train_loader, val_loader = load_data(
@@ -674,7 +678,15 @@ def train_nn(
 
 
 def train_nn_reg(
-    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+    config,
+    train_val,
+    target,
+    host_id,
+    stratify_by,
+    seed_data,
+    seed_model,
+    tax,
+    tree_phylo,
 ):
     train_nn(
         config,
@@ -684,12 +696,21 @@ def train_nn_reg(
         tax,
         seed_data,
         seed_model,
+        stratify_by,
         nn_type="regression",
     )
 
 
 def train_nn_class(
-    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+    config,
+    train_val,
+    target,
+    host_id,
+    stratify_by,
+    seed_data,
+    seed_model,
+    tax,
+    tree_phylo,
 ):
     train_nn(
         config,
@@ -699,12 +720,21 @@ def train_nn_class(
         tax,
         seed_data,
         seed_model,
+        stratify_by,
         nn_type="classification",
     )
 
 
 def train_nn_corn(
-    config, train_val, target, host_id, seed_data, seed_model, tax, tree_phylo
+    config,
+    train_val,
+    target,
+    host_id,
+    stratify_by,
+    seed_data,
+    seed_model,
+    tax,
+    tree_phylo,
 ):
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
@@ -715,6 +745,7 @@ def train_nn_corn(
         tax,
         seed_data,
         seed_model,
+        stratify_by,
         nn_type="ordinal_regression",
     )
 
@@ -746,6 +777,7 @@ def train_xgb(
     train_val: pd.DataFrame,
     target: str,
     host_id: str,
+    stratify_by: List[str] | None,
     seed_data: int,
     seed_model: int,
     tax: pd.DataFrame = pd.DataFrame(),
@@ -769,7 +801,7 @@ def train_xgb(
     """
     # ! process dataset
     X_train, y_train, X_val, y_val = process_train(
-        config, train_val, target, host_id, tax, seed_data
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
     # Set seeds
     np.random.seed(seed_model)

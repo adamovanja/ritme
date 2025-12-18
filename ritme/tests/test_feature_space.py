@@ -49,7 +49,12 @@ from ritme.feature_space.transform_features import (
     presence_absence,
     transform_microbial_features,
 )
-from ritme.feature_space.utils import _biom_to_df, _df_to_biom
+from ritme.feature_space.utils import (
+    _biom_to_df,
+    _df_to_biom,
+    _extract_time_labels,
+    _time_label_sort_key,
+)
 
 
 class TestUtils(unittest.TestCase):
@@ -74,6 +79,47 @@ class TestUtils(unittest.TestCase):
     def test_df_to_biom(self):
         obs_biom_table = _df_to_biom(self.true_df)
         assert obs_biom_table == self.true_biom_table
+
+    def test_time_label_sort_key_ordering(self):
+        labels = ["t-2", "t0", "t-10", "foo", "t-1", "t-x", "t2"]
+        sorted_labels = sorted(labels, key=_time_label_sort_key)
+        # Expected ordering:
+        # - t0 first
+        # - then numeric t-<n> ascending
+        # - then others (non-conforming)
+        self.assertEqual(sorted_labels[:4], ["t0", "t-1", "t-2", "t-10"])  # numeric
+        # The rest are non-conforming and should follow (order among them not specified)
+        self.assertCountEqual(sorted_labels[4:], ["foo", "t-x", "t2"])
+
+    def test_extract_time_labels_basic(self):
+        cols = [
+            "F1__t0",
+            "F2__t-2",
+            "F3__t-1",
+            "age__t0",
+            "age__t-1",
+            "misc",
+        ]
+        self.assertEqual(
+            _extract_time_labels(cols, "F"), ["t0", "t-1", "t-2"]
+        )  # sorted
+
+    def test_extract_time_labels_custom_prefix(self):
+        cols = ["G1__t0", "G2__t-3", "F1__t-1"]
+        # Using prefix 'G' should ignore 'F' columns
+        self.assertEqual(_extract_time_labels(cols, "G"), ["t0", "t-3"])  # sorted
+
+    def test_extract_time_labels_no_suffix(self):
+        cols = ["F1", "F2", "meta"]
+        # With our new convention, no suffix means no time labels detected
+        self.assertEqual(_extract_time_labels(cols, "F"), [])
+
+    def test_extract_time_labels_malformed(self):
+        cols = ["F1__t-x", "F2__t-2", "F3__t1", "F4__t0"]
+        # Expect proper ordering: t0, t-2, then malformed/other
+        labels = _extract_time_labels(cols, "F")
+        self.assertEqual(labels[:2], ["t0", "t-2"])  # well-formed first
+        self.assertCountEqual(labels[2:], ["t-x", "t1"])  # remaining labels captured
 
 
 class TestTransformMicrobialFeatures(unittest.TestCase):
@@ -687,19 +733,24 @@ class TestProcessTrain(unittest.TestCase):
             "data_enrich": None,
             "data_enrich_with": None,
         }
+        # Single-snapshot (t0) training table with suffixed columns
         self.train_val = pd.DataFrame(
             {
-                "host_id": ["c", "b", "c", "a"],
-                "target": [1, 2, 1, 2],
-                "F0": [0.12, 0.23, 0.33, 0.44],
-                "F1": [0.1, 0.2, 0.3, 0.4],
+                "host_id__t0": ["c", "b", "c", "a"],
+                "target__t0": [1, 2, 1, 2],
+                "covariate__t0": [0, 1, 0, 1],
+                "F0__t0": [0.12, 0.23, 0.33, 0.44],
+                "F1__t0": [0.1, 0.2, 0.3, 0.4],
             },
             index=["SR1", "SR2", "SR3", "SR4"],
         )
-        self.target = "target"
-        self.host_id = "host_id"
+        self.target = "target__t0"
+        # Pass suffixed host_id to match new process_train behavior
+        # (no internal resolution of unsuffixed name).
+        self.host_id = "host_id__t0"
         self.seed_data = 0
         self.tax = pd.DataFrame()
+        self.strat_cols = ["covariate__t0"]
 
     def _assert_called_with_df(self, mock_method, *expected_args):
         actual_args = mock_method.call_args[0]
@@ -722,15 +773,39 @@ class TestProcessTrain(unittest.TestCase):
         mock_aggregate_features,
         mock_enrich_features,
     ):
-        # only no_feature_engineering is tested here since all individual
-        # functions were tested above
-        ls_ft = ["F0", "F1"]
-        ft = self.train_val[ls_ft]
-        mock_aggregate_features.return_value = ft
-        mock_select_features.return_value = ft
-        mock_transform_features.return_value = ft
+        # With suffixed input, snapshot slice strips suffix.
+        # Unsuffixed microbial features are passed to the pipeline.
+        raw_unsuffixed = pd.DataFrame(
+            {
+                "F0": self.train_val["F0__t0"].values,
+                "F1": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
+        )
+        mock_aggregate_features.return_value = raw_unsuffixed
+        mock_select_features.return_value = raw_unsuffixed
+        mock_transform_features.return_value = raw_unsuffixed
 
-        mock_enrich_features.return_value = ([], self.train_val)
+        # Build expected unsuffixed snapshot for enrichment call
+        snap_all_unsuff = self.train_val.copy()
+        snap_all_unsuff.columns = [
+            col.replace("__t0", "") for col in snap_all_unsuff.columns
+        ]
+
+        snap_md_unsuff = snap_all_unsuff.drop(
+            columns=["F0", "F1"]
+        )  # host_id, target & covariate
+        transf_plus_md_unsuff = raw_unsuffixed.join(snap_md_unsuff)
+
+        # Enrichment now returns UNSUFFIXED snapshot; process_train will suffix once
+        enriched_unsuff = self.train_val.copy()
+        enriched_unsuff.columns = [
+            col.replace("__t0", "") for col in enriched_unsuff.columns
+        ]
+        mock_enrich_features.return_value = ([], enriched_unsuff)
+
+        # After accumulation, split should be called on train_val_accum.
+        # That object contains enriched columns.
         mock_split_data_grouped.return_value = (
             self.train_val.iloc[:2, :],
             self.train_val.iloc[2:, :],
@@ -746,20 +821,35 @@ class TestProcessTrain(unittest.TestCase):
         )
 
         # Assert
-        self._assert_called_with_df(mock_aggregate_features, ft, None, self.tax)
-        self._assert_called_with_df(mock_select_features, ft, self.config, "F")
-        self._assert_called_with_df(mock_transform_features, ft, None)
+        self._assert_called_with_df(
+            mock_aggregate_features, raw_unsuffixed, None, self.tax
+        )
+        self._assert_called_with_df(
+            mock_select_features, raw_unsuffixed, self.config, "F"
+        )
+        self._assert_called_with_df(mock_transform_features, raw_unsuffixed, None)
         self._assert_called_with_df(
             mock_enrich_features,
-            self.train_val,
-            ft.columns.tolist(),
-            self.train_val,
+            snap_all_unsuff,
+            ["F0", "F1"],
+            transf_plus_md_unsuff,
             self.config,
+        )
+        # Expect split called with suffixed enriched snapshot (single suffix)
+        enriched_suff_exp = pd.DataFrame(
+            {
+                "host_id__t0": self.train_val["host_id__t0"].values,
+                "target__t0": self.train_val["target__t0"].values,
+                "covariate__t0": self.train_val["covariate__t0"].values,
+                "F0__t0": self.train_val["F0__t0"].values,
+                "F1__t0": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
         )
         self._assert_called_with_df(
             mock_split_data_grouped,
-            self.train_val,
-            "host_id",
+            enriched_suff_exp,
+            "host_id__t0",
             0.8,
             0,
         )
@@ -779,18 +869,27 @@ class TestProcessTrain(unittest.TestCase):
     ):
         # goal is to ensure that data_transform is set to None if only 1 feature
         # is selected
-        ls_ft = ["F0", "F1"]
-        ft = self.train_val[ls_ft]
+        raw_unsuffixed = pd.DataFrame(
+            {
+                "F0": self.train_val["F0__t0"].values,
+                "F1": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
+        )
         one_ft_config = self.config.copy()
         one_ft_config["data_transform"] = "ilr"
-
-        mock_aggregate_features.return_value = ft
-        mock_select_features.return_value = ft[["F0"]]
-        mock_transform_features.return_value = ft[["F0"]]
-        mock_enrich_features.return_value = ([], self.train_val)
+        mock_aggregate_features.return_value = raw_unsuffixed
+        mock_select_features.return_value = raw_unsuffixed[["F0"]]
+        mock_transform_features.return_value = raw_unsuffixed[["F0"]]
+        enriched_snapshot = self.train_val[
+            [
+                "F0__t0",
+            ]
+        ].copy()
+        mock_enrich_features.return_value = ([], enriched_snapshot)
         mock_split_data_grouped.return_value = (
-            self.train_val.iloc[:2, :],
-            self.train_val.iloc[2:, :],
+            self.train_val.loc[self.train_val.index[:2], ["F0__t0", "target__t0"]],
+            self.train_val.loc[self.train_val.index[2:], ["F0__t0", "target__t0"]],
         )
 
         X_train, y_train, X_val, y_val = process_train(
@@ -803,7 +902,78 @@ class TestProcessTrain(unittest.TestCase):
         )
 
         # Assert ilr -> None
-        self._assert_called_with_df(mock_transform_features, ft[["F0"]], None)
+        mock_transform_features.assert_not_called()
+
+    def test_process_train_alr_multi_snapshot(self):
+        # Build multi-snapshot dataset (t0 and t-1) with 3 microbial features
+        df = pd.DataFrame(
+            {
+                "host_id__t0": ["a", "b", "c", "a"],
+                "host_id__t-1": ["a", "b", "c", "a"],
+                "target__t0": [1, 0, 1, 0],
+                "F0__t0": [10, 20, 30, 40],
+                "F1__t0": [5, 6, 7, 8],
+                "F2__t0": [1, 2, 3, 4],
+                "F0__t-1": [11, 21, 31, 41],
+                "F1__t-1": [6, 7, 8, 9],
+                "F2__t-1": [2, 3, 4, 5],
+            },
+            index=["S1", "S2", "S3", "S4"],
+        )
+        cfg = self.config.copy()
+        cfg["data_transform"] = "alr"
+        X_train, y_train, X_val, y_val = process_train(
+            cfg, df, "target__t0", "host_id__t0", self.tax, self.seed_data
+        )
+        # Expect 2 transformed microbial features per snapshot (3 -> 2 after ALR)
+        # Total features: 4
+        self.assertEqual(X_train.shape[1], 4)
+        self.assertIn("data_alr_denom_idx_map", cfg)
+        self.assertEqual(sorted(cfg["data_alr_denom_idx_map"].keys()), ["t-1", "t0"])
+        # Indices should be valid within original (unsuffixed) 3-column snapshot
+        for v in cfg["data_alr_denom_idx_map"].values():
+            self.assertTrue(v in [0, 1, 2])
+
+    @patch("ritme.feature_space._process_train._split_data_grouped")
+    @patch("ritme.feature_space._process_train.transform_microbial_features")
+    @patch("ritme.feature_space._process_train.select_microbial_features")
+    @patch("ritme.feature_space._process_train.aggregate_microbial_features")
+    @patch("ritme.feature_space._process_train.enrich_features")
+    def test_process_train_stratify_by_passed_verbatim(
+        self,
+        mock_enrich_features,
+        mock_aggregate_features,
+        mock_select_features,
+        mock_transform_features,
+        mock_split_data_grouped,
+    ):
+        # Mock stages to keep focus on split invocation
+        raw_unsuffixed = pd.DataFrame(
+            {
+                "F0": self.train_val["F0__t0"].values,
+                "F1": self.train_val["F1__t0"].values,
+            },
+            index=self.train_val.index,
+        )
+        mock_aggregate_features.return_value = raw_unsuffixed
+        mock_select_features.return_value = raw_unsuffixed
+        mock_transform_features.return_value = raw_unsuffixed
+        mock_enrich_features.return_value = ([], self.train_val)
+        mock_split_data_grouped.return_value = (
+            self.train_val.iloc[:2, :],
+            self.train_val.iloc[2:, :],
+        )
+        process_train(
+            self.config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=self.strat_cols,
+        )
+        _args, _kwargs = mock_split_data_grouped.call_args
+        self.assertEqual(_kwargs.get("stratify_by"), self.strat_cols)
 
 
 class TestProcessTracSpecific(unittest.TestCase):
