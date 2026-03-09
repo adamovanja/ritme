@@ -44,7 +44,7 @@ requirements:
     - scikit-bio
     - scikit-learn
     - scipy
-    - setuptools
+    - setuptools==80.10.2
     - torchmetrics
     - torchvision
     - typer
