@@ -10,8 +10,9 @@ An optimized framework for finding the best feature representation and model cla
 *ritme* is available as a conda package on [anaconda.org](https://anaconda.org/adamova/ritme). To install it run the following command:
 
 ```shell
-conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch ritme
+conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch python=3.10 ritme
 ```
+(If on a Apple Silicon chip, prefix the above installation with `CONDA_SUBDIR=osx-64` and run the following after activating the conda environnment: `conda config --env --set subdir osx-64`.)
 
 ## Usage
 *ritme* provides three main functions to prepare your data, find the best model configuration (feature + model class) for the specified target and evaluate the best model configuration on a test set. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function run `ritme <function-name> --help` or have a look at the examples in the notebook [`experiments/ritme_example_usage.ipynb`](https://github.com/adamovanja/ritme/blob/main/experiments/ritme_example_usage.ipynb).
