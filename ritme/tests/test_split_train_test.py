@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import qiime2 as q2
 from pandas.testing import assert_frame_equal
 
 from ritme.split_train_test import (
@@ -87,16 +86,6 @@ class TestDataHelpers(unittest.TestCase):
         md, ft_rel = _load_data(self.tmp_md_path, self.tmp_ft_rel_path)
 
         pd.testing.assert_frame_equal(ft_rel, self.ft_rel)
-        pd.testing.assert_frame_equal(md, self.md)
-
-    def test_load_data_ft_qza(self):
-        art_ft = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", self.ft_rel)
-        tmp_ft_path_art = self.tmp_ft_rel_path.replace(".tsv", ".qza")
-        art_ft.save(tmp_ft_path_art)
-
-        md, ft = _load_data(self.tmp_md_path, tmp_ft_path_art)
-
-        pd.testing.assert_frame_equal(ft, self.ft_rel)
         pd.testing.assert_frame_equal(md, self.md)
 
     def test_split_data_grouped_by_host(self):

@@ -29,13 +29,13 @@ jobs:
 
           # Capture the package path without building
           PACKAGE_PATH=$(conda run -n build-env conda build --no-test \
-            -c qiime2 -c conda-forge -c bioconda -c pytorch -c defaults \
+            -c conda-forge -c bioconda -c pytorch -c defaults \
             --croot $CONDA_BUILD_ROOT \
             ci/recipe --output)
 
           # Build the package using the specified build root
           conda run -n build-env conda build --no-test \
-            -c qiime2 -c conda-forge -c bioconda -c pytorch -c defaults \
+            -c conda-forge -c bioconda -c pytorch -c defaults \
             --croot $CONDA_BUILD_ROOT \
             ci/recipe
 

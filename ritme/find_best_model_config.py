@@ -2,10 +2,8 @@ import json
 import os
 
 import pandas as pd
-import qiime2 as q2
 import skbio
 import typer
-from qiime2.plugins import phylogeny
 
 from ritme._decorators import helper_function, main_function
 from ritme.evaluate_models import (
@@ -48,9 +46,11 @@ def _save_config(config: dict, path_output: str, file_name: str):
 
 @helper_function
 def _load_taxonomy(path_to_tax: str) -> pd.DataFrame:
-    """Load taxonomy data"""
-    art_taxonomy = q2.Artifact.load(path_to_tax)
-    return art_taxonomy.view(pd.DataFrame)
+    """Load taxonomy from a tab-delimited file (.tsv).
+
+    Expected columns: Feature ID (index), Taxon, Confidence (optional).
+    """
+    return pd.read_csv(path_to_tax, sep="\t", index_col=0)
 
 
 @helper_function
@@ -73,27 +73,20 @@ def _process_taxonomy(tax: pd.DataFrame, ft: pd.DataFrame) -> pd.DataFrame:
 
 @helper_function
 def _load_phylogeny(path_to_phylo: str) -> skbio.TreeNode:
-    art_phylo = q2.Artifact.load(path_to_phylo)
-    return art_phylo.view(skbio.TreeNode)
+    """Load a phylogenetic tree from a Newick file (.nwk)."""
+    return skbio.TreeNode.read(path_to_phylo)
 
 
 @helper_function
 def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.TreeNode:
-    """Process phylogeny"""
-    # filter tree by feature table: this prunes a phylogenetic tree to match
-    # the input ids
-    ft_i = ft.copy()
-
+    """Prune phylogenetic tree to match feature table columns."""
     # Reference the t0 snapshot feature set (unsuffixed columns)
-    t0_cols = [c for c in ft_i.columns if not _PAST_SUFFIX_RE.search(c)]
-    ft_i = ft_i[t0_cols]
+    t0_cols = [c for c in ft.columns if not _PAST_SUFFIX_RE.search(c)]
     # strip the 'F' prefix to match phylotree leaf names
-    ft_i.columns = [col[1:] for col in ft_i.columns]
-    art_ft_i = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft_i)
+    tip_names = [col[1:] for col in t0_cols]
 
-    art_phylo = q2.Artifact.import_data("Phylogeny[Rooted]", phylo_tree)
-    (art_phylo_f,) = phylogeny.actions.filter_tree(tree=art_phylo, table=art_ft_i)
-    tree_phylo_f = art_phylo_f.view(skbio.TreeNode)
+    # prune tree to keep only tips present in the feature table
+    tree_phylo_f = phylo_tree.shear(tip_names)
 
     # add prefix "F" to leaf names in tree to remain consistent with ft
     for node in tree_phylo_f.tips():
@@ -101,7 +94,7 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
 
     # ensure that # leaves in tree == feature table dimension
     num_leaves = tree_phylo_f.count(tips=True)
-    assert num_leaves == ft_i.shape[1]
+    assert num_leaves == len(t0_cols)
 
     return tree_phylo_f
 
@@ -225,13 +218,13 @@ def cli_find_best_model_config(
     Args:
         path_to_config (str): Path to experiment configuration file.
         path_to_train_val (str): Path to train_val dataset.
-        path_to_tax (str, optional): Path to taxonomy QIIME2 artifact of type
-        FeatureData[Taxonomy] matching features starting with 'F' in
-        `train_val`. Needed for training trac models and feature engineering
-        based on taxonomy. Defaults to None.
-        path_to_tree_phylo (str, optional): Path to phylogenetic tree QIIME2
-        artifact of type "Phylogeny[Rooted]" for features starting with "F" in
-        `train_val`. Needed for training trac models. Defaults to None.
+        path_to_tax (str, optional): Path to taxonomy file (.tsv) with columns
+        Feature ID (index), Taxon, Confidence. Feature IDs must match features
+        starting with 'F' in `train_val` w/o the prefix 'F'. Needed for training
+        trac models and feature engineering based on taxonomy. Defaults to None.
+        path_to_tree_phylo (str, optional): Path to rooted phylogenetic tree in
+        Newick format (.nwk) for features starting with "F" in `train_val`.
+        Needed for training trac models. Defaults to None.
         path_store_model_logs (str, optional): Path to store model logs.
         Defaults to "experiments/models".
 
