@@ -2,6 +2,7 @@ import os
 import warnings
 from typing import List, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 import qiime2 as q2
 import typer
@@ -108,14 +109,11 @@ def _generate_time_labels(n: int) -> List[str]:
 
 
 @helper_function
-def _append_time_suffix_to_features(ft: pd.DataFrame, time_label: str) -> pd.DataFrame:
-    """
-    Append a time suffix to microbial feature columns keeping 'F' prefix first,
-    e.g., 'F123' -> 'F123__t0'.
-    """
-    ft_suffixed = ft.copy()
-    ft_suffixed.columns = [f"{col}__{time_label}" for col in ft_suffixed.columns]
-    return ft_suffixed
+def _append_time_suffix(df: pd.DataFrame, time_label: str) -> pd.DataFrame:
+    """Append a time suffix to all columns, e.g., 'F123' -> 'F123__t-1'."""
+    df_suffixed = df.copy()
+    df_suffixed.columns = [f"{col}__{time_label}" for col in df_suffixed.columns]
+    return df_suffixed
 
 
 @helper_function
@@ -137,7 +135,9 @@ def _prepare_single_feature_table(ft: pd.DataFrame) -> pd.DataFrame:
 def _merge_time_snapshots(
     md_list: Sequence[pd.DataFrame], ft_list: Sequence[pd.DataFrame]
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Merge per-snapshot metadata and feature tables with time suffixes.
+    """Merge per-snapshot metadata and feature tables.
+
+    t0 columns remain unsuffixed; past snapshots (t-1, t-2, ...) are suffixed.
 
     Assumptions
     -----------
@@ -145,17 +145,10 @@ def _merge_time_snapshots(
     - Input order corresponds to time labels: ``t0, t-1, t-2, ...``.
     - Feature column sets are identical across snapshots.
 
-    Behavior
-    --------
-    - Each feature table is preprocessed (rename with prefix "F", removal of
-      all-zero features, relative abundance conversion if needed) then suffixed
-      with its time label (e.g. ``F123__t0``).
-    - Metadata columns are suffixed with their time label (e.g. ``age__t-1``).
-
     Returns
     -------
     tuple[pd.DataFrame, pd.DataFrame]
-        (merged_metadata, merged_features) with time-suffixed columns.
+        (merged_metadata, merged_features).
     """
     if len(md_list) != len(ft_list):
         raise ValueError(
@@ -176,12 +169,15 @@ def _merge_time_snapshots(
     ft_prepared: List[pd.DataFrame] = []
     md_prepared: List[pd.DataFrame] = []
     for ft, tlabel in zip(ft_list, time_labels):
-        ft_s = _append_time_suffix_to_features(ft, tlabel)
-        ft_prepared.append(ft_s)
+        if tlabel == "t0":
+            ft_prepared.append(ft.copy())
+        else:
+            ft_prepared.append(_append_time_suffix(ft, tlabel))
     for md, tlabel in zip(md_list, time_labels):
-        md_s = md.copy()
-        md_s.columns = [f"{col}__{tlabel}" for col in md_s.columns]
-        md_prepared.append(md_s)
+        if tlabel == "t0":
+            md_prepared.append(md.copy())
+        else:
+            md_prepared.append(_append_time_suffix(md, tlabel))
 
     merged_ft = pd.concat(ft_prepared, axis=1)
     merged_md = pd.concat(md_prepared, axis=1)
@@ -344,54 +340,17 @@ def _generate_host_time_snapshots_from_df(
                 md_rows.append(md.loc[sample_idx].copy())
                 ft_rows.append(ft_prepared.loc[sample_idx, microbial_cols].copy())
             else:
-                md_row = pd.Series({c: pd.NA for c in md.columns})
+                md_row = pd.Series({c: np.nan for c in md.columns}, dtype=object)
                 md_row[host_col] = host
                 md_row[time_col] = target_time
                 md_rows.append(md_row)
-                ft_rows.append(pd.Series({c: pd.NA for c in microbial_cols}))
+                ft_rows.append(pd.Series({c: np.nan for c in microbial_cols}))
         md_snap = pd.DataFrame(md_rows, index=canonical_index)
         ft_snap = pd.DataFrame(ft_rows, index=canonical_index, columns=microbial_cols)
         meta_snapshots.append(md_snap)
         ft_snapshots.append(ft_snap)
 
     return meta_snapshots, ft_snapshots
-
-
-@helper_function
-def _resolve_column_to_t0(df: pd.DataFrame, col: str | None) -> str | None:
-    """Resolve an input column name to its '__t0' form if needed.
-
-    Behavior
-    --------
-    - If ``col`` is None, return None.
-    - If ``col`` exists in ``df.columns``, return it unchanged.
-    - Else, try ``f"{col}__t0"``; if it exists, return the suffixed name.
-    - Otherwise, raise ValueError indicating the column is not found.
-    """
-    if col is None:
-        return None
-    if col in df.columns:
-        return col
-    alt = f"{col}__t0"
-    if alt in df.columns:
-        return alt
-    raise ValueError(f"Column '{col}' not found in data (nor as '{alt}').")
-
-
-@helper_function
-def _resolve_columns_to_t0(
-    df: pd.DataFrame, cols: Sequence[str] | None
-) -> list[str] | None:
-    """Resolve a list of column names to their '__t0' forms when needed.
-
-    Returns None if ``cols`` is None. Preserves order.
-    """
-    if cols is None:
-        return None
-    resolved: list[str] = []
-    for c in cols:
-        resolved.append(_resolve_column_to_t0(df, c))
-    return resolved
 
 
 @helper_function
@@ -511,22 +470,20 @@ def split_train_test(
     n_prev: int | None = None,
     missing_mode: str = "exclude",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Prepare a modeling table and split into train/test sets.
+    """Prepare a feature table (incl. modelling target) and split into train/test sets.
 
     Behavior
     --------
     - When ``time_col``, ``host_col`` and ``n_prev`` are provided, the function
       first generates sliding-window snapshots per host/time using
-      :func:`_generate_host_time_snapshots_from_df`, then merges them with
-      time-suffixed columns (``__t0``, ``__t-1``, ...). Otherwise, it treats the
-      input as a single ``t0`` snapshot and simply suffixes columns with
-      ``__t0``.
+      :func:`_generate_host_time_snapshots_from_df`, then merges them.
+      t0 columns remain unsuffixed; past snapshots get ``__t-1``, ``__t-2``,
+      etc.  Otherwise, the input is treated as a single (static) snapshot and
+      columns remain unsuffixed.
     - Feature columns are always prefixed with ``F`` and preprocessed (all-zero
       removal, relative abundance conversion if needed).
-    - If ``group_by_column`` does not exist in the suffixed table, its ``__t0``
-      counterpart (e.g., ``host_id__t0``) is used for grouping.
-        - If ``train_size == 0.0``, all processed rows are returned in the test
-            set and the train set is empty.
+    - If ``train_size == 0.0``, all processed rows are returned in the test
+      set and the train set is empty.
 
     Parameters
     ----------
@@ -545,9 +502,7 @@ def split_train_test(
     stratify_by : Sequence[str], optional
         Columns to use for stratification. When grouping is used, the
         stratification is performed at the group level and the specified
-        columns must be constant within each group. Column names can be
-        provided without time suffix; they will be resolved to ``__t0`` if
-        needed.
+        columns must be constant within each group.
     time_col : str, optional
         Metadata column for time. Enables temporal snapshotting when set.
     host_col : str, optional
@@ -563,7 +518,7 @@ def split_train_test(
     Returns
     -------
     tuple[pd.DataFrame, pd.DataFrame]
-        Train/validation and test DataFrames with time-suffixed columns.
+        Train/validation and test DataFrames.
     """
     # Expand into multiple snapshots if temporal parameters are provided;
     # otherwise treat as a single t0 snapshot.
@@ -578,26 +533,29 @@ def split_train_test(
         )
         md_base, ft_merged = _merge_time_snapshots(md_list, ft_list)
     else:
-        time_label = "t0"
         md_base = md.copy()
-        md_base.columns = [f"{c}__{time_label}" for c in md_base.columns]
-        ft_single = _prepare_single_feature_table(ft)
-        ft_merged = _append_time_suffix_to_features(ft_single, time_label)
+        ft_merged = _prepare_single_feature_table(ft)
 
     # merge md and feature table (inner join on sample ids)
     data = md_base.join(ft_merged, how="inner")
 
-    # Resolve group_by_column and stratify_by to suffixed names if needed
-    # (e.g., host_id -> host_id__t0)
-    group_col = _resolve_column_to_t0(data, group_by_column)
-    strat_cols = _resolve_columns_to_t0(data, stratify_by)
+    # Validate column references
+    if group_by_column is not None and group_by_column not in data.columns:
+        raise ValueError(f"Column '{group_by_column}' not found in data.")
+    if stratify_by is not None:
+        missing = [c for c in stratify_by if c not in data.columns]
+        if missing:
+            raise ValueError(
+                "Stratification columns not found in data: " + ", ".join(missing)
+            )
+
     # split
     train_val, test = _split_data_grouped(
         data,
-        group_by_column=group_col,
+        group_by_column=group_by_column,
         train_size=train_size,
         seed=seed,
-        stratify_by=strat_cols,
+        stratify_by=stratify_by,
     )
 
     return train_val, test
@@ -618,14 +576,18 @@ def cli_split_train_test(
     missing_mode: str = None,
     stratify_by: str = None,
 ):
-    """CLI wrapper for :func:`split_train_test` supporting temporal mode.
+    """
+    CLI wrapper for :func:`split_train_test`: prepares a feature table (incl.
+    modelling target) and split into train/test sets.
 
-    Notes
-    -----
+    See :func:`split_train_test` for full parameter and behavior documentation.
+
+    CLI-specific notes
+    ------------------
     - ``path_to_md``: tab-delimited ``.tsv`` with sample ids as index.
-    - ``path_to_ft``: ``.tsv`` or QIIME2 ``.qza`` artifact convertible to DataFrame.
-    - Temporal arguments trigger sliding-window snapshot generation and time
-      suffixing (``__t0``, ``__t-1``, ...).
+    - ``path_to_ft``: ``.tsv`` or QIIME2 ``.qza`` artifact convertible to
+      DataFrame.
+    - ``stratify_by``: comma-separated column names (e.g. ``"col1,col2"``).
 
     Side Effects
     ------------

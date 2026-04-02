@@ -233,7 +233,7 @@ class TestTunedModelImplementation(unittest.TestCase):
         self.tmodel.data_config["data_transform"] = "alr"
         # remove map to trigger error
         self.tmodel.data_config.pop("data_alr_denom_idx_map", None)
-        df = pd.DataFrame({"F0__t0": [1, 2], "F1__t0": [3, 4]})
+        df = pd.DataFrame({"F0": [1, 2], "F1": [3, 4]})
         with self.assertRaisesRegex(ValueError, r"ALR transform requires.*map"):
             self.tmodel.transform(df, time_label="t0")
 
@@ -310,10 +310,11 @@ class TestTunedModelImplementation(unittest.TestCase):
         self.assertIn("t0", self.tmodel.snapshot_selected_map)
         self.assertEqual(self.tmodel.snapshot_selected_map["t0"], ["F1"])
 
-    def test_predict_requires_time_suffixes(self):
-        # Unsuffixed microbial columns should raise
+    def test_predict_requires_microbial_features(self):
+        # No F-prefixed columns at all should raise
+        data_no_micro = pd.DataFrame({"other": [1, 2]}, index=["S1", "S2"])
         with self.assertRaisesRegex(ValueError, r"No time labels detected"):
-            _ = self.tmodel.predict(self.data, split="train")
+            _ = self.tmodel.predict(data_no_micro, split="train")
 
     def test_select_test_fails_if_no_train_run_before(self):
         fresh_tmodel = TunedModel(
@@ -386,21 +387,18 @@ class TestTunedModelImplementation(unittest.TestCase):
         )
         exp_x["md2_b"] = 3 * [0.0] + 4 * [1.0] + 3 * [0.0]
         exp_pred = np.max(exp_x.values, axis=1).flatten()
-        # Provide time-suffixed input (single snapshot t0)
-        data_t0 = self.data.copy()
-        data_t0.columns = [f"{c}__t0" for c in data_t0.columns]
-        obs_pred = self.tmodel.predict(data_t0, split="train")
+        obs_pred = self.tmodel.predict(self.data, split="train")
         assert_allclose(obs_pred, exp_pred, rtol=1e-6)
 
     def test_predict_sklearn_model_multi_snapshot_shannon_alr(self):
-        # Build simple two-snapshot dataset with suffixed columns
+        # Build simple two-snapshot dataset: t0 columns unsuffixed, t-1 suffixed
         df = pd.DataFrame(
             {
-                "host__t0": ["a", "b", "c", "d"],
+                "host": ["a", "b", "c", "d"],
                 "host__t-1": ["a", "b", "c", "d"],
-                "target__t0": [0, 1, 0, 1],
-                "F0__t0": [1, 2, 3, 4],
-                "F1__t0": [1, 1, 1, 1],
+                "target": [0, 1, 0, 1],
+                "F0": [1, 2, 3, 4],
+                "F1": [1, 1, 1, 1],
                 "F0__t-1": [2, 3, 4, 5],
                 "F1__t-1": [1, 1, 1, 1],
             },
@@ -421,13 +419,9 @@ class TestTunedModelImplementation(unittest.TestCase):
         # plus shannon per snapshot -> 1 each (total 4 columns)
         # total columns = 4
         assert_array_equal(preds, np.array([4, 4, 4, 4]))
-        # Feature names recorded
-        self.assertTrue(
-            all(
-                s.endswith("__t0") or s.endswith("__t-1")
-                for s in tuned.final_feature_cols
-            )
-        )
+        # t0 features are unsuffixed, t-1 features are suffixed
+        self.assertTrue(all(not s.endswith("__t0") for s in tuned.final_feature_cols))
+        self.assertTrue(any(s.endswith("__t-1") for s in tuned.final_feature_cols))
 
     @patch("ritme.evaluate_models._preprocess_taxonomy_aggregation")
     @patch.object(TunedModel, "enrich")
@@ -438,19 +432,12 @@ class TestTunedModelImplementation(unittest.TestCase):
         self, mock_agg, mock_sel, mock_trans, mock_enrich, mock_preproc
     ):
         # Test that TRAC path uses _preprocess_taxonomy_aggregation correctly
-        base = pd.DataFrame(
-            {"FSp1__t0": [1, 2], "FSp2__t0": [3, 4]}, index=["S1", "S2"]
-        )
-        base_unsuffixed = pd.DataFrame(
-            {"FSp1": [1, 2], "FSp2": [3, 4]}, index=["S1", "S2"]
-        )
-        mock_agg.return_value = base_unsuffixed
-        mock_sel.return_value = base_unsuffixed
-        mock_trans.return_value = base_unsuffixed
-        # enriched snapshot equals transformed with suffix
-        enriched = pd.DataFrame(
-            {"FSp1__t0": [1, 2], "FSp2__t0": [3, 4]}, index=["S1", "S2"]
-        )
+        base = pd.DataFrame({"FSp1": [1, 2], "FSp2": [3, 4]}, index=["S1", "S2"])
+        mock_agg.return_value = base
+        mock_sel.return_value = base
+        mock_trans.return_value = base
+        # enriched snapshot equals transformed (t0 columns are unsuffixed)
+        enriched = pd.DataFrame({"FSp1": [1, 2], "FSp2": [3, 4]}, index=["S1", "S2"])
         mock_enrich.return_value = ([], enriched)
         mock_preproc.return_value = (np.array([[2], [3]]), None)
 
@@ -471,6 +458,43 @@ class TestTunedModelImplementation(unittest.TestCase):
         # predicted = log_geom.dot(alpha[1:]) + alpha[0]
         # => [ (2*3)+2, (3*3)+2 ] => [8,11]
         assert_array_equal(preds, np.array([[8], [11]]))
+
+    def test_predict_multi_snapshot_with_nan_rows(self):
+        """NaN rows in past snapshot should flow through without errors.
+
+        This simulates missing_mode='nan' where some past observations are NaN.
+        The model should receive NaN for those features and still produce output.
+        """
+        df = pd.DataFrame(
+            {
+                "host": ["a", "b", "c", "d"],
+                "host__t-1": ["a", "b", "c", "d"],
+                "target": [0, 1, 0, 1],
+                "F0": [0.5, 0.6, 0.7, 0.8],
+                "F1": [0.5, 0.4, 0.3, 0.2],
+                # First and third rows have NaN for past snapshot
+                "F0__t-1": [np.nan, 0.5, np.nan, 0.7],
+                "F1__t-1": [np.nan, 0.5, np.nan, 0.3],
+            },
+            index=["S1", "S2", "S3", "S4"],
+        )
+        cfg = {
+            "data_aggregation": None,
+            "data_transform": None,
+            "data_selection": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+        model = ColumnCountModel()
+        tuned = TunedModel(model=model, data_config=cfg, tax=self.tax_df, path="")
+        preds = tuned.predict(df, split="train")
+        # ColumnCountModel returns number of columns
+        # t0 has 2 features (unsuffixed), t-1 has 2 features (suffixed) = 4 total
+        self.assertEqual(len(preds), 4)
+        # NaN rows produce NaN in features but the model still sees 4 columns
+        assert_array_equal(preds, np.array([4, 4, 4, 4]))
+        # Verify NaN was preserved in the feature matrix (check final_feature_cols)
+        self.assertEqual(len(tuned.final_feature_cols), 4)
 
 
 if __name__ == "__main__":

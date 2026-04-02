@@ -19,11 +19,54 @@ conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch ritme
 
 | *ritme* function       | Description                                                                      |
 |------------------------|----------------------------------------------------------------------------------|
-| split_train_test       | Split the dataset into train-test (with grouping option)                         |
+| split_train_test       | Preprocess your dataset and split it into train-test (with static/dynamic feature, stratification and grouping options)                         |
 | find_best_model_config | Find the best model configuration (incl. feature representation and model class) |
 | evaluate_tuned_models  | Evaluate the best model configuration on the complete train and a left-out test set                     |
 
-## Finding the best model configuration
+## Preprocess your dataset and split it into train-test with `split_train_test`
+
+`split_train_test` merges a metadata table (`md`) and a microbial feature table (`ft`) — both indexed by sample ID — and splits the result into training and test sets. It supports two modes: **static** and **dynamic** and allows for performing the splits in a grouped and/or stratified manner.
+
+### Static mode (default)
+Predict a target from a single time point of features and metadata:
+
+```
+ft_t, md_t  →  target_t
+```
+
+```python
+train, test = split_train_test(md=metadata, ft=feature_table,
+                               group_by_column="host_id", seed=42)
+```
+
+### Dynamic mode (temporal snapshotting)
+When `time_col`, `host_col`, and `n_prev` are provided, the function creates sliding-window snapshots per host trajectory. This allows predicting a target from the current **and** previous time points:
+
+```
+ft_t-2, md_t-2, ft_t-1, md_t-1, ft_t, md_t  →  target_t (n_prev=2)
+```
+
+```python
+train, test = split_train_test(md=metadata, ft=feature_table,
+                               group_by_column="host_id", seed=42,
+                               time_col="day", host_col="patient_id",
+                               n_prev=2, missing_mode="exclude")
+```
+
+Past snapshot columns are suffixed (e.g. `F0__t-1`, `age__t-2`); current (t0) columns remain unsuffixed. Samples without a complete window of `n_prev` previous time points can either be discarded (`missing_mode="exclude"`) or retained with NaN-filled gaps (`missing_mode="nan"`).
+
+### Grouping and stratification
+
+To prevent data leakage, set `group_by_column` (e.g. `"host_id"`) so that all samples belonging to the same group end up in the same split. Additionally, `stratify_by` accepts a list of categorical columns (e.g. `["disease_state"]`) to preserve their distribution across the train/test split. When both are used, stratification is performed at the group level and the specified columns must be constant within each group.
+
+### Restrictions and recommendations
+
+- **Identical feature columns across snapshots** — all time points for a host must share the same set of microbial feature columns.
+- **TRAC is incompatible with dynamic snapshotting** — TRAC requires a single compositional snapshot and phylogenetic tree; it is automatically removed from the model search when past snapshots are detected.
+- **`missing_mode="nan"` restricts to XGBoost** — only XGBoost handles NaN values natively, so when NaN-filled snapshots are present, the model search is automatically restricted to XGBoost.
+- **`time_col` must be numeric** — values are interpreted as ordered integers or floats; non-numeric values raise an error.
+
+## Finding the best model configuration with `find_best_model_config`
 The configuration of the optimization is defined in a `json` file. To define a suitable configuration for your use case, please find the description of each variable in `config/run_config.json` here:
 
 | Parameter             | Description                                                                                                                                                                                                                                                                                                                                                |
@@ -38,6 +81,7 @@ The configuration of the optimization is defined in a `json` file. To define a s
 | seed_data             | Seed for data-related random operations.                                                                                                                                                                                                                                                                                                                   |
 | seed_model            | Seed for model-related random operations.                                                                                                                                                                                                                                                                                                                  |                                                                                                                                                                                                                                                                                                      |
 | tracking_uri          | Which platform to use for experiment tracking either "wandb" for WandB or "mlruns" for MLflow. See  [model tracking](#model-tracking) for set-up instructions and [model tracking evaluation](#model-tracking-evaluation) for tips on how to evaluate the training procedure in each platform.                                                                                                                                                                                             |
+| stratify_by           | Optional: List of column names to use for stratified splitting. When grouping is used, stratification is performed at the group level and the specified columns must be constant within each group. Example: `["disease_state"]`.                                                                                                                                                                                       |
 | model_hyperparameters | Optional: For each model type the range of model and feature engineering hyperparameters to consider can be defined here. Additionally, for each model type the start hyperparameters to try first can be defined. Note: in case this key is not provided, the default ranges are used as defined in `model_space/static_searchspace.py`. You can find an example of a configuration file with all hyperparameters defined in `ritme/config/run_config_whparams.json` and the start hyperparameters defined for the "linreg" model. |
 
 If you want to parallelize the training of different model types, we recommend training each model in a separate experiment [1]. If you decide to run several model types in one experiment, be aware that the model types are trained sequentially. So, this will take longer to finish.
@@ -45,6 +89,18 @@ If you want to parallelize the training of different model types, we recommend t
 Once you have trained some models, you can check the progress of the trained models in the tracking software you selected (see sections on [model tracking](#model-tracking) and [model training evaluation](#model-training-evaluation)).
 
 [1] Funfact: One experiment consists of multiple trials.
+
+## Evaluate the best model configuration with `evaluate_tuned_models`
+
+`evaluate_tuned_models` takes the best trained models per model type from `find_best_model_config` and evaluates them on both the full training set and a held-out test set. It returns a DataFrame with performance metrics (RMSE, R², Pearson correlation) per model type and split, along with a figure of true vs. predicted scatter plots.
+
+To prevent data leakage, all feature engineering parameters (feature selection, ALR denominator, enrichment schema, column ordering) are learned exclusively on the training set and reused as-is when predicting on held-out test data.
+
+```python
+metrics_df, fig = evaluate_tuned_models(best_model_dict, exp_config, train, test)
+```
+
+Via the CLI, metrics are saved to `best_metrics.csv` and plots to `best_true_vs_pred.png` in the experiment directory.
 
 ## Model tracking
 In the run configuration file you can choose to track your trials with MLflow (`tracking_uri=="mlruns"`) or with WandB (`tracking_uri=="wandb"`).

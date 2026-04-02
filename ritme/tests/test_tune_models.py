@@ -369,8 +369,10 @@ class TestMainTuneModels(unittest.TestCase):
         # create dataframe with snapshot columns
         self.train_val = pd.DataFrame(
             {
-                "F1__t0": [0.1, 0.2],
-                "F2__t0": [0.3, 0.4],
+                "F1": [0.1, 0.2],
+                "F2": [0.3, 0.4],
+                "F1__t-1": [0.05, 0.15],
+                "F2__t-1": [0.25, 0.35],
                 "meta": [1, 2],
                 self.target: [0.5, 0.6],
                 self.host_id: ["a", "b"],
@@ -403,8 +405,10 @@ class TestMainTuneModels(unittest.TestCase):
         # dataframe with NaN in snapshot features
         self.train_val = pd.DataFrame(
             {
-                "F1__t0": [0.1, np.nan],
-                "F2__t0": [0.3, 0.4],
+                "F1": [0.1, 0.2],
+                "F2": [0.3, 0.4],
+                "F1__t-1": [np.nan, 0.15],
+                "F2__t-1": [0.25, np.nan],
                 "meta": [1, 2],
                 self.target: [0.5, 0.6],
                 self.host_id: ["a", "b"],

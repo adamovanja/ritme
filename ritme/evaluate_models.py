@@ -4,6 +4,7 @@ import pickle
 from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import torch
 import xgboost as xgb
@@ -15,7 +16,7 @@ from ritme.feature_space.aggregate_features import aggregate_microbial_features
 from ritme.feature_space.enrich_features import enrich_features
 from ritme.feature_space.select_features import select_microbial_features
 from ritme.feature_space.transform_features import transform_microbial_features
-from ritme.feature_space.utils import _extract_time_labels
+from ritme.feature_space.utils import _add_suffix, _extract_time_labels, _slice_snapshot
 from ritme.model_space.static_trainables import NeuralNet
 
 plt.rcParams.update({"font.family": "DejaVu Sans"})
@@ -129,17 +130,13 @@ class TunedModel:
         # (set on train, reused on test)
         self.final_feature_cols: List[str] = []
 
-    def _slice_snapshot(self, ft_all: pd.DataFrame, time_label: str) -> pd.DataFrame:
-        suffix = f"__{time_label}"
-        cols = [c for c in ft_all.columns if c.endswith(suffix)]
-        snap = ft_all[cols].copy()
-        snap.columns = [c[: -len(suffix)] for c in cols]
-        return snap
+    @staticmethod
+    def _slice_snapshot(ft_all: pd.DataFrame, time_label: str) -> pd.DataFrame:
+        return _slice_snapshot(ft_all, time_label)
 
-    def _add_suffix(self, df: pd.DataFrame, time_label: str) -> pd.DataFrame:
-        df_s = df.copy()
-        df_s.columns = [f"{c}__{time_label}" for c in df_s.columns]
-        return df_s
+    @staticmethod
+    def _add_suffix(df: pd.DataFrame, time_label: str) -> pd.DataFrame:
+        return _add_suffix(df, time_label)
 
     def aggregate(self, data: pd.DataFrame) -> pd.DataFrame:
         """Aggregate a single snapshot (unsuffixed) microbial feature table."""
@@ -232,10 +229,7 @@ class TunedModel:
             else self.time_labels
         )
         if not self.time_labels:
-            raise ValueError(
-                "No time labels detected in microbial feature columns. "
-                "Ensure columns are suffixed."
-            )
+            raise ValueError("No time labels detected in microbial feature columns.")
 
         accum = pd.DataFrame(index=data.index)
         micro_ft_transf_all: list[str] = []
@@ -251,8 +245,20 @@ class TunedModel:
             snap_ft_unsuff = snap_data[snap_micro_ft_raw].copy()
             snap_md_unsuff = snap_data.drop(columns=snap_micro_ft_raw)
 
-            # 2. Aggregate & 3. Select (unsuffixed)
-            snap_agg_unsuff = self.aggregate(snap_ft_unsuff)
+            # Separate NaN rows (missing past observations) from real data
+            nan_mask = snap_ft_unsuff.isna().all(axis=1)
+            has_nan_rows = nan_mask.any()
+            if has_nan_rows:
+                real_ft = snap_ft_unsuff[~nan_mask]
+                real_data = snap_data[~nan_mask]
+                real_md = snap_md_unsuff[~nan_mask]
+            else:
+                real_ft = snap_ft_unsuff
+                real_data = snap_data
+                real_md = snap_md_unsuff
+
+            # 2. Aggregate & 3. Select (unsuffixed, real rows only)
+            snap_agg_unsuff = self.aggregate(real_ft)
             snap_sel_unsuff = self.select(snap_agg_unsuff, tlabel, split)
 
             # 4. Transform (unsuffixed output)
@@ -260,22 +266,35 @@ class TunedModel:
 
             # 6. Enrich (unsuffixed) using raw + transformed + metadata
             other_ft_ls_unsuff, enriched = self.enrich(
-                raw=snap_data,
-                microbial_ft=snap_ft_unsuff.columns.tolist(),
-                transformed=snap_transf_unsuff.join(snap_md_unsuff),
+                raw=real_data,
+                microbial_ft=real_ft.columns.tolist(),
+                transformed=snap_transf_unsuff.join(real_md),
                 config=self.data_config,
                 time_label=tlabel,
                 split=split,
             )
 
-            # 7. Suffix columns once: transformed + enrichment (+ metadata) all at once
+            # Reintroduce NaN rows
+            if has_nan_rows:
+                nan_placeholder = pd.DataFrame(
+                    np.nan,
+                    index=snap_data.index[nan_mask],
+                    columns=enriched.columns,
+                )
+                enriched = pd.concat([enriched, nan_placeholder]).loc[snap_data.index]
+
+            # 7. Suffix columns once (t0 stays unsuffixed)
             enriched_suff = self._add_suffix(enriched, tlabel)
 
-            # Track transformed microbial (suffixed) and enrichment features
-            micro_ft_transf_all.extend(
-                [f"{c}__{tlabel}" for c in snap_transf_unsuff.columns]
-            )
-            other_ft_ls_all.extend([f"{c}__{tlabel}" for c in other_ft_ls_unsuff])
+            # Track transformed microbial and enrichment features
+            if tlabel == "t0":
+                micro_ft_transf_all.extend(snap_transf_unsuff.columns.tolist())
+                other_ft_ls_all.extend(other_ft_ls_unsuff)
+            else:
+                micro_ft_transf_all.extend(
+                    [f"{c}__{tlabel}" for c in snap_transf_unsuff.columns]
+                )
+                other_ft_ls_all.extend([f"{c}__{tlabel}" for c in other_ft_ls_unsuff])
 
             # 8. Accumulate
             accum = accum.join(enriched_suff, how="left")
@@ -284,7 +303,7 @@ class TunedModel:
         if split == "train" and not self.final_feature_cols:
             self.final_feature_cols = final_cols
         use_cols = self.final_feature_cols if split != "train" else final_cols
-        X = accum.reindex(columns=use_cols, fill_value=0).astype(float)
+        X = accum.reindex(columns=use_cols, fill_value=0).fillna(np.nan).astype(float)
 
         if isinstance(self.model, NeuralNet):
             self.model.eval()

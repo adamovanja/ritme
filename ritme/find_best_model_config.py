@@ -13,6 +13,7 @@ from ritme.evaluate_models import (
     retrieve_n_init_best_models,
     save_best_models,
 )
+from ritme.feature_space.utils import _PAST_SUFFIX_RE
 from ritme.tune_models import run_all_trials
 
 
@@ -59,14 +60,10 @@ def _process_taxonomy(tax: pd.DataFrame, ft: pd.DataFrame) -> pd.DataFrame:
     # rename taxonomy to match "F" feature names
     df_tax.index = df_tax.index.map(lambda x: "F" + str(x))
 
-    # Only reference the t0 snapshot feature set - since they must be identical
-    # to other snapshots if present
+    # Reference the t0 snapshot feature set (unsuffixed columns)
     ft_cols = ft.columns.tolist()
-    ft_t0 = [c for c in ft_cols if c.endswith("__t0")]  # t0 snapshot columns
-
-    # strip time suffix if present
-    ft_cols_t0 = [c.split("__", 1)[0] for c in ft_t0]
-    df_tax_f = df_tax[df_tax.index.isin(ft_cols_t0)]
+    ft_t0 = [c for c in ft_cols if not _PAST_SUFFIX_RE.search(c)]
+    df_tax_f = df_tax[df_tax.index.isin(ft_t0)]
 
     if df_tax_f.shape[0] == 0:
         raise ValueError("Taxonomy data does not match with feature table.")
@@ -85,15 +82,13 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
     """Process phylogeny"""
     # filter tree by feature table: this prunes a phylogenetic tree to match
     # the input ids
-    # Remove the first letter of each column name: "F" to match phylotree
     ft_i = ft.copy()
 
-    # Only reference the t0 snapshot feature set - since they must be identical
-    # to other snapshots if present
-    t0_cols = ft_i.columns[ft_i.columns.str.endswith("__t0")]
+    # Reference the t0 snapshot feature set (unsuffixed columns)
+    t0_cols = [c for c in ft_i.columns if not _PAST_SUFFIX_RE.search(c)]
     ft_i = ft_i[t0_cols]
-    # remove time suffix and then strip the 'F' prefix
-    ft_i.columns = [col.split("__", 1)[0][1:] for col in ft_i.columns]
+    # strip the 'F' prefix to match phylotree leaf names
+    ft_i.columns = [col[1:] for col in ft_i.columns]
     art_ft_i = q2.Artifact.import_data("FeatureTable[RelativeFrequency]", ft_i)
 
     art_phylo = q2.Artifact.import_data("Phylogeny[Rooted]", phylo_tree)

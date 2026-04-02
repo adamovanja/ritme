@@ -4,6 +4,7 @@ import unittest
 from io import StringIO
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import qiime2 as q2
 from pandas.testing import assert_frame_equal
@@ -303,7 +304,7 @@ class TestMainFunctions(unittest.TestCase):
         train, test = split_train_test(self.md, self.ft_rel, "host_id", 0.5, 123)
         train_exp = self.data_rel.iloc[[0, 2], :].copy()
         test_exp = self.data_rel.iloc[[1, 3], :].copy()
-        # add F prefix
+        # add F prefix to feature columns (split_train_test renames them)
         train_exp.columns = [
             f"F{col}" if col not in self.md.columns else col
             for col in train_exp.columns
@@ -311,9 +312,7 @@ class TestMainFunctions(unittest.TestCase):
         test_exp.columns = [
             f"F{col}" if col not in self.md.columns else col for col in test_exp.columns
         ]
-        # add __t0 suffix
-        train_exp.columns = [f"{col}__t0" for col in train_exp.columns]
-        test_exp.columns = [f"{col}__t0" for col in test_exp.columns]
+        # Static data has no time suffixes
         assert_frame_equal(train, train_exp)
         assert_frame_equal(test, test_exp)
 
@@ -349,7 +348,7 @@ class TestMainFunctions(unittest.TestCase):
             )
 
     def test_split_train_test_train_size_zero(self):
-        """train_size==0.0 => empty train, full test with suffix/prefix handling."""
+        """train_size==0.0 => empty train, full test with prefix handling."""
         train, test = split_train_test(self.md, self.ft_rel, "host_id", 0.0, 321)
         # Train empty
         self.assertEqual(train.shape[0], 0)
@@ -360,7 +359,7 @@ class TestMainFunctions(unittest.TestCase):
         test_exp.columns = [
             f"F{col}" if col in self.ft_rel.columns else col for col in test_exp.columns
         ]
-        test_exp.columns = [f"{c}__t0" for c in test_exp.columns]
+        # Static data has no time suffixes
         assert_frame_equal(test, test_exp)
         # Columns of train should match columns of test
         self.assertListEqual(train.columns.tolist(), test.columns.tolist())
@@ -375,10 +374,9 @@ class TestMainFunctions(unittest.TestCase):
             seed=999,
             stratify_by=["covariate"],
         )
-        cov_col_train = [c for c in train.columns if c.startswith("covariate")][0]
-        cov_col_test = [c for c in test.columns if c.startswith("covariate")][0]
-        cov_train = set(train[cov_col_train])
-        cov_test = set(test[cov_col_test])
+        # Static data has no time suffixes - covariate column is just "covariate"
+        cov_train = set(train["covariate"])
+        cov_test = set(test["covariate"])
         self.assertEqual(cov_train, {0, 1})
         self.assertEqual(cov_test, {0, 1})
 
@@ -430,17 +428,17 @@ class TestSplitTrainTestTemporalSnapshots(unittest.TestCase):
         )
         # Only one t0 per host (time=3), so rows == number of hosts
         self.assertEqual(train_val.shape[0] + test.shape[0], 2)
-        # Host grouping respected (no overlap)
-        overlap = set(train_val["host_id__t0"]).intersection(set(test["host_id__t0"]))
+        # Host grouping respected (no overlap) - t0 columns are unsuffixed
+        overlap = set(train_val["host_id"]).intersection(set(test["host_id"]))
         self.assertEqual(len(overlap), 0)
-        # Feature columns have suffixes for t0 and t-1
+        # Feature columns: t0 unsuffixed, t-1 suffixed
         ft_cols = [c for c in train_val.columns if c.startswith("F")]
-        self.assertTrue(any(c.endswith("__t0") for c in ft_cols))
+        self.assertTrue(any(not c.endswith("__t-1") for c in ft_cols))  # t0 unsuffixed
         self.assertTrue(any(c.endswith("__t-1") for c in ft_cols))
-        # Metadata columns suffixed
-        self.assertIn("host_id__t0", train_val.columns)
-        self.assertIn("supertarget__t0", train_val.columns)
-        self.assertIn("covariate__t0", train_val.columns)
+        # t0 metadata columns are unsuffixed
+        self.assertIn("host_id", train_val.columns)
+        self.assertIn("supertarget", train_val.columns)
+        self.assertIn("covariate", train_val.columns)
 
     def test_temporal_nan_mode(self):
         # Add a host with a single time (will yield NaNs for t-1)
@@ -473,47 +471,30 @@ class TestSplitTrainTestTemporalSnapshots(unittest.TestCase):
         )
 
         # Build expected full merged dataframe (then split by indices)
+        # t0 columns are unsuffixed; only past snapshots (t-1) get suffixes
         idx = ["H1_T2", "H1_T3", "H2_T5"]
-        cols = [
-            "host_id__t0",
-            "time__t0",
-            "supertarget__t0",
-            "covariate__t0",
-            "host_id__t-1",
-            "time__t-1",
-            "supertarget__t-1",
-            "covariate__t-1",
-            "F0__t0",
-            "F1__t0",
-            "F0__t-1",
-            "F1__t-1",
-        ]
 
-        exp = pd.DataFrame(index=idx, columns=cols)
-        # t0 metadata
-        exp.loc[:, "host_id__t0"] = ["h1", "h1", "h2"]
-        exp.loc[:, "time__t0"] = [2, 3, 5]
-        exp.loc[:, "supertarget__t0"] = [1, 2, 9]
-        exp.loc[:, "covariate__t0"] = [0, 1, 1]
-        # t-1 metadata (NaNs for missing, host_id/time filled)
-        exp.loc[:, "host_id__t-1"] = ["h1", "h1", "h2"]
-        exp.loc[:, "time__t-1"] = [1, 2, 4]
-        exp.loc[:, "supertarget__t-1"] = [pd.NA, 1, pd.NA]
-        exp.loc[:, "covariate__t-1"] = [pd.NA, 0, pd.NA]
-        # t0 features
-        exp.loc[:, "F0__t0"] = [0.6, 0.7, 0.2]
-        exp.loc[:, "F1__t0"] = [0.4, 0.3, 0.8]
-        # t-1 features
-        exp.loc[:, "F0__t-1"] = [pd.NA, 0.6, pd.NA]
-        exp.loc[:, "F1__t-1"] = [pd.NA, 0.4, pd.NA]
-
-        # Ensure numeric dtypes where appropriate
-        for c in ["time__t0", "supertarget__t0", "covariate__t0", "time__t-1"]:
+        exp = pd.DataFrame(
+            {
+                "host_id": ["h1", "h1", "h2"],
+                "time": [2, 3, 5],
+                "supertarget": [1, 2, 9],
+                "covariate": [0, 1, 1],
+                "host_id__t-1": ["h1", "h1", "h2"],
+                "time__t-1": [1, 2, 4],
+                "supertarget__t-1": [np.nan, 1.0, np.nan],
+                "covariate__t-1": [np.nan, 0.0, np.nan],
+                "F0": [0.6, 0.7, 0.2],
+                "F1": [0.4, 0.3, 0.8],
+                "F0__t-1": [np.nan, 0.6, np.nan],
+                "F1__t-1": [np.nan, 0.4, np.nan],
+            },
+            index=idx,
+        )
+        for c in ["time", "supertarget", "covariate", "time__t-1"]:
             exp[c] = exp[c].astype(int)
-        for c in ["F0__t0", "F1__t0"]:
-            exp[c] = exp[c].astype(float)
 
-        # Expected split for seed=42 and grouping by host_id__t0:
+        # Expected split for seed=42 and grouping by host_id:
         # train -> h1 rows (H1_T2, H1_T3); test -> h2 row (H2_T5)
         exp_train_val = exp.loc[["H1_T2", "H1_T3"]]
         exp_test = exp.loc[["H2_T5"]]

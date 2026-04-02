@@ -23,6 +23,7 @@ from ray.tune import ResultGrid
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from ray.tune.search.optuna import OptunaSearch
 
+from ritme.feature_space.utils import _PAST_SUFFIX_RE
 from ritme.model_space import static_searchspace as ss
 from ritme.model_space import static_trainables as st
 
@@ -375,10 +376,13 @@ def run_all_trials(
 
     # First apply snapshot-related constraints for models
     model_types = model_types.copy()
-    has_snapshots = any("__t" in col for col in train_val.columns)
-    snap_ft_cols = [c for c in train_val.columns if c.startswith("F") and "__t" in c]
+
+    has_snapshots = any(_PAST_SUFFIX_RE.search(col) for col in train_val.columns)
+    all_micro = [c for c in train_val.columns if c.startswith("F")]
     has_snapshot_nans = (
-        pd.isna(train_val[snap_ft_cols]).values.any() if snap_ft_cols else False
+        (pd.isna(train_val[all_micro]).values.any() if all_micro else False)
+        if has_snapshots
+        else False
     )
     if has_snapshots and has_snapshot_nans:
         # Restrict to xgb only when NaNs in snapshot feature tables

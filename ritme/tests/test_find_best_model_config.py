@@ -51,12 +51,11 @@ class TestFindBestModelConfig(unittest.TestCase):
             index_col=0,
         )
         self.ft = ft_w_md.drop(columns=["md2"])
-        # single-snapshot convention: add __t0 suffix to microbial and metadata
+        # single-snapshot convention: t0 columns have no suffix
         self.ft_t0 = self.ft.copy()
-        self.ft_t0.columns = [c + "__t0" for c in self.ft.columns]
         self.train_val = self.ft_t0.copy()
-        self.train_val["target_column__t0"] = [1, 2, 3, 4, 4, 4, 0, 6, 5, 8]
-        self.train_val["stratify_column__t0"] = [
+        self.train_val["target_column"] = [1, 2, 3, 4, 4, 4, 0, 6, 5, 8]
+        self.train_val["stratify_column"] = [
             "a",
             "a",
             "a",
@@ -163,11 +162,10 @@ class TestFindBestModelConfig(unittest.TestCase):
 
     def test_process_taxonomy_with_time_suffixes(self):
         # feature table with temporal suffixes (duplicate base features over time)
-        # duplicate columns to simulate second snapshot t-1
+        # t0 columns have no suffix, t-1 columns get __t-1 suffix
+        ft_time_t0 = self.ft.copy()
         ft_time_t1 = self.ft.copy()
         ft_time_t1.columns = [c + "__t-1" for c in ft_time_t1.columns]
-        ft_time_t0 = self.ft.copy()
-        ft_time_t0.columns = [c + "__t0" for c in ft_time_t0.columns]
         ft_merged = pd.concat([ft_time_t0, ft_time_t1], axis=1)
 
         processed_tax = _process_taxonomy(self.tax, ft_merged)
@@ -175,9 +173,8 @@ class TestFindBestModelConfig(unittest.TestCase):
         assert_series_equal(processed_tax["Taxon"], self.tax_renamed["Taxon"])
 
     def test_process_phylogeny_with_time_suffixes(self):
-        # feature table with time suffixes
+        # feature table with time suffixes: t0 unsuffixed, t-1 with __t-1
         ft_time_t0 = self.ft.copy()
-        ft_time_t0.columns = [c + "__t0" for c in ft_time_t0.columns]
         ft_time_t1 = self.ft.copy()
         ft_time_t1.columns = [c + "__t-1" for c in ft_time_t1.columns]
         ft_merged = pd.concat([ft_time_t0, ft_time_t1], axis=1)
@@ -267,7 +264,7 @@ class TestFindBestModelConfig(unittest.TestCase):
         self, mock_retrieve_n_init_best_models, mock_run_all_trials
     ):
         config_w_strat = self.config.copy()
-        config_w_strat["stratify_by"] = ["stratify_column__t0"]
+        config_w_strat["stratify_by"] = ["stratify_column"]
         mock_run_all_trials.return_value = {"model1": "result1", "model2": "result2"}
         mock_retrieve_n_init_best_models.return_value = {
             "model1": "best_model1",
@@ -279,7 +276,7 @@ class TestFindBestModelConfig(unittest.TestCase):
                 config_w_strat, self.train_val, self.tax, tree_phylo, temp_dir
             )
             args, _ = mock_run_all_trials.call_args
-            self.assertEqual(args[3], ["stratify_column__t0"])  # stratify_by
+            self.assertEqual(args[3], ["stratify_column"])  # stratify_by
             mock_run_all_trials.assert_called_once()
             self.assertEqual(
                 best_model_dic,

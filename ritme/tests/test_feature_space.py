@@ -93,33 +93,30 @@ class TestUtils(unittest.TestCase):
 
     def test_extract_time_labels_basic(self):
         cols = [
-            "F1__t0",
+            "F1",  # t0 unsuffixed
             "F2__t-2",
             "F3__t-1",
-            "age__t0",
+            "age",  # metadata, not prefixed with F
             "age__t-1",
             "misc",
         ]
-        self.assertEqual(
-            _extract_time_labels(cols, "F"), ["t0", "t-1", "t-2"]
-        )  # sorted
+        self.assertEqual(_extract_time_labels(cols, "F"), ["t0", "t-1", "t-2"])
 
     def test_extract_time_labels_custom_prefix(self):
-        cols = ["G1__t0", "G2__t-3", "F1__t-1"]
-        # Using prefix 'G' should ignore 'F' columns
-        self.assertEqual(_extract_time_labels(cols, "G"), ["t0", "t-3"])  # sorted
+        cols = ["G1", "G2__t-3", "F1__t-1"]
+        self.assertEqual(_extract_time_labels(cols, "G"), ["t0", "t-3"])
 
     def test_extract_time_labels_no_suffix(self):
         cols = ["F1", "F2", "meta"]
-        # With our new convention, no suffix means no time labels detected
-        self.assertEqual(_extract_time_labels(cols, "F"), [])
+        # Unsuffixed F columns represent t0
+        self.assertEqual(_extract_time_labels(cols, "F"), ["t0"])
 
     def test_extract_time_labels_malformed(self):
-        cols = ["F1__t-x", "F2__t-2", "F3__t1", "F4__t0"]
-        # Expect proper ordering: t0, t-2, then malformed/other
+        cols = ["F1__t-x", "F2__t-2", "F3__t1", "F4"]
+        # F4 is unsuffixed -> t0, F2__t-2 -> t-2, plus malformed labels captured
         labels = _extract_time_labels(cols, "F")
-        self.assertEqual(labels[:2], ["t0", "t-2"])  # well-formed first
-        self.assertCountEqual(labels[2:], ["t-x", "t1"])  # remaining labels captured
+        self.assertEqual(labels[:2], ["t0", "t-2"])
+        self.assertCountEqual(labels[2:], ["t-x", "t1"])
 
 
 class TestTransformMicrobialFeatures(unittest.TestCase):
@@ -733,24 +730,22 @@ class TestProcessTrain(unittest.TestCase):
             "data_enrich": None,
             "data_enrich_with": None,
         }
-        # Single-snapshot (t0) training table with suffixed columns
+        # Single-snapshot (t0) training table with unsuffixed columns
         self.train_val = pd.DataFrame(
             {
-                "host_id__t0": ["c", "b", "c", "a"],
-                "target__t0": [1, 2, 1, 2],
-                "covariate__t0": [0, 1, 0, 1],
-                "F0__t0": [0.12, 0.23, 0.33, 0.44],
-                "F1__t0": [0.1, 0.2, 0.3, 0.4],
+                "host_id": ["c", "b", "c", "a"],
+                "target": [1, 2, 1, 2],
+                "covariate": [0, 1, 0, 1],
+                "F0": [0.12, 0.23, 0.33, 0.44],
+                "F1": [0.1, 0.2, 0.3, 0.4],
             },
             index=["SR1", "SR2", "SR3", "SR4"],
         )
-        self.target = "target__t0"
-        # Pass suffixed host_id to match new process_train behavior
-        # (no internal resolution of unsuffixed name).
-        self.host_id = "host_id__t0"
+        self.target = "target"
+        self.host_id = "host_id"
         self.seed_data = 0
         self.tax = pd.DataFrame()
-        self.strat_cols = ["covariate__t0"]
+        self.strat_cols = ["covariate"]
 
     def _assert_called_with_df(self, mock_method, *expected_args):
         actual_args = mock_method.call_args[0]
@@ -773,12 +768,11 @@ class TestProcessTrain(unittest.TestCase):
         mock_aggregate_features,
         mock_enrich_features,
     ):
-        # With suffixed input, snapshot slice strips suffix.
-        # Unsuffixed microbial features are passed to the pipeline.
+        # With unsuffixed t0 input, snapshot slice returns columns as-is.
         raw_unsuffixed = pd.DataFrame(
             {
-                "F0": self.train_val["F0__t0"].values,
-                "F1": self.train_val["F1__t0"].values,
+                "F0": self.train_val["F0"].values,
+                "F1": self.train_val["F1"].values,
             },
             index=self.train_val.index,
         )
@@ -788,24 +782,17 @@ class TestProcessTrain(unittest.TestCase):
 
         # Build expected unsuffixed snapshot for enrichment call
         snap_all_unsuff = self.train_val.copy()
-        snap_all_unsuff.columns = [
-            col.replace("__t0", "") for col in snap_all_unsuff.columns
-        ]
 
         snap_md_unsuff = snap_all_unsuff.drop(
             columns=["F0", "F1"]
         )  # host_id, target & covariate
         transf_plus_md_unsuff = raw_unsuffixed.join(snap_md_unsuff)
 
-        # Enrichment now returns UNSUFFIXED snapshot; process_train will suffix once
+        # Enrichment returns unsuffixed snapshot; _add_suffix("t0") is a no-op
         enriched_unsuff = self.train_val.copy()
-        enriched_unsuff.columns = [
-            col.replace("__t0", "") for col in enriched_unsuff.columns
-        ]
         mock_enrich_features.return_value = ([], enriched_unsuff)
 
         # After accumulation, split should be called on train_val_accum.
-        # That object contains enriched columns.
         mock_split_data_grouped.return_value = (
             self.train_val.iloc[:2, :],
             self.train_val.iloc[2:, :],
@@ -835,21 +822,21 @@ class TestProcessTrain(unittest.TestCase):
             transf_plus_md_unsuff,
             self.config,
         )
-        # Expect split called with suffixed enriched snapshot (single suffix)
+        # Expect split called with unsuffixed enriched snapshot (t0 stays unsuffixed)
         enriched_suff_exp = pd.DataFrame(
             {
-                "host_id__t0": self.train_val["host_id__t0"].values,
-                "target__t0": self.train_val["target__t0"].values,
-                "covariate__t0": self.train_val["covariate__t0"].values,
-                "F0__t0": self.train_val["F0__t0"].values,
-                "F1__t0": self.train_val["F1__t0"].values,
+                "host_id": self.train_val["host_id"].values,
+                "target": self.train_val["target"].values,
+                "covariate": self.train_val["covariate"].values,
+                "F0": self.train_val["F0"].values,
+                "F1": self.train_val["F1"].values,
             },
             index=self.train_val.index,
         )
         self._assert_called_with_df(
             mock_split_data_grouped,
             enriched_suff_exp,
-            "host_id__t0",
+            "host_id",
             0.8,
             0,
         )
@@ -871,8 +858,8 @@ class TestProcessTrain(unittest.TestCase):
         # is selected
         raw_unsuffixed = pd.DataFrame(
             {
-                "F0": self.train_val["F0__t0"].values,
-                "F1": self.train_val["F1__t0"].values,
+                "F0": self.train_val["F0"].values,
+                "F1": self.train_val["F1"].values,
             },
             index=self.train_val.index,
         )
@@ -883,13 +870,13 @@ class TestProcessTrain(unittest.TestCase):
         mock_transform_features.return_value = raw_unsuffixed[["F0"]]
         enriched_snapshot = self.train_val[
             [
-                "F0__t0",
+                "F0",
             ]
         ].copy()
         mock_enrich_features.return_value = ([], enriched_snapshot)
         mock_split_data_grouped.return_value = (
-            self.train_val.loc[self.train_val.index[:2], ["F0__t0", "target__t0"]],
-            self.train_val.loc[self.train_val.index[2:], ["F0__t0", "target__t0"]],
+            self.train_val.loc[self.train_val.index[:2], ["F0", "target"]],
+            self.train_val.loc[self.train_val.index[2:], ["F0", "target"]],
         )
 
         X_train, y_train, X_val, y_val = process_train(
@@ -905,15 +892,15 @@ class TestProcessTrain(unittest.TestCase):
         mock_transform_features.assert_not_called()
 
     def test_process_train_alr_multi_snapshot(self):
-        # Build multi-snapshot dataset (t0 and t-1) with 3 microbial features
+        # Build multi-snapshot dataset (t0 unsuffixed, t-1 suffixed)
         df = pd.DataFrame(
             {
-                "host_id__t0": ["a", "b", "c", "a"],
+                "host_id": ["a", "b", "c", "a"],
                 "host_id__t-1": ["a", "b", "c", "a"],
-                "target__t0": [1, 0, 1, 0],
-                "F0__t0": [10, 20, 30, 40],
-                "F1__t0": [5, 6, 7, 8],
-                "F2__t0": [1, 2, 3, 4],
+                "target": [1, 0, 1, 0],
+                "F0": [10, 20, 30, 40],
+                "F1": [5, 6, 7, 8],
+                "F2": [1, 2, 3, 4],
                 "F0__t-1": [11, 21, 31, 41],
                 "F1__t-1": [6, 7, 8, 9],
                 "F2__t-1": [2, 3, 4, 5],
@@ -923,7 +910,7 @@ class TestProcessTrain(unittest.TestCase):
         cfg = self.config.copy()
         cfg["data_transform"] = "alr"
         X_train, y_train, X_val, y_val = process_train(
-            cfg, df, "target__t0", "host_id__t0", self.tax, self.seed_data
+            cfg, df, "target", "host_id", self.tax, self.seed_data
         )
         # Expect 2 transformed microbial features per snapshot (3 -> 2 after ALR)
         # Total features: 4
@@ -950,8 +937,8 @@ class TestProcessTrain(unittest.TestCase):
         # Mock stages to keep focus on split invocation
         raw_unsuffixed = pd.DataFrame(
             {
-                "F0": self.train_val["F0__t0"].values,
-                "F1": self.train_val["F1__t0"].values,
+                "F0": self.train_val["F0"].values,
+                "F1": self.train_val["F1"].values,
             },
             index=self.train_val.index,
         )
@@ -974,6 +961,61 @@ class TestProcessTrain(unittest.TestCase):
         )
         _args, _kwargs = mock_split_data_grouped.call_args
         self.assertEqual(_kwargs.get("stratify_by"), self.strat_cols)
+
+    def test_process_train_nan_rows_preserved_in_multi_snapshot(self):
+        """NaN rows in past snapshot should pass through feature engineering
+        and appear as NaN in the output arrays (for XGBoost compatibility)."""
+        df = pd.DataFrame(
+            {
+                "host_id": ["a", "a", "b", "b"],
+                "target": [1, 2, 3, 4],
+                "F0": [0.6, 0.7, 0.2, 0.5],
+                "F1": [0.4, 0.3, 0.8, 0.5],
+                # t-1: second and fourth rows have real data; first and third
+                # are NaN (missing past observations)
+                "host_id__t-1": ["a", "a", "b", "b"],
+                "F0__t-1": [np.nan, 0.6, np.nan, 0.2],
+                "F1__t-1": [np.nan, 0.4, np.nan, 0.8],
+            },
+            index=["S1", "S2", "S3", "S4"],
+        )
+        cfg = self.config.copy()
+        X_train, y_train, X_val, y_val = process_train(
+            cfg, df, "target", "host_id", self.tax, self.seed_data
+        )
+        # Output should contain NaN values from the missing past observations
+        # (XGBoost handles these natively)
+        all_X = np.concatenate([X_train, X_val])
+        self.assertTrue(np.isnan(all_X).any(), "Expected NaN values in output")
+        # Non-NaN values should be finite
+        self.assertTrue(np.isfinite(all_X[~np.isnan(all_X)]).all())
+
+    def test_process_train_clr_with_nan_rows(self):
+        """CLR transform should work with NaN rows in past snapshot by
+        skipping NaN rows during transformation."""
+        df = pd.DataFrame(
+            {
+                "host_id": ["a", "a", "b", "b"],
+                "target": [1, 2, 3, 4],
+                "F0": [0.6, 0.7, 0.2, 0.5],
+                "F1": [0.4, 0.3, 0.8, 0.5],
+                "host_id__t-1": ["a", "a", "b", "b"],
+                "F0__t-1": [np.nan, 0.6, np.nan, 0.2],
+                "F1__t-1": [np.nan, 0.4, np.nan, 0.8],
+            },
+            index=["S1", "S2", "S3", "S4"],
+        )
+        cfg = self.config.copy()
+        cfg["data_transform"] = "clr"
+        # Should not raise (CLR on NaN data would fail without the NaN-row fix)
+        X_train, y_train, X_val, y_val = process_train(
+            cfg, df, "target", "host_id", self.tax, self.seed_data
+        )
+        all_X = np.concatenate([X_train, X_val])
+        # NaN values should still be present for missing past rows
+        self.assertTrue(np.isnan(all_X).any())
+        # Non-NaN values (CLR-transformed) should be finite
+        self.assertTrue(np.isfinite(all_X[~np.isnan(all_X)]).all())
 
 
 class TestProcessTracSpecific(unittest.TestCase):
