@@ -10,7 +10,7 @@ An optimized framework for finding the best feature representation and model cla
 *ritme* is available as a conda package on [anaconda.org](https://anaconda.org/adamova/ritme). To install it run the following command:
 
 ```shell
-conda install -c adamova -c conda-forge -c bioconda -c pytorch python=3.10 ritme
+conda install -c adamova -c conda-forge -c bioconda -c pytorch ritme
 ```
 (If on a Apple Silicon chip, prefix the above installation with `CONDA_SUBDIR=osx-64` and run the following after activating the conda environnment: `conda config --env --set subdir osx-64`.)
 

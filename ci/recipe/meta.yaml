@@ -21,13 +21,13 @@ requirements:
   run:
     - python
     - cmaes
-    - grpcio==1.65.5
+    - grpcio
     - importlib-metadata
     - lightning
     - mlflow
     - nbformat
     - numpy
-    - optuna==4.1.0
+    - optuna
     - packaging
     - pandas
     - pip
@@ -36,11 +36,12 @@ requirements:
     - py-xgboost
     - python-dotenv
     - pytorch
-    - conda-forge::ray-default>=2.40.0
-    - conda-forge::ray-tune>=2.40.0
+    - conda-forge::ray-default
+    - conda-forge::ray-tune
     - scikit-bio
     - scikit-learn
     - scipy
+    - conda-forge::seaborn
     - torchmetrics
     - torchvision
     - typer

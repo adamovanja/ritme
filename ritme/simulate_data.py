@@ -34,7 +34,7 @@ def simulate_feature_table(
     )
 
     # convert sparse matrix to dense matrix
-    dense_matrix = matrix.A
+    dense_matrix = matrix.toarray()
 
     # ensure at least one column has a non-zero feature in all samples
     non_zero_col = np.random.randint(0, n_feat)

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import skbio
 from parameterized import parameterized
-from ray import air, tune
+from ray import tune
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score, root_mean_squared_error
 
@@ -48,7 +48,7 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertAlmostEqual(obs_rmse, 0.2999, places=3)
         self.assertAlmostEqual(obs_r2, 0.6400, places=3)
 
-    @patch("ray.train.get_context")
+    @patch("ray.tune.get_context")
     def test_save_sklearn_model(self, mock_get_context):
         mock_trial_context = MagicMock()
         mock_trial_context.get_trial_id.return_value = "mock_trial_id"
@@ -60,7 +60,7 @@ class TestHelperFunctions(unittest.TestCase):
             self.assertTrue(os.path.exists(result))
 
     @patch("ray.air.session.report")
-    @patch("ray.train.get_context")
+    @patch("ray.tune.get_context")
     def test_report_results_manually(self, mock_get_context, mock_report):
         mock_trial_context = MagicMock()
         mock_trial_context.get_trial_id.return_value = "mock_trial_id"
@@ -74,7 +74,7 @@ class TestHelperFunctions(unittest.TestCase):
             mock_report.assert_called_once()
 
     @patch("ray.air.session.report")
-    @patch("ray.train.get_context")
+    @patch("ray.tune.get_context")
     def test_report_results_manually_trac(self, mock_get_context, mock_report):
         mock_trial_context = MagicMock()
         mock_trial_context.get_trial_id.return_value = "mock_trial_id"
@@ -376,7 +376,7 @@ class TestTrainables(unittest.TestCase):
     @patch("ritme.model_space.static_trainables.load_data")
     @patch("ritme.model_space.static_trainables.NeuralNet")
     @patch("ritme.model_space.static_trainables.Trainer")
-    @patch("ray.train.get_context", return_value=MagicMock())
+    @patch("ray.tune.get_context", return_value=MagicMock())
     def test_train_nn(
         self,
         nn_type,
@@ -544,7 +544,7 @@ class TestTrainableLogging(unittest.TestCase):
                 ),
                 param_space=search_space,
                 tune_config=tune.TuneConfig(metric=metric, mode=mode, num_samples=1),
-                run_config=air.RunConfig(storage_path=tmpdir),
+                run_config=tune.RunConfig(storage_path=tmpdir),
             )
             results = tuner.fit()
             _check_for_errors_in_trials(results)

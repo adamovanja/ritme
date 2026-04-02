@@ -132,7 +132,7 @@ class TestFindBestModelConfig(unittest.TestCase):
 
     def test_process_taxonomy_filter(self):
         tax_more_ft = self.tax.copy()
-        tax_more_ft.loc["7", :] = tax_more_ft.loc["6", :].copy()
+        tax_more_ft.loc[7, :] = tax_more_ft.loc[6, :].copy()
         processed_tax = _process_taxonomy(tax_more_ft, self.ft_t0)
 
         assert_series_equal(processed_tax["Taxon"], self.tax_renamed["Taxon"])

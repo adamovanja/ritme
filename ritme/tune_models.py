@@ -16,7 +16,7 @@ from optuna.samplers import (
     RandomSampler,
     TPESampler,
 )
-from ray import air, init, tune
+from ray import init, tune
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import ResultGrid
@@ -310,12 +310,12 @@ def run_trials(
             resources,
         ),
         # Logging and checkpoint configuration
-        run_config=air.RunConfig(
+        run_config=tune.RunConfig(
             # Complete experiment name with subfolders of trials within
             name=exp_name,
             storage_path=storage_path,
             # Checkpoint: to store best model - is retrieved in evaluate_models.py
-            checkpoint_config=air.CheckpointConfig(
+            checkpoint_config=tune.CheckpointConfig(
                 checkpoint_score_attribute=metric,
                 checkpoint_score_order=mode,
                 num_to_keep=1,
