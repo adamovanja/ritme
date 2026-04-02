@@ -270,7 +270,11 @@ def _extract_run_history(client, metric, trials, model_type):
 
     history = []
     for run_id in model_trials["run_id"].unique():
-        for m in client.get_metric_history(run_id, metric):
+        try:
+            metric_history = client.get_metric_history(run_id, metric)
+        except Exception:
+            continue
+        for m in metric_history:
             history.append(
                 {
                     # "run_id": run_id,
@@ -306,9 +310,10 @@ def plot_metric_history_per_model_type(metric, client, trials):
             trials=trials,
             model_type=model_type,
         )
-        hist_df["time"] = pd.to_datetime(hist_df["timestamp"], unit="ms")
 
         ax = axes[i] if len(all_model_types) > 1 else axes
+
+        hist_df["time"] = pd.to_datetime(hist_df["timestamp"], unit="ms")
 
         sns.lineplot(
             data=hist_df,

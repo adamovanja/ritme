@@ -133,6 +133,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -140,7 +141,13 @@ class TestTrainables(unittest.TestCase):
 
         # assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_scaler_trf.assert_called_once()
         mock_elasticnet.assert_called_once_with(
@@ -187,6 +194,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -195,7 +203,13 @@ class TestTrainables(unittest.TestCase):
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_create_matrix.assert_called_once()
         assert mock_preprocess_taxonomy.call_count == 2
@@ -241,6 +255,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -248,7 +263,13 @@ class TestTrainables(unittest.TestCase):
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_rf.assert_called_once_with(
             n_estimators=config["n_estimators"],
@@ -317,6 +338,7 @@ class TestTrainables(unittest.TestCase):
             self.train_val,
             self.target,
             self.host_id,
+            None,
             self.seed_data,
             self.seed_model,
             self.tax,
@@ -324,7 +346,13 @@ class TestTrainables(unittest.TestCase):
 
         # Assert
         mock_process_train.assert_called_once_with(
-            config, self.train_val, self.target, self.host_id, self.tax, self.seed_data
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            self.tax,
+            self.seed_data,
+            stratify_by=None,
         )
         mock_dmatrix.assert_has_calls(
             [
@@ -404,13 +432,20 @@ class TestTrainables(unittest.TestCase):
             self.tax,
             seed_data,
             seed_model,
+            None,
             nn_type=nn_type,
         )
 
         # Assertions to verify the expected behavior
         mock_seed_everything.assert_called_once_with(seed_model, workers=True)
         mock_process_train.assert_called_once_with(
-            config, train_val, target, host_id, self.tax, seed_data
+            config,
+            train_val,
+            target,
+            host_id,
+            self.tax,
+            seed_data,
+            stratify_by=None,
         )
         mock_load_data.assert_called()
         mock_neural_net.assert_called_once_with(
@@ -503,6 +538,7 @@ class TestTrainableLogging(unittest.TestCase):
                     host_id=self.host_id,
                     seed_data=self.seed_data,
                     seed_model=self.seed_model,
+                    stratify_by=None,
                     tax=self.tax,
                     tree_phylo=self.tree_phylo,
                 ),
