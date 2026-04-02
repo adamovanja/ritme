@@ -59,7 +59,7 @@ class TestHelperFunctions(unittest.TestCase):
             result = st._save_sklearn_model(self.model)
             self.assertTrue(os.path.exists(result))
 
-    @patch("ray.air.session.report")
+    @patch("ray.tune.report")
     @patch("ray.tune.get_context")
     def test_report_results_manually(self, mock_get_context, mock_report):
         mock_trial_context = MagicMock()
@@ -73,7 +73,7 @@ class TestHelperFunctions(unittest.TestCase):
             )
             mock_report.assert_called_once()
 
-    @patch("ray.air.session.report")
+    @patch("ray.tune.report")
     @patch("ray.tune.get_context")
     def test_report_results_manually_trac(self, mock_get_context, mock_report):
         mock_trial_context = MagicMock()

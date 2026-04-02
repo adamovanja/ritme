@@ -23,6 +23,7 @@ requirements:
     - cmaes
     - grpcio
     - importlib-metadata
+    - conda-forge::ipywidgets
     - lightning
     - mlflow
     - nbformat

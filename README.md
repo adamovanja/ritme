@@ -137,8 +137,7 @@ We provide example templates to help you evaluate your *ritme* models for both s
 When you enable `"fully_reproducible": true` in your experiment configuration, all runs on identical hardware will produce fully reproducible results, albeit with a potential impact on efficiency and performance. This guarantee becomes particularly relevant when executing a large number of trials in parallel. (For small-scale experiments — e.g. with 2 trials — you will often observe identical results even with `"fully_reproducible": false`.)
 
 ## For QIIME2 users
-*ritme* accepts plain files as inputs (`.tsv` for feature tables and taxonomy, `.nwk` for phylogenetic trees). If your data is stored as QIIME2 artifacts (`.qza`), you can extract the underlying files by unzipping the artifact and locating the data file inside:
-
+*ritme* accepts plain files as inputs (`.tsv` for feature tables and taxonomy, `.nwk` for phylogenetic trees). If your data is stored as QIIME2 artifacts (`.qza`), you can extract the underlying files by unzipping the artifact and locating the data file inside, e.g. for a Q2 FeatureTable Artifact:
 ```shell
 unzip feature_table.qza -d feature_table_extracted
 # the data file is at: feature_table_extracted/*/data/*
@@ -149,6 +148,7 @@ Alternatively, you can export QIIME2 artifacts using the QIIME2 CLI:
 ```shell
 qiime tools export --input-path feature_table.qza --output-path exported/
 ```
+For further examples on how to extract your files from the Taxonomy and Phylogeny Artifacts have a look at [`convert_qiime2_artifacts.sh`](experiments/scripts/convert_qiime2_artifacts.sh).
 
 ## Citation
 If you use *ritme* in your research, please cite it using:

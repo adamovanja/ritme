@@ -19,7 +19,6 @@ from coral_pytorch.losses import corn_loss
 from lightning import LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import EarlyStopping
 from ray import tune
-from ray.air import session
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
@@ -105,7 +104,7 @@ def _report_results_manually(
     rmse_train, r2_train = _predict_rmse_r2(model, X_train, y_train)
     rmse_val, r2_val = _predict_rmse_r2(model, X_val, y_val)
 
-    session.report(
+    tune.report(
         metrics={
             "rmse_val": rmse_val,
             "rmse_train": rmse_train,
@@ -199,7 +198,7 @@ def _report_results_manually_trac(
 
     # taxonomy
     _save_taxonomy(tax)
-    session.report(
+    tune.report(
         metrics={
             "rmse_val": rmse_val,
             "rmse_train": rmse_train,
