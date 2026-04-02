@@ -1,35 +1,13 @@
 #!/bin/bash
 
-# fetch data
-if [[ ! -f data/movpic_metadata.tsv ]]; then
-    curl -L -o data/movpic_metadata.tsv \
-    "https://data.qiime2.org/2024.10/tutorials/moving-pictures/sample_metadata.tsv"
-fi
-
+# fetch and convert data
+scripts/fetch_moving_pictures_data.sh
 if [[ ! -f data/movpic_table.tsv ]]; then
-  curl -L -o data/movpic_table.qza \
-    "https://docs.qiime2.org/2024.10/data/tutorials/moving-pictures/table.qza"
-  unzip -o data/movpic_table.qza -d data/movpic_table_extracted
-  cp data/movpic_table_extracted/*/data/feature-table.biom data/
-  biom convert -i data/feature-table.biom -o data/movpic_table.tsv --to-tsv
-  tail -n +2 data/movpic_table.tsv > data/movpic_table_clean.tsv
-  mv data/movpic_table_clean.tsv data/movpic_table.tsv
+  scripts/convert_qiime2_artifacts.sh data/movpic_table.qza \
+    --metadata data/movpic_metadata.tsv \
+    --taxonomy data/movpic_taxonomy.qza \
+    --tree data/movpic_tree.qza
 fi
-
-if [[ ! -f data/movpic_taxonomy.tsv ]]; then
-  curl -L -o data/movpic_taxonomy.qza \
-    "https://docs.qiime2.org/2024.10/data/tutorials/moving-pictures/taxonomy.qza"
-  unzip -o data/movpic_taxonomy.qza -d data/movpic_taxonomy_extracted
-  cp data/movpic_taxonomy_extracted/*/data/taxonomy.tsv data/movpic_taxonomy.tsv
-fi
-
-if [[ ! -f data/movpic_tree.nwk ]]; then
-  curl -L -o data/movpic_tree.qza \
-    "https://docs.qiime2.org/2024.10/data/tutorials/moving-pictures/rooted-tree.qza"
-  unzip -o data/movpic_tree.qza -d data/movpic_tree_extracted
-  cp data/movpic_tree_extracted/*/data/tree.nwk data/movpic_tree.nwk
-fi
-
 
 # run experiment
 # run split-train-test only if train_val.pkl missing
