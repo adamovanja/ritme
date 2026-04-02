@@ -18,8 +18,7 @@ from coral_pytorch.dataset import corn_label_from_logits
 from coral_pytorch.losses import corn_loss
 from lightning import LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import EarlyStopping
-from ray import train
-from ray.air import session
+from ray import tune
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
@@ -66,15 +65,13 @@ def _save_sklearn_model(model: BaseEstimator) -> str:
     Returns:
     str: The path to the saved model file.
     """
-    model_path = os.path.join(ray.train.get_context().get_trial_dir(), "model.pkl")
+    model_path = os.path.join(ray.tune.get_context().get_trial_dir(), "model.pkl")
     joblib.dump(model, model_path)
     return model_path
 
 
 def _save_taxonomy(tax: pd.DataFrame) -> None:
-    taxonomy_path = os.path.join(
-        ray.train.get_context().get_trial_dir(), "taxonomy.pkl"
-    )
+    taxonomy_path = os.path.join(ray.tune.get_context().get_trial_dir(), "taxonomy.pkl")
     joblib.dump(tax, taxonomy_path)
 
 
@@ -107,7 +104,7 @@ def _report_results_manually(
     rmse_train, r2_train = _predict_rmse_r2(model, X_train, y_train)
     rmse_val, r2_val = _predict_rmse_r2(model, X_val, y_val)
 
-    session.report(
+    tune.report(
         metrics={
             "rmse_val": rmse_val,
             "rmse_train": rmse_train,
@@ -188,7 +185,7 @@ def _report_results_manually_trac(
     model, log_geom_train, y_train, log_geom_val, y_val, tax
 ):
     # save model in a compressed way
-    path_to_save = ray.train.get_context().get_trial_dir()
+    path_to_save = ray.tune.get_context().get_trial_dir()
     model_path = os.path.join(path_to_save, "model.pkl")
     with open(model_path, "wb") as file:
         pickle.dump(model, file)
@@ -201,7 +198,7 @@ def _report_results_manually_trac(
 
     # taxonomy
     _save_taxonomy(tax)
-    session.report(
+    tune.report(
         metrics={
             "rmse_val": rmse_val,
             "rmse_train": rmse_train,
@@ -561,7 +558,7 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
             return
 
         with self._get_checkpoint(trainer) as checkpoint:
-            train.report(report_dict, checkpoint=checkpoint)
+            tune.report(report_dict, checkpoint=checkpoint)
 
 
 def train_nn(
@@ -640,7 +637,7 @@ def train_nn(
 
     _save_taxonomy(tax)
     # Callbacks
-    checkpoint_dir = ray.train.get_context().get_trial_dir()
+    checkpoint_dir = ray.tune.get_context().get_trial_dir()
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 

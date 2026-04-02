@@ -4,7 +4,6 @@ from typing import List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-import qiime2 as q2
 import typer
 from sklearn.model_selection import (
     GroupShuffleSplit,
@@ -194,8 +193,7 @@ def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         Path to a tab-delimited metadata file (``.tsv``) with sample ids in the
         index column.
     path2ft : str
-        Path to a feature table as ``.tsv`` (tab-delimited, samples as rows)
-        or a QIIME2 artifact ``.qza`` that can be viewed as a DataFrame.
+        Path to a feature table as ``.tsv`` (tab-delimited, samples as rows).
 
     Returns
     -------
@@ -206,10 +204,7 @@ def _load_data(path2md: str, path2ft: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     md = pd.read_csv(path2md, sep="\t", index_col=0)
 
     # read feature table
-    if path2ft.endswith(".tsv"):
-        ft = pd.read_csv(path2ft, sep="\t", index_col=0)
-    elif path2ft.endswith(".qza"):
-        ft = q2.Artifact.load(path2ft).view(pd.DataFrame)
+    ft = pd.read_csv(path2ft, sep="\t", index_col=0)
     return md, ft
 
 
@@ -585,8 +580,7 @@ def cli_split_train_test(
     CLI-specific notes
     ------------------
     - ``path_to_md``: tab-delimited ``.tsv`` with sample ids as index.
-    - ``path_to_ft``: ``.tsv`` or QIIME2 ``.qza`` artifact convertible to
-      DataFrame.
+    - ``path_to_ft``: ``.tsv`` (tab-delimited, samples as rows).
     - ``stratify_by``: comma-separated column names (e.g. ``"col1,col2"``).
 
     Side Effects

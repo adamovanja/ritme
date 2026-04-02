@@ -61,7 +61,10 @@ Internal/private functions are decorated with `@helper_function`. Both decorator
 
 When modifying a main function's signature, update both the Python API and the CLI wrapper, including any CLI-specific parsing (e.g. `stratify_by` is a comma-separated string in the CLI but a list in the Python API).
 
-## Important design constraints
+## Important best practices
+When performing and changes or additions to this repos make sure to follow best practices in software development. making sure all added code is clearly structured, only contains comments when really needed. Any added functionality (= the difference to main branch) should be properly tested with unit tests.
+
+## Design constraints
 
 - **Compositionality per snapshot**: Microbial features within a single time point are compositional. Transforms (CLR/ILR/ALR) are applied per snapshot, never across time points.
 - **No data leakage**: Feature engineering parameters (selection, ALR denominator, enrichment schema) are learned on train and reused as-is on test via `TunedModel` state.

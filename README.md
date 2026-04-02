@@ -10,7 +10,7 @@ An optimized framework for finding the best feature representation and model cla
 *ritme* is available as a conda package on [anaconda.org](https://anaconda.org/adamova/ritme). To install it run the following command:
 
 ```shell
-conda install -c adamova -c qiime2 -c conda-forge -c bioconda -c pytorch python=3.10 ritme
+conda install -c adamova -c conda-forge -c bioconda -c pytorch ritme
 ```
 (If on a Apple Silicon chip, prefix the above installation with `CONDA_SUBDIR=osx-64` and run the following after activating the conda environnment: `conda config --env --set subdir osx-64`.)
 
@@ -135,6 +135,18 @@ We provide example templates to help you evaluate your *ritme* models for both s
 
 ## Note on reproducibility
 When you enable `"fully_reproducible": true` in your experiment configuration, all runs on identical hardware will produce fully reproducible results, albeit with a potential impact on efficiency and performance. This guarantee becomes particularly relevant when executing a large number of trials in parallel. (For small-scale experiments — e.g. with 2 trials — you will often observe identical results even with `"fully_reproducible": false`.)
+
+## For QIIME2 users
+*ritme* accepts plain files as inputs (`.tsv` for feature tables and taxonomy, `.nwk` for phylogenetic trees). If your data is stored as QIIME2 artifacts (`.qza`), you can convert them using the provided [`convert_qiime2_artifacts.sh`](experiments/scripts/convert_qiime2_artifacts.sh) script:
+
+```shell
+scripts/convert_qiime2_artifacts.sh <feature_table.qza> \
+  [--metadata <metadata.tsv>] \
+  [--taxonomy <taxonomy.qza>] \
+  [--tree <tree.qza>]
+```
+
+The feature table (`.qza`) is required; taxonomy, phylogeny and metadata are optional. Output files are written next to the inputs with `.tsv` / `.nwk` extensions. For metadata files (already `.tsv`), the script strips QIIME2 directive rows (e.g. `#q2:types`).
 
 ## Citation
 If you use *ritme* in your research, please cite it using:

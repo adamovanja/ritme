@@ -31,6 +31,11 @@ color_map = {
 }
 
 
+def _get_inference_device() -> torch.device:
+    """Return preferred inference device (CUDA if available, else CPU)."""
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def _get_checkpoint_path(result: Result) -> str:
     """
     Get the checkpoint path for a given result.
@@ -70,7 +75,12 @@ def load_nn_model(result: Result) -> NeuralNet:
     Load a neural network model from a given result object.
     """
     ckpt_path = _get_checkpoint_path(result)
-    model = NeuralNet.load_from_checkpoint(checkpoint_path=ckpt_path)
+    device = _get_inference_device()
+    model = NeuralNet.load_from_checkpoint(
+        checkpoint_path=ckpt_path,
+        map_location=device,
+    )
+    model.to(device)
     return model
 
 
@@ -308,9 +318,16 @@ class TunedModel:
         if isinstance(self.model, NeuralNet):
             self.model.eval()
             with torch.no_grad():
-                X_t = torch.tensor(X.values, dtype=torch.float32).clone().detach()
+                model_device = next(self.model.parameters()).device
+                X_t = (
+                    torch.tensor(X.values, dtype=torch.float32)
+                    .clone()
+                    .detach()
+                    .to(model_device)
+                )
                 predicted = self.model(X_t)
                 predicted = self.model._prepare_predictions(predicted)
+                predicted = predicted.detach().cpu().numpy().flatten()
         elif isinstance(self.model, dict):
             # trac model
             log_geom, _ = _preprocess_taxonomy_aggregation(

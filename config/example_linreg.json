@@ -15,6 +15,6 @@
   "seed_data": 12,
   "seed_model": 12,
   "target": "month",
-  "time_budget_s": 600,
+  "time_budget_s": 120,
   "tracking_uri": "mlruns"
 }

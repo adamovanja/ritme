@@ -7,7 +7,6 @@ from io import StringIO
 from unittest.mock import ANY, patch
 
 import pandas as pd
-import qiime2 as q2
 import skbio
 from pandas.testing import assert_frame_equal, assert_series_equal
 
@@ -77,8 +76,7 @@ class TestFindBestModelConfig(unittest.TestCase):
         self.tax_renamed.index.name = "Feature ID"
 
         self.tax = self.tax_renamed.copy()
-        self.tax.index = self.tax.index.map(lambda x: x.replace("F", ""))
-        self.tax_art = q2.Artifact.import_data("FeatureData[Taxonomy]", self.tax)
+        self.tax.index = self.tax.index.map(lambda x: int(x.replace("F", "")))
 
         # phylogeny
         # this tree has one feature more than the feature table (namely 7) -
@@ -87,7 +85,6 @@ class TestFindBestModelConfig(unittest.TestCase):
             "(((1:0.1,4:0.2):0.3,(2:0.4,3:0.5):0.6):0.7,((5:0.8,6:0.9):1.0,7:1.1):1.2);"
         )
         self.tree_phylo = skbio.TreeNode.read([self.tree_str])
-        self.tree_art = q2.Artifact.import_data("Phylogeny[Rooted]", self.tree_phylo)
         # this tree is already filtered to the feature table
         self.tree_str_filtered = (
             "(((F1:0.1,F4:0.2):0.3,(F2:0.4,F3:0.5):0.6):0.7,(F5:0.8,F6:0.9):2.2);"
@@ -121,12 +118,11 @@ class TestFindBestModelConfig(unittest.TestCase):
                 loaded_config = json.load(f)
                 self.assertEqual(loaded_config, self.config)
 
-    @patch("ritme.find_best_model_config.q2.Artifact")
-    def test_load_taxonomy(self, mock_artifact):
-        mock_artifact.load.return_value = self.tax_art
-        loaded_tax = _load_taxonomy("taxonomy.qza")
-        # we're only interested in Taxon here - not in confidence which changes
-        # type by reformatting
+    def test_load_taxonomy(self):
+        with tempfile.NamedTemporaryFile(suffix=".tsv", mode="w") as f:
+            self.tax.to_csv(f, sep="\t")
+            f.flush()
+            loaded_tax = _load_taxonomy(f.name)
         assert_series_equal(loaded_tax["Taxon"], self.tax["Taxon"])
 
     def test_process_taxonomy_rename(self):
@@ -136,7 +132,7 @@ class TestFindBestModelConfig(unittest.TestCase):
 
     def test_process_taxonomy_filter(self):
         tax_more_ft = self.tax.copy()
-        tax_more_ft.loc["7", :] = tax_more_ft.loc["6", :].copy()
+        tax_more_ft.loc[7, :] = tax_more_ft.loc[6, :].copy()
         processed_tax = _process_taxonomy(tax_more_ft, self.ft_t0)
 
         assert_series_equal(processed_tax["Taxon"], self.tax_renamed["Taxon"])
@@ -149,10 +145,11 @@ class TestFindBestModelConfig(unittest.TestCase):
         ):
             _process_taxonomy(tax_not_matched, self.ft_t0)
 
-    @patch("ritme.find_best_model_config.q2.Artifact")
-    def test_load_phylogeny(self, mock_artifact):
-        mock_artifact.load.return_value = self.tree_art
-        loaded_phylo = _load_phylogeny("phylogeny.qza")
+    def test_load_phylogeny(self):
+        with tempfile.NamedTemporaryFile(suffix=".nwk", mode="w") as f:
+            skbio.TreeNode.write(self.tree_phylo, f)
+            f.flush()
+            loaded_phylo = _load_phylogeny(f.name)
         self.assertEqual(str(loaded_phylo), str(self.tree_phylo))
 
     def test_process_phylogeny(self):
