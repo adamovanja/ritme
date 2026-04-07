@@ -402,7 +402,8 @@ def extract_run_config(trials):
     are displayed
     """
     varying_cols = trials.columns[trials.nunique() > 1]
-    varying_cols = varying_cols.drop("artifact_uri")
+    if "artifact_uri" in varying_cols:
+        varying_cols = varying_cols.drop("artifact_uri")
     return trials[varying_cols]
 
 

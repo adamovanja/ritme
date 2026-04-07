@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from io import StringIO
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pandas as pd
 import skbio
@@ -13,6 +13,7 @@ from pandas.testing import assert_frame_equal, assert_series_equal
 from ritme.find_best_model_config import (
     _define_experiment_path,
     _define_model_tracker,
+    _extract_mlflow_logs_to_csv,
     _load_experiment_config,
     _load_phylogeny,
     _load_taxonomy,
@@ -185,7 +186,7 @@ class TestFindBestModelConfig(unittest.TestCase):
     def test_define_model_tracker_mlflow(self):
         with patch("builtins.print") as mock_print:
             path_tracker = _define_model_tracker("mlruns", "experiments/models")
-            self.assertEqual(path_tracker, "experiments/models/mlruns")
+            self.assertEqual(path_tracker, "sqlite:///experiments/models/mlflow.db")
             mock_print.assert_called_once()
 
     def test_define_model_tracker_wandb(self):
@@ -208,16 +209,20 @@ class TestFindBestModelConfig(unittest.TestCase):
             ):
                 _define_experiment_path(self.config, temp_dir)
 
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")
     @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
     def test_find_best_model_config(
-        self, mock_retrieve_n_init_best_models, mock_run_all_trials
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
     ):
         # Mock the return values of the functions
         mock_run_all_trials.return_value = {"model1": "result1", "model2": "result2"}
         mock_retrieve_n_init_best_models.return_value = {
-            "model1": "best_model1",
-            "model2": "best_model2",
+            "model1": MagicMock(),
+            "model2": MagicMock(),
         }
 
         # define phylo tree
@@ -236,6 +241,7 @@ class TestFindBestModelConfig(unittest.TestCase):
             # After adding stratify_by positional arg, tax and phylo shift one index
             assert_frame_equal(args[6], self.tax_renamed)
             self.assertEqual(str(args[7]), str(self.tree_phylo_filtered))
+            # Trial storage and mlruns are in a temp directory (not path_exp)
             mock_run_all_trials.assert_called_once_with(
                 ANY,  # train_val
                 self.config["target"],
@@ -245,8 +251,8 @@ class TestFindBestModelConfig(unittest.TestCase):
                 self.config["seed_model"],
                 ANY,  # processed tax
                 ANY,  # processed phylo
-                os.path.join(temp_dir, "test_experiment", "mlruns"),
-                os.path.join(temp_dir, "test_experiment"),
+                ANY,  # path_tracker (temp dir mlruns)
+                ANY,  # tmp_storage (temp dir)
                 self.config["time_budget_s"],
                 self.config["max_cuncurrent_trials"],
                 model_types=self.config["ls_model_types"],
@@ -254,18 +260,29 @@ class TestFindBestModelConfig(unittest.TestCase):
                 model_hyperparameters={},
                 optuna_searchspace_sampler="TPESampler",
             )
+            # Verify temp storage paths are NOT under path_exp
+            self.assertNotEqual(args[8], os.path.join(path_exp, "mlruns"))
+            self.assertNotEqual(args[9], path_exp)
+            # Verify MLflow extraction was called
+            mock_extract_mlflow.assert_called_once()
 
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")
     @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
     def test_find_best_model_config_with_stratify_by(
-        self, mock_retrieve_n_init_best_models, mock_run_all_trials
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
     ):
         config_w_strat = self.config.copy()
         config_w_strat["stratify_by"] = ["stratify_column"]
         mock_run_all_trials.return_value = {"model1": "result1", "model2": "result2"}
+        mock_tmodel1 = MagicMock()
+        mock_tmodel2 = MagicMock()
         mock_retrieve_n_init_best_models.return_value = {
-            "model1": "best_model1",
-            "model2": "best_model2",
+            "model1": mock_tmodel1,
+            "model2": mock_tmodel2,
         }
         tree_phylo = skbio.TreeNode.read([self.tree_str])
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -275,10 +292,9 @@ class TestFindBestModelConfig(unittest.TestCase):
             args, _ = mock_run_all_trials.call_args
             self.assertEqual(args[3], ["stratify_column"])  # stratify_by
             mock_run_all_trials.assert_called_once()
-            self.assertEqual(
-                best_model_dic,
-                {"model1": "best_model1", "model2": "best_model2"},
-            )
+            self.assertEqual(set(best_model_dic.keys()), {"model1", "model2"})
+            self.assertIs(best_model_dic["model1"], mock_tmodel1)
+            self.assertIs(best_model_dic["model2"], mock_tmodel2)
             self.assertTrue(path_exp.startswith(f"{temp_dir}/test_experiment"))
 
     @patch("ritme.find_best_model_config._load_experiment_config")
@@ -358,6 +374,176 @@ class TestFindBestModelConfig(unittest.TestCase):
         args, _ = mock_find_best_model_config.call_args
         self.assertEqual(args[2], None)
         self.assertEqual(args[3], None)
+
+
+class TestExtractMlflowLogsToCsv(unittest.TestCase):
+    @patch("mlflow.tracking.MlflowClient")
+    def test_extract_mlflow_logs_to_csv(self, mock_client_class):
+        mock_client = mock_client_class.return_value
+
+        mock_exp = MagicMock()
+        mock_exp.experiment_id = "1"
+        mock_exp.name = "xgb"
+        mock_client.search_experiments.return_value = [mock_exp]
+
+        mock_run = MagicMock()
+        mock_run.info.run_id = "run123"
+        mock_run.info.experiment_id = "1"
+        mock_run.info.status = "FINISHED"
+        mock_run.info.start_time = 1000
+        mock_run.info.end_time = 2000
+        mock_run.data.params = {"model": "xgb", "lr": "0.1"}
+        mock_run.data.metrics = {"rmse_val": 0.5, "nb_features": 10.0}
+        mock_run.data.tags = {"experiment_tag": "test_exp"}
+        mock_client.search_runs.return_value = [mock_run]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _extract_mlflow_logs_to_csv("sqlite:///fake/mlflow.db", temp_dir)
+
+            csv_path = os.path.join(temp_dir, "mlflow_logs.csv")
+            self.assertTrue(os.path.exists(csv_path))
+
+            df = pd.read_csv(csv_path)
+            self.assertEqual(len(df), 1)
+            self.assertEqual(df.loc[0, "run_id"], "run123")
+            self.assertEqual(df.loc[0, "experiment_name"], "xgb")
+            self.assertEqual(df.loc[0, "status"], "FINISHED")
+            self.assertAlmostEqual(df.loc[0, "metrics.rmse_val"], 0.5)
+            self.assertEqual(df.loc[0, "params.model"], "xgb")
+            self.assertEqual(df.loc[0, "tags.experiment_tag"], "test_exp")
+
+    @patch("mlflow.tracking.MlflowClient")
+    def test_extract_mlflow_logs_multiple_experiments(self, mock_client_class):
+        mock_client = mock_client_class.return_value
+
+        mock_exp1 = MagicMock()
+        mock_exp1.experiment_id = "1"
+        mock_exp1.name = "xgb"
+        mock_exp2 = MagicMock()
+        mock_exp2.experiment_id = "2"
+        mock_exp2.name = "rf"
+        mock_client.search_experiments.return_value = [mock_exp1, mock_exp2]
+
+        mock_run1 = MagicMock()
+        mock_run1.info.run_id = "run1"
+        mock_run1.info.experiment_id = "1"
+        mock_run1.info.status = "FINISHED"
+        mock_run1.info.start_time = 1000
+        mock_run1.info.end_time = 2000
+        mock_run1.data.params = {"model": "xgb"}
+        mock_run1.data.metrics = {"rmse_val": 0.5}
+        mock_run1.data.tags = {}
+
+        mock_run2 = MagicMock()
+        mock_run2.info.run_id = "run2"
+        mock_run2.info.experiment_id = "2"
+        mock_run2.info.status = "FINISHED"
+        mock_run2.info.start_time = 3000
+        mock_run2.info.end_time = 4000
+        mock_run2.data.params = {"model": "rf"}
+        mock_run2.data.metrics = {"rmse_val": 0.3}
+        mock_run2.data.tags = {}
+        mock_client.search_runs.return_value = [mock_run1, mock_run2]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _extract_mlflow_logs_to_csv("sqlite:///fake/mlflow.db", temp_dir)
+            df = pd.read_csv(os.path.join(temp_dir, "mlflow_logs.csv"))
+            self.assertEqual(len(df), 2)
+            self.assertEqual(set(df["experiment_name"]), {"xgb", "rf"})
+
+    @patch("mlflow.tracking.MlflowClient")
+    def test_extract_mlflow_logs_no_experiments(self, mock_client_class):
+        mock_client = mock_client_class.return_value
+        mock_client.search_experiments.return_value = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _extract_mlflow_logs_to_csv("sqlite:///fake/mlflow.db", temp_dir)
+            csv_path = os.path.join(temp_dir, "mlflow_logs.csv")
+            self.assertFalse(os.path.exists(csv_path))
+
+    @patch("mlflow.tracking.MlflowClient")
+    def test_extract_mlflow_logs_no_runs(self, mock_client_class):
+        mock_client = mock_client_class.return_value
+
+        mock_exp = MagicMock()
+        mock_exp.experiment_id = "0"
+        mock_exp.name = "Default"
+        mock_client.search_experiments.return_value = [mock_exp]
+        mock_client.search_runs.return_value = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _extract_mlflow_logs_to_csv("sqlite:///fake/mlflow.db", temp_dir)
+            csv_path = os.path.join(temp_dir, "mlflow_logs.csv")
+            self.assertFalse(os.path.exists(csv_path))
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_no_mlflow_extraction_for_wandb(
+        self,
+        mock_retrieve,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        config = {
+            "tracking_uri": "wandb",
+            "fully_reproducible": False,
+            "experiment_tag": "test_wandb",
+            "target": "target_column",
+            "group_by_column": "group_column",
+            "seed_data": 42,
+            "seed_model": 42,
+            "time_budget_s": 10,
+            "max_cuncurrent_trials": 2,
+            "ls_model_types": ["xgb"],
+            "model_hyperparameters": {},
+        }
+        mock_run_all_trials.return_value = {"xgb": "result"}
+        mock_retrieve.return_value = {"xgb": MagicMock()}
+
+        train_val = pd.DataFrame(
+            {"F1": [0.1, 0.2], "target_column": [1, 2], "group_column": ["a", "b"]}
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            find_best_model_config(config, train_val, path_store_model_logs=temp_dir)
+            mock_extract_mlflow.assert_not_called()
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_updates_model_paths(
+        self,
+        mock_retrieve,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        mock_run_all_trials.return_value = {"xgb": "result"}
+
+        mock_tmodel = MagicMock()
+        mock_tmodel.path = "/tmp/some_temp_trial_dir"
+        mock_retrieve.return_value = {"xgb": mock_tmodel}
+
+        train_val = pd.DataFrame(
+            {"F1": [0.1, 0.2], "target_column": [1, 2], "group_column": ["a", "b"]}
+        )
+        config = {
+            "tracking_uri": "mlruns",
+            "fully_reproducible": False,
+            "experiment_tag": "test_path_update",
+            "target": "target_column",
+            "group_by_column": "group_column",
+            "seed_data": 42,
+            "seed_model": 42,
+            "time_budget_s": 10,
+            "max_cuncurrent_trials": 2,
+            "ls_model_types": ["xgb"],
+            "model_hyperparameters": {},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            best_models, path_exp = find_best_model_config(
+                config, train_val, path_store_model_logs=temp_dir
+            )
+            self.assertEqual(best_models["xgb"].path, path_exp)
 
 
 if __name__ == "__main__":

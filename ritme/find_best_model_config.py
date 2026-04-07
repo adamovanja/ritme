@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 
 import pandas as pd
 import skbio
@@ -100,12 +101,58 @@ def _process_phylogeny(phylo_tree: skbio.TreeNode, ft: pd.DataFrame) -> skbio.Tr
 
 
 @helper_function
+def _extract_mlflow_logs_to_csv(tracking_uri: str, output_dir: str) -> None:
+    """Extract MLflow run logs to a consolidated CSV file.
+
+    Reads all experiments and runs from the MLflow tracking backend and saves
+    them as a single CSV with run info, parameters, metrics, and tags.
+    """
+    from mlflow.tracking import MlflowClient
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiments = client.search_experiments()
+
+    exp_ids = [e.experiment_id for e in experiments]
+    if not exp_ids:
+        return
+
+    exp_name_map = {e.experiment_id: e.name for e in experiments}
+    runs = client.search_runs(experiment_ids=exp_ids)
+    if not runs:
+        return
+
+    all_run_data = []
+    for run in runs:
+        row = {
+            "run_id": run.info.run_id,
+            "experiment_id": run.info.experiment_id,
+            "experiment_name": exp_name_map.get(run.info.experiment_id, ""),
+            "status": run.info.status,
+            "start_time": pd.Timestamp(run.info.start_time, unit="ms")
+            if run.info.start_time
+            else None,
+            "end_time": pd.Timestamp(run.info.end_time, unit="ms")
+            if run.info.end_time
+            else None,
+        }
+        row.update({f"params.{k}": v for k, v in run.data.params.items()})
+        row.update({f"metrics.{k}": v for k, v in run.data.metrics.items()})
+        row.update({f"tags.{k}": v for k, v in run.data.tags.items()})
+        all_run_data.append(row)
+
+    df = pd.DataFrame(all_run_data)
+    df.to_csv(os.path.join(output_dir, "mlflow_logs.csv"), index=False)
+
+
+@helper_function
 def _define_model_tracker(tracking_uri: str, path_exp: str) -> str:
     if tracking_uri == "mlruns":
-        path_tracker = os.path.join(path_exp, tracking_uri)
+        db_path = os.path.join(path_exp, "mlflow.db")
+        path_tracker = f"sqlite:///{db_path}"
         print(
-            f"You can view the model logs by launching MLflow UI from within folder "
-            f": {path_exp}."
+            "MLflow tracking enabled. Logs will be extracted to CSV after "
+            "experiment completion. To monitor live progress run: "
+            f"mlflow ui --backend-store-uri {path_tracker}"
         )
     else:
         path_tracker = "wandb"
@@ -165,9 +212,6 @@ def find_best_model_config(
     path_exp = _define_experiment_path(config, path_store_model_logs)
     _save_config(config, path_exp, "experiment_config.json")
 
-    # define model tracker
-    path_tracker = _define_model_tracker(config["tracking_uri"], path_exp)
-
     # ! Process taxonomy and phylogeny by microbial feature table
     ft_col = [x for x in train_val.columns if x.startswith("F")]
     if tax is not None:
@@ -175,31 +219,45 @@ def find_best_model_config(
     if tree_phylo is not None:
         tree_phylo = _process_phylogeny(tree_phylo, train_val[ft_col])
 
-    # ! Run all experiments on train_val
-    result_dic = run_all_trials(
-        train_val,
-        config["target"],
-        config["group_by_column"],
-        config.get("stratify_by", None),
-        config["seed_data"],
-        config["seed_model"],
-        tax,
-        tree_phylo,
-        path_tracker,
-        path_exp,
-        # time_budget for search
-        config["time_budget_s"],
-        config["max_cuncurrent_trials"],
-        model_types=config["ls_model_types"],
-        fully_reproducible=config["fully_reproducible"],
-        model_hyperparameters=config.get("model_hyperparameters", {}),
-        optuna_searchspace_sampler=config.get(
-            "optuna_searchspace_sampler", "TPESampler"
-        ),
-    )
+    # ! Run all experiments in a temporary directory to reduce inode usage.
+    # Trial directories and MLflow logs are created here, then only the
+    # consolidated outputs (best models, MLflow CSV) are kept in path_exp.
+    with tempfile.TemporaryDirectory() as tmp_storage:
+        path_tracker = _define_model_tracker(config["tracking_uri"], tmp_storage)
 
-    # ! Get best models of this experiment
-    best_model_dic = retrieve_n_init_best_models(result_dic, train_val)
+        result_dic = run_all_trials(
+            train_val,
+            config["target"],
+            config["group_by_column"],
+            config.get("stratify_by", None),
+            config["seed_data"],
+            config["seed_model"],
+            tax,
+            tree_phylo,
+            path_tracker,
+            tmp_storage,
+            # time_budget for search
+            config["time_budget_s"],
+            config["max_cuncurrent_trials"],
+            model_types=config["ls_model_types"],
+            fully_reproducible=config["fully_reproducible"],
+            model_hyperparameters=config.get("model_hyperparameters", {}),
+            optuna_searchspace_sampler=config.get(
+                "optuna_searchspace_sampler", "TPESampler"
+            ),
+        )
+
+        # ! Get best models of this experiment
+        best_model_dic = retrieve_n_init_best_models(result_dic, train_val)
+
+        # ! Extract MLflow logs to CSV before temp directory cleanup
+        if config["tracking_uri"] == "mlruns":
+            _extract_mlflow_logs_to_csv(path_tracker, path_exp)
+            print(f"MLflow logs saved to: {os.path.join(path_exp, 'mlflow_logs.csv')}")
+
+    # Update model paths to the permanent experiment directory
+    for tmodel in best_model_dic.values():
+        tmodel.path = path_exp
 
     return best_model_dic, path_exp
 

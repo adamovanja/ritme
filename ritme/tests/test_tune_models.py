@@ -177,11 +177,8 @@ class TestHelpersTuneModels(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No WANDB_ENTITY found in .env file."):
             _load_wandb_entity()
 
-    @patch("ritme.tune_models.os.path.exists")
-    @patch("ritme.tune_models.os.makedirs")
-    def test_define_callbacks_mlflow(self, mock_makedirs, mock_exists):
-        mock_exists.return_value = False
-        tracking_uri = "mlruns"
+    def test_define_callbacks_mlflow(self):
+        tracking_uri = "sqlite:///tmp/mlflow.db"
         exp_name = "test_exp"
         experiment_tag = "test_tag"
 
@@ -192,8 +189,6 @@ class TestHelpersTuneModels(unittest.TestCase):
         self.assertEqual(callbacks[0].tracking_uri, tracking_uri)
         self.assertEqual(callbacks[0].experiment_name, exp_name)
         self.assertEqual(callbacks[0].tags, {"experiment_tag": experiment_tag})
-        mock_exists.assert_called_once_with(tracking_uri)
-        mock_makedirs.assert_called_once_with(tracking_uri)
 
     @patch("ritme.tune_models._load_wandb_api_key")
     @patch("ritme.tune_models._load_wandb_entity")
@@ -239,7 +234,7 @@ class TestMainTuneModels(unittest.TestCase):
         self.time_budget_s = 5
         self.max_concurrent_trials = 2
         self.model_hyperparameters = {}
-        self.mlflow_uri = "mlruns"
+        self.mlflow_uri = "sqlite:///tmp/experiment/mlflow.db"
 
     @patch("ritme.tune_models.init")
     @patch("ritme.tune_models.ray.cluster_resources")

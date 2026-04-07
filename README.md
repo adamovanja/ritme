@@ -123,7 +123,7 @@ export HTTP_PROXY=http://proxy.example.com:8080
 For a template on how to evaluate your models see the section on [model training evaluation](#model-training-evaluation).
 
 ### Set-up MLflow with *ritme*
-In case of using MLflow you can view your models with `mlflow ui` from within the path where the logs were saved (which is outputted when running `find_best_model_config` as "You can view the model logs by launching MLflow UI from within folder : <folder_name>"). This is rather slow when many trials or experiments were launched - then viewing logs via the Python API is better suited. For more information check out the [official MLflow documentation](https://mlflow.org/docs/latest/index.html).
+In case of using MLflow you can monitor live training progress with `mlflow ui` — the full command is printed when `find_best_model_config` starts. After training completes, all trial logs are consolidated into a single CSV file (`mlflow_logs.csv`) in the experiment directory and temporary tracking files are removed automatically.
 
 For a template on how to evaluate your models see the section on [model training evaluation](#model-training-evaluation).
 
@@ -131,7 +131,7 @@ For a template on how to evaluate your models see the section on [model training
 We provide example templates to help you evaluate your *ritme* models for both supported tracking services:
 * for WandB visit [this report](https://wandb.ai/ritme/trials_wandb/reports/Template-for-ritme-training-evaluation--VmlldzoxMzE1MTQ5MQ?accessToken=2yuzgiu4ke2r3ky5c894nnygguse8xh9mt5ky3g7p43mcirbmhv504ruipny54l5) - simply copy the template and update the run set at the end of the report to your own experiment.
 
-* for MLflow see the notebook [`experiments/evaluate_trials_mlflow.ipynb`](https://github.com/adamovanja/ritme/blob/main/experiments/evaluate_trials_mlflow.ipynb).
+* for MLflow see the notebook [`experiments/evaluate_trials_mlflow.ipynb`](https://github.com/adamovanja/ritme/blob/main/experiments/evaluate_trials_mlflow.ipynb), which loads the consolidated `mlflow_logs.csv` from the experiment directory.
 
 ## Note on reproducibility
 When you enable `"fully_reproducible": true` in your experiment configuration, all runs on identical hardware will produce fully reproducible results, albeit with a potential impact on efficiency and performance. This guarantee becomes particularly relevant when executing a large number of trials in parallel. (For small-scale experiments — e.g. with 2 trials — you will often observe identical results even with `"fully_reproducible": false`.)
