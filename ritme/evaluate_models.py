@@ -79,6 +79,7 @@ def load_nn_model(result: Result) -> NeuralNet:
     model = NeuralNet.load_from_checkpoint(
         checkpoint_path=ckpt_path,
         map_location=device,
+        weights_only=False,
     )
     model.to(device)
     return model

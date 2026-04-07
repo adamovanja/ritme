@@ -179,9 +179,7 @@ def _define_callbacks(tracking_uri: str, exp_name: str, experiment_tag: str) -> 
     """Define callbacks based on the tracking URI."""
     callbacks = []
 
-    if tracking_uri.endswith("mlruns"):
-        if not os.path.exists(tracking_uri):
-            os.makedirs(tracking_uri)
+    if tracking_uri.startswith("sqlite:///"):
         callbacks.append(
             MLflowLoggerCallback(
                 tracking_uri=tracking_uri,

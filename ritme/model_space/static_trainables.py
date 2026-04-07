@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import joblib
 import numpy as np
+
+# classo uses np.infty which was removed in NumPy 2.0
+if not hasattr(np, "infty"):
+    np.infty = np.inf
+
 import pandas as pd
 import ray
 import skbio
