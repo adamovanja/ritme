@@ -43,6 +43,7 @@ requirements:
     - scikit-learn
     - scipy
     - conda-forge::seaborn
+    - conda-forge::shap
     - torchmetrics
     - torchvision
     - typer
