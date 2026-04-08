@@ -497,5 +497,103 @@ class TestTunedModelImplementation(unittest.TestCase):
         self.assertEqual(len(tuned.final_feature_cols), 4)
 
 
+class TestBuildDesignMatrix(unittest.TestCase):
+    def setUp(self):
+        current_dir = os.path.dirname(__file__)
+        self.data = pd.read_csv(
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        self.tax_df = pd.read_csv(
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        self.data_config = {
+            "data_aggregation": None,
+            "data_transform": None,
+            "data_selection": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+        self.model = DummySklearnModel()
+        self.tmodel = TunedModel(
+            model=self.model,
+            data_config=self.data_config,
+            tax=self.tax_df,
+            path="/fake/path",
+        )
+
+    def test_returns_dataframe_with_correct_shape(self):
+        X = self.tmodel.build_design_matrix(self.data, split="train")
+        self.assertIsInstance(X, pd.DataFrame)
+        self.assertEqual(X.shape[0], self.data.shape[0])
+        self.assertGreater(X.shape[1], 0)
+
+    def test_output_matches_predict_input(self):
+        X = self.tmodel.build_design_matrix(self.data, split="train")
+        preds = self.tmodel.predict(self.data, split="train")
+        expected = np.max(X.values, axis=1).flatten()
+        assert_allclose(preds, expected, rtol=1e-6)
+
+    def test_train_test_column_consistency(self):
+        data_test = self.data.copy()
+        data_test.index = [f"T{i}" for i in range(1, 11)]
+        X_train = self.tmodel.build_design_matrix(self.data, split="train")
+        X_test = self.tmodel.build_design_matrix(data_test, split="test")
+        self.assertEqual(list(X_train.columns), list(X_test.columns))
+
+    def test_multi_snapshot(self):
+        df = pd.DataFrame(
+            {
+                "F0": [1.0, 2.0, 3.0],
+                "F1": [1.0, 1.0, 1.0],
+                "F0__t-1": [0.5, 1.5, 2.5],
+                "F1__t-1": [1.0, 1.0, 1.0],
+                "host": ["a", "b", "c"],
+                "host__t-1": ["a", "b", "c"],
+            },
+            index=["S1", "S2", "S3"],
+        )
+        tmodel = TunedModel(
+            model=self.model,
+            data_config=self.data_config,
+            tax=self.tax_df,
+            path="",
+        )
+        X = tmodel.build_design_matrix(df, split="train")
+        self.assertEqual(X.shape[0], 3)
+        self.assertEqual(X.shape[1], 4)
+        suffixed = [c for c in X.columns if "__t-1" in c]
+        self.assertEqual(len(suffixed), 2)
+
+    def test_sets_final_feature_cols_on_train(self):
+        self.assertEqual(self.tmodel.final_feature_cols, [])
+        self.tmodel.build_design_matrix(self.data, split="train")
+        self.assertGreater(len(self.tmodel.final_feature_cols), 0)
+
+    def test_with_full_feature_engineering(self):
+        cfg = {
+            "data_aggregation": "tax_class",
+            "data_transform": "alr",
+            "data_selection": "abundance_threshold",
+            "data_selection_t": 0.1,
+            "data_alr_denom_idx_map": {"t0": 0},
+            "data_enrich": "shannon_and_metadata",
+            "data_enrich_with": ["md2"],
+        }
+        tmodel = TunedModel(
+            model=self.model,
+            data_config=cfg,
+            tax=self.tax_df,
+            path="",
+        )
+        X = tmodel.build_design_matrix(self.data, split="train")
+        preds = tmodel.predict(self.data, split="train")
+        expected = np.max(X.values, axis=1).flatten()
+        assert_allclose(preds, expected, rtol=1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()

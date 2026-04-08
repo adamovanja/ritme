@@ -34,19 +34,20 @@ The package supports two modes:
 | `ritme/tune_models.py` | Runs Ray Tune trials, enforces model type restrictions |
 | `ritme/evaluate_models.py` | `TunedModel` class with per-snapshot predict pipeline |
 | `ritme/evaluate_tuned_models.py` | Final evaluation on train + test sets |
+| `ritme/explain_features.py` | SHAP feature importance computation and plotting |
 | `ritme/feature_space/` | Feature engineering: aggregate, select, transform, enrich |
 | `ritme/feature_space/_process_train.py` | Per-snapshot feature processing pipeline |
 | `ritme/feature_space/utils.py` | Snapshot utilities (`_slice_snapshot`, `_add_suffix`, `_PAST_SUFFIX_RE`) |
 | `ritme/model_space/static_trainables.py` | Model trainables: linreg, xgb, rf, trac, nn_reg, nn_class, nn_corn |
 | `ritme/model_space/static_searchspace.py` | Hyperparameter search spaces per model type |
-| `ritme/cli.py` | Typer CLI entry point (`ritme split-train-test`, `find-best-model-config`, `evaluate-tuned-models`) |
+| `ritme/cli.py` | Typer CLI entry point (`ritme split-train-test`, `find-best-model-config`, `evaluate-tuned-models`, `explain-features`) |
 | `ritme/evaluate_mlflow.py` | MLflow visualization utilities |
 | `config/` | Example experiment configuration files |
 | `experiments/` | Example usage notebooks |
 
 ## CLI and Python API pattern
 
-Each of the three main functions exists in two forms:
+Each of the four main functions exists in two forms:
 
 - **Python API** (e.g. `split_train_test()`): accepts in-memory objects (DataFrames, dicts, TreeNode) and returns results directly. Decorated with `@main_function`.
 - **CLI wrapper** (e.g. `cli_split_train_test()`): accepts file paths as strings, loads data, delegates to the Python API function, and writes outputs to disk. Also decorated with `@main_function`. Registered in `ritme/cli.py` via Typer.
@@ -56,6 +57,7 @@ Each of the three main functions exists in two forms:
 | `split_train_test()` | `cli_split_train_test()` | `ritme split-train-test` |
 | `find_best_model_config()` | `cli_find_best_model_config()` | `ritme find-best-model-config` |
 | `evaluate_tuned_models()` | `cli_evaluate_tuned_models()` | `ritme evaluate-tuned-models` |
+| `compute_shap_values()` | `cli_explain_features()` | `ritme explain-features` |
 
 Internal/private functions are decorated with `@helper_function`. Both decorators are defined in `ritme/_decorators.py` and are used purely as flags (no runtime behavior).
 
@@ -63,6 +65,7 @@ When modifying a main function's signature, update both the Python API and the C
 
 ## Important best practices
 When performing and changes or additions to this repos make sure to follow best practices in software development. making sure all added code is clearly structured, only contains comments when really needed. Any added functionality (= the difference to main branch) should be properly tested with unit tests.
+When testing new functionality always do it in an activated conda environment called `ritme` - if it does not exist yet, make sure to create with with `make create-env`. Never install packages in the base environment!
 
 ## Design constraints
 
@@ -102,6 +105,9 @@ ritme evaluate-tuned-models --help
 
 ### Testing
 - All new functionality must have corresponding tests in `ritme/tests/`.
+
+### Formatting
+- Ensure all code is formatted according to the pre-commit hooks in this repos.
 
 ### Commits
 - Imperative form, matching existing `git log` style.

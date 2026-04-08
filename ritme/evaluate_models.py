@@ -231,8 +231,13 @@ class TunedModel:
         other_ft_ls = self.snapshot_enriched_other_ft[time_label]
         return other_ft_ls, enriched
 
-    def predict(self, data: pd.DataFrame, split: str) -> Any:
-        """Run per-snapshot pipeline and predict."""
+    def build_design_matrix(self, data: pd.DataFrame, split: str) -> pd.DataFrame:
+        """Run per-snapshot feature engineering pipeline and return the design matrix.
+
+        This is the same pipeline used internally by ``predict`` but stops before
+        calling the underlying model, returning the processed feature DataFrame
+        instead.
+        """
         micro_ft_raw_all = [c for c in data.columns if c.startswith(self.ft_prefix)]
         self.time_labels = (
             _extract_time_labels(micro_ft_raw_all, self.ft_prefix)
@@ -315,6 +320,11 @@ class TunedModel:
             self.final_feature_cols = final_cols
         use_cols = self.final_feature_cols if split != "train" else final_cols
         X = accum.reindex(columns=use_cols, fill_value=0).fillna(np.nan).astype(float)
+        return X
+
+    def predict(self, data: pd.DataFrame, split: str) -> Any:
+        """Run per-snapshot pipeline and predict."""
+        X = self.build_design_matrix(data, split)
 
         if isinstance(self.model, NeuralNet):
             self.model.eval()
