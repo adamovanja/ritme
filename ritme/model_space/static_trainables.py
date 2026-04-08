@@ -1,5 +1,6 @@
 """Module with tune trainables of all static models"""
 
+import math
 import os
 import pickle
 import random
@@ -539,6 +540,19 @@ def load_data(X_train, y_train, X_val, y_val, config, seed_model):
 
 
 class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
+    """PyTorch Lightning callback that decouples metric reports from checkpoint writes.
+
+    Reports metrics to Ray Tune after every validation epoch (so the ASHA
+    scheduler can prune trials and intermediate progress is logged), but only
+    writes a checkpoint to disk when ``rmse_val`` improves over the best one
+    seen so far. ``on_train_end`` writes a final guarantee checkpoint so that
+    every trial -- even one killed by the time budget mid-training -- ends with
+    at least one checkpoint on disk for downstream model retrieval.
+
+    Also injects ``nb_features`` into every reported metric dict (used by
+    ``evaluate_models.py``).
+    """
+
     def __init__(
         self,
         metrics: Optional[Union[str, List[str], Dict[str, str]]] = None,
@@ -546,24 +560,70 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
         save_checkpoints: bool = True,
         on: Union[str, List[str]] = "validation_end",
         nb_features: int = None,
+        score_attr: str = "rmse_val",
+        score_mode: str = "min",
     ):
         super().__init__(
             metrics=metrics, filename=filename, save_checkpoints=save_checkpoints, on=on
         )
         self.nb_features = nb_features
+        if score_mode not in ("min", "max"):
+            raise ValueError(f"score_mode must be 'min' or 'max', got {score_mode!r}")
+        self._score_attr = score_attr
+        self._score_mode = score_mode
+        self._best_score = float("inf") if score_mode == "min" else float("-inf")
+        self._wrote_any_checkpoint = False
+
+    def _is_improvement(self, score) -> bool:
+        if score is None:
+            return False
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            return False
+        if math.isnan(score):
+            return False
+        if self._score_mode == "min":
+            return score < self._best_score
+        return score > self._best_score
+
+    def _build_report_dict(self, trainer, pl_module):
+        report_dict = self._get_report_dict(trainer, pl_module)
+        if not report_dict:
+            return None
+        report_dict["nb_features"] = self.nb_features
+        return report_dict
 
     def _handle(self, trainer: Trainer, pl_module: LightningModule):
-        # CUSTOM: includes also nb_features in report
         if trainer.sanity_checking:
             return
 
-        report_dict = self._get_report_dict(trainer, pl_module)
-        report_dict["nb_features"] = self.nb_features
-        if not report_dict:
+        report_dict = self._build_report_dict(trainer, pl_module)
+        if report_dict is None:
             return
 
+        score = report_dict.get(self._score_attr)
+        if self._is_improvement(score):
+            self._best_score = score
+            with self._get_checkpoint(trainer) as checkpoint:
+                tune.report(report_dict, checkpoint=checkpoint)
+            self._wrote_any_checkpoint = True
+        else:
+            tune.report(report_dict)
+
+    def on_train_end(self, trainer, pl_module):
+        # Final-checkpoint guarantee: only writes if no improvement-gated
+        # checkpoint was ever produced (e.g. when training reports NaN loss
+        # for every epoch). CheckpointConfig will discard this if a better
+        # one already exists.
+        if self._wrote_any_checkpoint:
+            return
+        report_dict = self._build_report_dict(trainer, pl_module)
+        if report_dict is None:
+            return
         with self._get_checkpoint(trainer) as checkpoint:
             tune.report(report_dict, checkpoint=checkpoint)
+        self._wrote_any_checkpoint = True
 
 
 def train_nn(
@@ -657,7 +717,7 @@ def train_nn(
                 "loss_train": "train_loss",
             },
             filename="checkpoint",
-            on="train_end",
+            on="validation_end",
             nb_features=X_train.shape[1],
         ),
         EarlyStopping(
@@ -757,6 +817,68 @@ def add_nb_features_to_results(results, nb_features):
     return results
 
 
+class _RitmeXGBCheckpointCallback(xgb_cc):
+    """XGBoost callback that decouples metric reporting from checkpoint writes.
+
+    Reports metrics to Ray Tune on every boosting iteration so the ASHA
+    scheduler always has fresh data to prune trials, but only writes a
+    checkpoint to disk when the validation score improves over the best one
+    seen so far. The Ray ``CheckpointConfig(num_to_keep=1, ...)`` in
+    ``tune_models.py`` keeps the highest-scoring checkpoint, so any extra final
+    checkpoint with a worse score (e.g. from ``checkpoint_at_end=True``) is
+    discarded automatically.
+
+    This avoids the per-iteration disk I/O bottleneck that the previous
+    ``frequency=1`` setting caused (Ray Tune's experiment-state snapshotting
+    couldn't keep up with the write rate).
+    """
+
+    def __init__(
+        self,
+        metrics,
+        filename,
+        results_postprocessing_fn,
+        score_attr,
+        score_mode,
+    ):
+        super().__init__(
+            metrics=metrics,
+            filename=filename,
+            frequency=0,
+            checkpoint_at_end=True,
+            results_postprocessing_fn=results_postprocessing_fn,
+        )
+        if score_mode not in ("min", "max"):
+            raise ValueError(f"score_mode must be 'min' or 'max', got {score_mode!r}")
+        self._score_attr = score_attr
+        self._score_mode = score_mode
+        self._best_score = float("inf") if score_mode == "min" else float("-inf")
+
+    def _is_improvement(self, score) -> bool:
+        if score is None:
+            return False
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            return False
+        if math.isnan(score):
+            return False
+        if self._score_mode == "min":
+            return score < self._best_score
+        return score > self._best_score
+
+    def after_iteration(self, model, epoch, evals_log):
+        self._evals_log = evals_log
+        report_dict = self._get_report_dict(evals_log)
+        score = report_dict.get(self._score_attr)
+        if self._is_improvement(score):
+            self._best_score = score
+            self._last_checkpoint_iteration = epoch
+            self._save_and_report_checkpoint(report_dict, model)
+        else:
+            self._report_metrics(report_dict)
+
+
 def custom_xgb_metric(
     predt: np.ndarray, dtrain: xgb.DMatrix
 ) -> List[Tuple[str, float]]:
@@ -815,10 +937,9 @@ def train_xgb(
 
     _save_taxonomy(tax)
     # ! model
-    # Initialize the checkpoint callback - which is built-in support for xgb
-    # models in Ray Tune
-    checkpoint_callback = xgb_cc(
-        # tune:xgboost
+    # Decoupled metric/checkpoint reporting: per-iteration metrics for ASHA,
+    # checkpoint writes only on validation improvement.
+    checkpoint_callback = _RitmeXGBCheckpointCallback(
         metrics={
             "r2_train": "train-r2",
             "r2_val": "val-r2",
@@ -829,7 +950,8 @@ def train_xgb(
         results_postprocessing_fn=lambda results: add_nb_features_to_results(
             results, X_train.shape[1]
         ),
-        frequency=1,
+        score_attr="rmse_val",
+        score_mode="min",
     )
     patience = max(10, int(0.1 * config["n_estimators"]))
     xgb.train(

@@ -293,7 +293,7 @@ class TestTrainables(unittest.TestCase):
     @patch("ritme.model_space.static_trainables.process_train")
     @patch("ritme.model_space.static_trainables.xgb.DMatrix")
     @patch("ritme.model_space.static_trainables.xgb.train")
-    @patch("ritme.model_space.static_trainables.xgb_cc")
+    @patch("ritme.model_space.static_trainables._RitmeXGBCheckpointCallback")
     def test_train_xgb(
         self,
         mock_checkpoint,
@@ -575,3 +575,236 @@ class TestTrainableLogging(unittest.TestCase):
                     self.assertAlmostEqual(
                         logged_rmse[split], calculated_rmse, places=6
                     )
+
+
+class TestRitmeXGBCheckpointCallback(unittest.TestCase):
+    """Unit tests for the decoupled XGBoost callback.
+
+    The callback must report metrics on every iteration (cheap, in-memory) but
+    only write a checkpoint when ``rmse_val`` improves over the best seen so
+    far. This avoids the per-iteration disk I/O bottleneck while keeping the
+    ASHA scheduler fed with intermediate metrics.
+    """
+
+    def _make_callback(self):
+        return st._RitmeXGBCheckpointCallback(
+            metrics={
+                "r2_train": "train-r2",
+                "r2_val": "val-r2",
+                "rmse_train": "train-rmse",
+                "rmse_val": "val-rmse",
+            },
+            filename="checkpoint",
+            results_postprocessing_fn=lambda r: st.add_nb_features_to_results(r, 7),
+            score_attr="rmse_val",
+            score_mode="min",
+        )
+
+    def _evals_log(self, train_rmses, val_rmses):
+        from collections import OrderedDict
+
+        # XGBoost passes evals_log[set_name][metric_name] = list of historical
+        # values; the callback reads the last entry of each list as "current".
+        return OrderedDict(
+            [
+                (
+                    "train",
+                    OrderedDict(
+                        [("r2", [0.0] * len(train_rmses)), ("rmse", list(train_rmses))]
+                    ),
+                ),
+                (
+                    "val",
+                    OrderedDict(
+                        [("r2", [0.0] * len(val_rmses)), ("rmse", list(val_rmses))]
+                    ),
+                ),
+            ]
+        )
+
+    def test_invalid_score_mode_raises(self):
+        with self.assertRaises(ValueError):
+            st._RitmeXGBCheckpointCallback(
+                metrics={"rmse_val": "val-rmse"},
+                filename="checkpoint",
+                results_postprocessing_fn=lambda r: r,
+                score_attr="rmse_val",
+                score_mode="invalid",
+            )
+
+    def test_metric_reported_every_iteration_checkpoint_only_on_improvement(self):
+        callback = self._make_callback()
+        model = MagicMock()
+
+        # Improvement schedule: iter 0 (any < inf is improvement), 2, 4 only.
+        # The other iters report worse-or-equal val-rmse.
+        val_rmses = [0.50, 0.52, 0.40, 0.45, 0.30, 0.35]
+        train_rmses = [0.40] * len(val_rmses)
+        improvements = {0, 2, 4}
+
+        with patch.object(
+            callback, "_save_and_report_checkpoint"
+        ) as mock_save, patch.object(callback, "_report_metrics") as mock_report:
+            for epoch in range(len(val_rmses)):
+                evals_log = self._evals_log(
+                    train_rmses[: epoch + 1], val_rmses[: epoch + 1]
+                )
+                callback.after_iteration(model, epoch, evals_log)
+
+        # Every iteration produces exactly one report (either with or without
+        # a checkpoint).
+        total_reports = mock_save.call_count + mock_report.call_count
+        self.assertEqual(total_reports, len(val_rmses))
+
+        # Checkpoints fire only on improvements.
+        self.assertEqual(mock_save.call_count, len(improvements))
+        self.assertEqual(mock_report.call_count, len(val_rmses) - len(improvements))
+
+        # The dicts passed always carry the renamed key plus nb_features
+        # (set by the postprocessing fn).
+        for save_call in mock_save.call_args_list:
+            report_dict = save_call.args[0]
+            self.assertIn("rmse_val", report_dict)
+            self.assertEqual(report_dict["nb_features"], 7)
+        for report_call in mock_report.call_args_list:
+            report_dict = report_call.args[0]
+            self.assertIn("rmse_val", report_dict)
+            self.assertEqual(report_dict["nb_features"], 7)
+
+        # Best score tracked correctly.
+        self.assertEqual(callback._best_score, 0.30)
+
+    def test_first_iteration_always_checkpoints(self):
+        # Initial _best_score is +inf so the very first finite score must
+        # qualify as an improvement; this guarantees at least one checkpoint
+        # exists per trial.
+        callback = self._make_callback()
+        model = MagicMock()
+        with patch.object(callback, "_save_and_report_checkpoint") as mock_save:
+            callback.after_iteration(model, 0, self._evals_log([0.4], [0.5]))
+        mock_save.assert_called_once()
+
+    def test_nan_score_does_not_qualify_as_improvement(self):
+        callback = self._make_callback()
+        model = MagicMock()
+        with patch.object(
+            callback, "_save_and_report_checkpoint"
+        ) as mock_save, patch.object(callback, "_report_metrics") as mock_report:
+            callback.after_iteration(
+                model, 0, self._evals_log([float("nan")], [float("nan")])
+            )
+        mock_save.assert_not_called()
+        mock_report.assert_called_once()
+
+
+class TestNNTuneReportCheckpointCallback(unittest.TestCase):
+    """Unit tests for the decoupled PyTorch Lightning callback.
+
+    Verifies that ``_handle`` calls Ray Tune's report on every invocation but
+    only opens a checkpoint context when ``rmse_val`` improves, and that
+    ``on_train_end`` writes a guarantee checkpoint when no improvement-gated
+    write ever happened.
+    """
+
+    def _make_callback(self):
+        return st.NNTuneReportCheckpointCallback(
+            metrics={
+                "rmse_val": "val_rmse",
+                "rmse_train": "train_rmse",
+            },
+            filename="checkpoint",
+            on="validation_end",
+            nb_features=11,
+        )
+
+    def _trainer_with_score(self, val_rmse):
+        trainer = MagicMock()
+        trainer.sanity_checking = False
+        # _get_report_dict reads trainer.callback_metrics[metric].item()
+        train_metric = MagicMock()
+        train_metric.item.return_value = 0.42
+        val_metric = MagicMock()
+        val_metric.item.return_value = val_rmse
+        trainer.callback_metrics = {
+            "val_rmse": val_metric,
+            "train_rmse": train_metric,
+        }
+        return trainer
+
+    def test_handle_reports_every_call_checkpoints_only_on_improvement(self):
+        callback = self._make_callback()
+        # Schedule of validation rmses: improvement at calls 0, 2; calls 1, 3, 4
+        # are non-improvements.
+        val_rmses = [0.5, 0.6, 0.4, 0.45, 0.42]
+        improvements = {0, 2}
+
+        ckpt_cm = MagicMock()
+        ckpt_cm.__enter__ = MagicMock(return_value="fake_checkpoint")
+        ckpt_cm.__exit__ = MagicMock(return_value=False)
+        with patch.object(
+            callback, "_get_checkpoint", return_value=ckpt_cm
+        ) as mock_ckpt, patch(
+            "ritme.model_space.static_trainables.tune.report"
+        ) as mock_report:
+            for v in val_rmses:
+                callback._handle(self._trainer_with_score(v), MagicMock())
+
+        # _get_checkpoint (the disk-write context) only opens on improvements.
+        self.assertEqual(mock_ckpt.call_count, len(improvements))
+        # tune.report is called every time.
+        self.assertEqual(mock_report.call_count, len(val_rmses))
+
+        # Reports on improvement carry a checkpoint kwarg; reports without
+        # improvement do not.
+        with_ckpt = [
+            c for c in mock_report.call_args_list if c.kwargs.get("checkpoint")
+        ]
+        without_ckpt = [
+            c for c in mock_report.call_args_list if not c.kwargs.get("checkpoint")
+        ]
+        self.assertEqual(len(with_ckpt), len(improvements))
+        self.assertEqual(len(without_ckpt), len(val_rmses) - len(improvements))
+
+        # nb_features is injected into every report dict.
+        for c in mock_report.call_args_list:
+            self.assertEqual(c.args[0]["nb_features"], 11)
+
+        self.assertTrue(callback._wrote_any_checkpoint)
+        self.assertEqual(callback._best_score, 0.4)
+
+    def test_sanity_checking_short_circuits(self):
+        callback = self._make_callback()
+        trainer = self._trainer_with_score(0.1)
+        trainer.sanity_checking = True
+        with patch(
+            "ritme.model_space.static_trainables.tune.report"
+        ) as mock_report, patch.object(callback, "_get_checkpoint") as mock_ckpt:
+            callback._handle(trainer, MagicMock())
+        mock_report.assert_not_called()
+        mock_ckpt.assert_not_called()
+
+    def test_on_train_end_writes_guarantee_checkpoint_when_none_yet(self):
+        callback = self._make_callback()
+        ckpt_cm = MagicMock()
+        ckpt_cm.__enter__ = MagicMock(return_value="fake_checkpoint")
+        ckpt_cm.__exit__ = MagicMock(return_value=False)
+        with patch.object(
+            callback, "_get_checkpoint", return_value=ckpt_cm
+        ) as mock_ckpt, patch(
+            "ritme.model_space.static_trainables.tune.report"
+        ) as mock_report:
+            callback.on_train_end(self._trainer_with_score(0.7), MagicMock())
+        mock_ckpt.assert_called_once()
+        mock_report.assert_called_once()
+        self.assertTrue(callback._wrote_any_checkpoint)
+
+    def test_on_train_end_skips_when_checkpoint_already_written(self):
+        callback = self._make_callback()
+        # Simulate that an earlier validation_end already wrote a checkpoint.
+        callback._wrote_any_checkpoint = True
+        with patch.object(callback, "_get_checkpoint") as mock_ckpt, patch(
+            "ritme.model_space.static_trainables.tune.report"
+        ) as mock_report:
+            callback.on_train_end(self._trainer_with_score(0.7), MagicMock())
+        mock_ckpt.assert_not_called()
+        mock_report.assert_not_called()
