@@ -316,7 +316,14 @@ def run_trials(
             checkpoint_config=tune.CheckpointConfig(
                 checkpoint_score_attribute=metric,
                 checkpoint_score_order=mode,
-                num_to_keep=1,
+                # num_to_keep=3 lets the trainable callbacks write up to 2
+                # checkpoints per trial (a first-improvement safety checkpoint
+                # plus a final best-state checkpoint) without ever reaching
+                # Ray Tune's "force experiment-state snapshot every num_to_keep
+                # checkpoints per trial" threshold. Each forced snapshot is a
+                # cluster-wide sync; with 5 concurrent trials this used to
+                # produce visible bottleneck warnings (see ritme#84).
+                num_to_keep=3,
             ),
             callbacks=callbacks,
         ),

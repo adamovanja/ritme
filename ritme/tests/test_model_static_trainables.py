@@ -1,6 +1,7 @@
 """Testing static trainables"""
 
 import os
+import shutil
 import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
@@ -293,7 +294,7 @@ class TestTrainables(unittest.TestCase):
     @patch("ritme.model_space.static_trainables.process_train")
     @patch("ritme.model_space.static_trainables.xgb.DMatrix")
     @patch("ritme.model_space.static_trainables.xgb.train")
-    @patch("ritme.model_space.static_trainables.xgb_cc")
+    @patch("ritme.model_space.static_trainables._RitmeXGBCheckpointCallback")
     def test_train_xgb(
         self,
         mock_checkpoint,
@@ -575,3 +576,332 @@ class TestTrainableLogging(unittest.TestCase):
                     self.assertAlmostEqual(
                         logged_rmse[split], calculated_rmse, places=6
                     )
+
+
+class TestRitmeXGBCheckpointCallback(unittest.TestCase):
+    """Unit tests for the decoupled XGBoost callback.
+
+    The callback reports metrics on every iteration (cheap, in-memory) but
+    only writes Ray Tune checkpoints at two points per trial:
+
+    1. On the *first* validation improvement (safety write so paused-then-killed
+       HyperBand trials still have a checkpoint).
+    2. At end of training (final write of the best booster seen).
+
+    Improvements between the first and the last are held in-memory only. This
+    bounds checkpoint writes to two per trial -- combined with ``num_to_keep=3``
+    in ``tune_models.py`` it keeps the experiment-state snapshotter from being
+    saturated by concurrent trials.
+    """
+
+    def _make_callback(self):
+        return st._RitmeXGBCheckpointCallback(
+            metrics={
+                "r2_train": "train-r2",
+                "r2_val": "val-r2",
+                "rmse_train": "train-rmse",
+                "rmse_val": "val-rmse",
+            },
+            filename="checkpoint",
+            results_postprocessing_fn=lambda r: st.add_nb_features_to_results(r, 7),
+            score_attr="rmse_val",
+            score_mode="min",
+        )
+
+    def _evals_log(self, train_rmses, val_rmses):
+        from collections import OrderedDict
+
+        # XGBoost passes evals_log[set_name][metric_name] = list of historical
+        # values; the callback reads the last entry of each list as "current".
+        return OrderedDict(
+            [
+                (
+                    "train",
+                    OrderedDict(
+                        [("r2", [0.0] * len(train_rmses)), ("rmse", list(train_rmses))]
+                    ),
+                ),
+                (
+                    "val",
+                    OrderedDict(
+                        [("r2", [0.0] * len(val_rmses)), ("rmse", list(val_rmses))]
+                    ),
+                ),
+            ]
+        )
+
+    def test_invalid_score_mode_raises(self):
+        with self.assertRaises(ValueError):
+            st._RitmeXGBCheckpointCallback(
+                metrics={"rmse_val": "val-rmse"},
+                filename="checkpoint",
+                results_postprocessing_fn=lambda r: r,
+                score_attr="rmse_val",
+                score_mode="invalid",
+            )
+
+    def test_after_iteration_writes_safety_checkpoint_only_on_first_improvement(self):
+        # Hybrid: exactly one Ray Tune checkpoint write during iteration (the
+        # first improvement). All other improvements are in-memory only.
+        # _report_metrics is called every non-write iteration so ASHA can prune.
+        callback = self._make_callback()
+        model = MagicMock()
+        # save_raw is called on improvements; return distinct payloads so we
+        # can assert in-memory snapshot was updated to the *latest* improvement.
+        model.save_raw.side_effect = [bytearray(b"snap0"), bytearray(b"snap2")]
+
+        val_rmses = [0.50, 0.52, 0.40, 0.45]  # improvements at 0 and 2
+        train_rmses = [0.40] * len(val_rmses)
+
+        with patch.object(
+            callback, "_save_and_report_checkpoint"
+        ) as mock_save, patch.object(callback, "_report_metrics") as mock_report:
+            for epoch in range(len(val_rmses)):
+                callback.after_iteration(
+                    model,
+                    epoch,
+                    self._evals_log(train_rmses[: epoch + 1], val_rmses[: epoch + 1]),
+                )
+
+        # Exactly one Ray Tune checkpoint write -- on the first improvement.
+        mock_save.assert_called_once()
+        first_call_dict = mock_save.call_args.args[0]
+        self.assertEqual(first_call_dict["rmse_val"], 0.50)
+        self.assertEqual(first_call_dict["nb_features"], 7)
+        # Remaining iterations report metrics only (cheap, no checkpoint).
+        self.assertEqual(mock_report.call_count, len(val_rmses) - 1)
+        # In-memory best snapshot updated on every improvement (2 total).
+        self.assertEqual(model.save_raw.call_count, 2)
+        self.assertEqual(callback._best_score, 0.40)
+        self.assertEqual(callback._best_model_bytes, bytearray(b"snap2"))
+        self.assertEqual(callback._best_report_dict["nb_features"], 7)
+        # Safety-write flag flipped exactly once.
+        self.assertTrue(callback._wrote_safety_checkpoint)
+        # Reported metric dicts always carry nb_features (postprocessing fn).
+        for c in mock_report.call_args_list:
+            self.assertEqual(c.args[0]["nb_features"], 7)
+            self.assertIn("rmse_val", c.args[0])
+
+    def test_after_training_writes_final_checkpoint_from_in_memory_best(self):
+        callback = self._make_callback()
+        model = MagicMock()
+        model.save_raw.return_value = bytearray(b"best_state")
+
+        # Patch _save_and_report_checkpoint and _report_metrics across both
+        # the iteration loop and the after_training call so the iter-0 safety
+        # write is captured (and doesn't try to call into Ray Tune).
+        with patch.object(
+            callback, "_save_and_report_checkpoint"
+        ) as mock_save, patch.object(callback, "_report_metrics"):
+            # One improvement at iter 0 (safety write), then no improvement.
+            callback.after_iteration(model, 0, self._evals_log([0.4], [0.5]))
+            callback.after_iteration(model, 1, self._evals_log([0.4, 0.4], [0.5, 0.6]))
+
+            # Patch booster construction so we can verify it's loaded from
+            # the in-memory snapshot, then handed to _save_and_report_checkpoint.
+            loaded_booster = MagicMock()
+            with patch(
+                "ritme.model_space.static_trainables.xgb.Booster",
+                return_value=loaded_booster,
+            ) as mock_booster_cls:
+                callback.after_training(model)
+
+        # Two Ray Tune checkpoint writes total: safety write + final write.
+        self.assertEqual(mock_save.call_count, 2)
+        # Safety write (iter 0): handed the *current* booster, val-rmse=0.5.
+        first_dict, first_model = mock_save.call_args_list[0].args
+        self.assertEqual(first_dict["rmse_val"], 0.5)
+        self.assertIs(first_model, model)
+        # Final write (after_training): reconstructed booster from in-memory
+        # bytes, with the *best* report dict.
+        mock_booster_cls.assert_called_once_with()
+        loaded_booster.load_model.assert_called_once_with(bytearray(b"best_state"))
+        last_dict, last_model = mock_save.call_args_list[1].args
+        self.assertEqual(last_dict["rmse_val"], 0.5)
+        self.assertEqual(last_dict["nb_features"], 7)
+        self.assertIs(last_model, loaded_booster)
+
+    def test_after_training_falls_back_when_no_improvement_recorded(self):
+        # If no iteration ever recorded an improvement (e.g. NaN scores
+        # throughout), the callback must still emit a checkpoint at end so
+        # downstream retrieval works.
+        callback = self._make_callback()
+        model = MagicMock()
+        # Drive one iteration with NaN so _evals_log gets stored.
+        with patch.object(callback, "_report_metrics"):
+            callback.after_iteration(
+                model, 0, self._evals_log([float("nan")], [float("nan")])
+            )
+        self.assertIsNone(callback._best_model_bytes)
+
+        with patch.object(callback, "_save_and_report_checkpoint") as mock_save:
+            callback.after_training(model)
+        mock_save.assert_called_once()
+        # Falls back to writing the *current* model, not a reloaded best.
+        self.assertIs(mock_save.call_args.args[1], model)
+
+    def test_nan_score_does_not_qualify_as_improvement(self):
+        callback = self._make_callback()
+        model = MagicMock()
+        with patch.object(callback, "_report_metrics") as mock_report:
+            callback.after_iteration(
+                model, 0, self._evals_log([float("nan")], [float("nan")])
+            )
+        # No in-memory snapshot taken on NaN.
+        model.save_raw.assert_not_called()
+        self.assertIsNone(callback._best_model_bytes)
+        # But metrics are still reported every iter.
+        mock_report.assert_called_once()
+
+
+class TestNNTuneReportCheckpointCallback(unittest.TestCase):
+    """Unit tests for the decoupled PyTorch Lightning callback.
+
+    Verifies that ``_handle`` reports metrics on every call (so ASHA can
+    prune), persists Lightning checkpoints on every improvement to a per-trial
+    scratch dir, and writes Ray Tune checkpoints at exactly two points per
+    trial: a safety write on the *first* improvement (so paused-then-killed
+    HyperBand trials still have a checkpoint) and a final write at
+    ``on_train_end`` of the best validation state seen.
+    """
+
+    def _make_callback(self):
+        return st.NNTuneReportCheckpointCallback(
+            metrics={
+                "rmse_val": "val_rmse",
+                "rmse_train": "train_rmse",
+            },
+            filename="checkpoint",
+            on="validation_end",
+            nb_features=11,
+        )
+
+    def _trainer_with_score(self, val_rmse):
+        trainer = MagicMock()
+        trainer.sanity_checking = False
+        # _get_report_dict reads trainer.callback_metrics[metric].item()
+        train_metric = MagicMock()
+        train_metric.item.return_value = 0.42
+        val_metric = MagicMock()
+        val_metric.item.return_value = val_rmse
+        trainer.callback_metrics = {
+            "val_rmse": val_metric,
+            "train_rmse": train_metric,
+        }
+        return trainer
+
+    def test_handle_writes_safety_checkpoint_only_on_first_improvement(self):
+        callback = self._make_callback()
+        val_rmses = [0.5, 0.6, 0.4, 0.45, 0.42]
+        improvements = {0, 2}  # 0.5 < inf; 0.4 < 0.5
+
+        # Track which trainers had save_checkpoint called.
+        trainers = [self._trainer_with_score(v) for v in val_rmses]
+
+        ckpt_path = (
+            "ritme.model_space.static_trainables.ray.train" ".Checkpoint.from_directory"
+        )
+        with patch(ckpt_path, return_value="fake_safety_ckpt") as mock_from_dir, patch(
+            "ritme.model_space.static_trainables.tune.report"
+        ) as mock_report:
+            for trainer in trainers:
+                callback._handle(trainer, MagicMock())
+
+        # tune.report is called every iteration.
+        self.assertEqual(mock_report.call_count, len(val_rmses))
+
+        # Exactly one call carries a Ray Tune checkpoint kwarg -- the very
+        # first improvement (idx 0). The other 4 calls are metric-only.
+        with_ckpt = [
+            i
+            for i, c in enumerate(mock_report.call_args_list)
+            if "checkpoint" in c.kwargs
+        ]
+        self.assertEqual(with_ckpt, [0])
+        self.assertEqual(
+            mock_report.call_args_list[0].kwargs["checkpoint"], "fake_safety_ckpt"
+        )
+        # ``ray.train.Checkpoint.from_directory`` was invoked exactly once
+        # during _handle (the safety write).
+        mock_from_dir.assert_called_once()
+
+        # Every report dict carries nb_features.
+        for report_call in mock_report.call_args_list:
+            self.assertEqual(report_call.args[0]["nb_features"], 11)
+
+        # trainer.save_checkpoint is called only on improvements (per-trial
+        # scratch-dir snapshots, no Ray Tune visibility).
+        save_calls = [i for i, t in enumerate(trainers) if t.save_checkpoint.called]
+        self.assertEqual(set(save_calls), improvements)
+
+        # State after run.
+        self.assertEqual(callback._best_score, 0.4)
+        self.assertIsNotNone(callback._best_scratch_dir)
+        self.assertIsNotNone(callback._best_report_dict)
+        self.assertEqual(callback._best_report_dict["rmse_val"], 0.4)
+        self.assertTrue(callback._wrote_safety_checkpoint)
+
+        # Cleanup: scratch dir was created on disk.
+        if callback._best_scratch_dir and os.path.isdir(callback._best_scratch_dir):
+            shutil.rmtree(callback._best_scratch_dir, ignore_errors=True)
+
+    def test_sanity_checking_short_circuits(self):
+        callback = self._make_callback()
+        trainer = self._trainer_with_score(0.1)
+        trainer.sanity_checking = True
+        with patch("ritme.model_space.static_trainables.tune.report") as mock_report:
+            callback._handle(trainer, MagicMock())
+        mock_report.assert_not_called()
+        trainer.save_checkpoint.assert_not_called()
+        self.assertIsNone(callback._best_scratch_dir)
+
+    def test_on_train_end_reports_best_from_scratch_dir(self):
+        callback = self._make_callback()
+        # Simulate one prior improvement: scratch dir exists, best dict set.
+        scratch = tempfile.mkdtemp(prefix="ritme_nn_best_test_")
+        callback._best_scratch_dir = scratch
+        callback._best_report_dict = {"rmse_val": 0.4, "nb_features": 11}
+        try:
+            ckpt_path = (
+                "ritme.model_space.static_trainables.ray.train"
+                ".Checkpoint.from_directory"
+            )
+            with patch(
+                ckpt_path, return_value="fake_checkpoint"
+            ) as mock_from_dir, patch(
+                "ritme.model_space.static_trainables.tune.report"
+            ) as mock_report:
+                callback.on_train_end(self._trainer_with_score(0.99), MagicMock())
+            mock_from_dir.assert_called_once_with(scratch)
+            mock_report.assert_called_once()
+            # Reported dict is the *best* one tracked, not the trainer's
+            # current state, and the Ray checkpoint is attached.
+            self.assertEqual(mock_report.call_args.args[0]["rmse_val"], 0.4)
+            self.assertEqual(
+                mock_report.call_args.kwargs.get("checkpoint"), "fake_checkpoint"
+            )
+            # Scratch dir is cleaned up after the report.
+            self.assertFalse(os.path.isdir(scratch))
+            self.assertIsNone(callback._best_scratch_dir)
+        finally:
+            if os.path.isdir(scratch):
+                shutil.rmtree(scratch, ignore_errors=True)
+
+    def test_on_train_end_falls_back_when_no_improvement_recorded(self):
+        # No prior improvement: must still report a checkpoint built from the
+        # current trainer state so downstream retrieval works.
+        callback = self._make_callback()
+        ckpt_cm = MagicMock()
+        ckpt_cm.__enter__ = MagicMock(return_value="fallback_checkpoint")
+        ckpt_cm.__exit__ = MagicMock(return_value=False)
+        with patch.object(
+            callback, "_get_checkpoint", return_value=ckpt_cm
+        ) as mock_ckpt, patch(
+            "ritme.model_space.static_trainables.tune.report"
+        ) as mock_report:
+            callback.on_train_end(self._trainer_with_score(0.7), MagicMock())
+        mock_ckpt.assert_called_once()
+        mock_report.assert_called_once()
+        self.assertEqual(
+            mock_report.call_args.kwargs.get("checkpoint"), "fallback_checkpoint"
+        )

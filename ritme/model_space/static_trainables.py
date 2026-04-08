@@ -1,8 +1,11 @@
 """Module with tune trainables of all static models"""
 
+import math
 import os
 import pickle
 import random
+import shutil
+import tempfile
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import joblib
@@ -539,6 +542,29 @@ def load_data(X_train, y_train, X_val, y_val, config, seed_model):
 
 
 class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
+    """PyTorch Lightning callback that decouples metric reports from checkpoint writes.
+
+    Reports metrics to Ray Tune after every validation epoch (so the ASHA
+    scheduler can prune trials and intermediate progress is logged), and writes
+    **at most two** Ray Tune checkpoints per trial:
+
+    1. A safety write on the *first* validation improvement, so trials that
+       are paused-then-killed by HyperBand still have at least one checkpoint
+       on disk (otherwise ``result.checkpoint`` is ``None`` and downstream
+       retrieval crashes).
+    2. A final write in ``on_train_end`` containing the best validation state
+       seen during the run -- score-based retention by ``CheckpointConfig``
+       keeps the better of the two.
+
+    Improvements *between* the first and the last are saved to a per-trial
+    scratch directory only (no ``tune.report(checkpoint=...)`` call), so the
+    experiment-state snapshotter is not triggered for them. Bounding writes to
+    two per trial keeps it from being saturated by concurrent trials.
+
+    Also injects ``nb_features`` into every reported metric dict (used by
+    ``evaluate_models.py``).
+    """
+
     def __init__(
         self,
         metrics: Optional[Union[str, List[str], Dict[str, str]]] = None,
@@ -546,22 +572,96 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
         save_checkpoints: bool = True,
         on: Union[str, List[str]] = "validation_end",
         nb_features: int = None,
+        score_attr: str = "rmse_val",
+        score_mode: str = "min",
     ):
         super().__init__(
             metrics=metrics, filename=filename, save_checkpoints=save_checkpoints, on=on
         )
         self.nb_features = nb_features
+        if score_mode not in ("min", "max"):
+            raise ValueError(f"score_mode must be 'min' or 'max', got {score_mode!r}")
+        self._score_attr = score_attr
+        self._score_mode = score_mode
+        self._best_score = float("inf") if score_mode == "min" else float("-inf")
+        # Per-trial scratch dir holding the best Lightning checkpoint seen so
+        # far. Lazily created on first improvement; cleaned up at on_train_end
+        # after the contents have been reported to Ray Tune.
+        self._best_scratch_dir: Optional[str] = None
+        self._best_report_dict: Optional[Dict] = None
+        # Tracks whether the first-improvement safety checkpoint has been
+        # written. Used so we only pay the Ray Tune write cost once during
+        # training (before the second write at on_train_end).
+        self._wrote_safety_checkpoint = False
+
+    def _is_improvement(self, score) -> bool:
+        if score is None:
+            return False
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            return False
+        if math.isnan(score):
+            return False
+        if self._score_mode == "min":
+            return score < self._best_score
+        return score > self._best_score
+
+    def _build_report_dict(self, trainer, pl_module):
+        report_dict = self._get_report_dict(trainer, pl_module)
+        if not report_dict:
+            return None
+        report_dict["nb_features"] = self.nb_features
+        return report_dict
+
+    def _ensure_scratch_dir(self) -> str:
+        if self._best_scratch_dir is None:
+            self._best_scratch_dir = tempfile.mkdtemp(prefix="ritme_nn_best_")
+        return self._best_scratch_dir
 
     def _handle(self, trainer: Trainer, pl_module: LightningModule):
-        # CUSTOM: includes also nb_features in report
         if trainer.sanity_checking:
             return
 
-        report_dict = self._get_report_dict(trainer, pl_module)
-        report_dict["nb_features"] = self.nb_features
-        if not report_dict:
+        report_dict = self._build_report_dict(trainer, pl_module)
+        if report_dict is None:
             return
 
+        score = report_dict.get(self._score_attr)
+        improved = self._is_improvement(score)
+        if improved:
+            self._best_score = score
+            scratch_dir = self._ensure_scratch_dir()
+            # Overwrite previous best on local disk (no Ray Tune visibility).
+            trainer.save_checkpoint(os.path.join(scratch_dir, self._filename))
+            self._best_report_dict = dict(report_dict)
+
+        if improved and not self._wrote_safety_checkpoint:
+            # Safety write: ensure paused-then-killed trials have a checkpoint.
+            self._wrote_safety_checkpoint = True
+            checkpoint = ray.train.Checkpoint.from_directory(self._best_scratch_dir)
+            tune.report(report_dict, checkpoint=checkpoint)
+        else:
+            # Cheap metric-only report so ASHA can prune.
+            tune.report(report_dict)
+
+    def on_train_end(self, trainer, pl_module):
+        # Final write of the best validation state seen during training.
+        if self._best_scratch_dir is not None and self._best_report_dict is not None:
+            checkpoint = ray.train.Checkpoint.from_directory(self._best_scratch_dir)
+            tune.report(self._best_report_dict, checkpoint=checkpoint)
+            # Ray Tune copies the checkpoint contents synchronously into its
+            # storage during tune.report, so the scratch dir is safe to remove.
+            shutil.rmtree(self._best_scratch_dir, ignore_errors=True)
+            self._best_scratch_dir = None
+            return
+
+        # Fallback: no improvement was ever recorded (e.g. NaN loss every
+        # epoch). Persist the current trainer state so downstream retrieval
+        # still works.
+        report_dict = self._build_report_dict(trainer, pl_module) or {
+            "nb_features": self.nb_features
+        }
         with self._get_checkpoint(trainer) as checkpoint:
             tune.report(report_dict, checkpoint=checkpoint)
 
@@ -657,7 +757,7 @@ def train_nn(
                 "loss_train": "train_loss",
             },
             filename="checkpoint",
-            on="train_end",
+            on="validation_end",
             nb_features=X_train.shape[1],
         ),
         EarlyStopping(
@@ -757,6 +857,108 @@ def add_nb_features_to_results(results, nb_features):
     return results
 
 
+class _RitmeXGBCheckpointCallback(xgb_cc):
+    """XGBoost callback that decouples metric reporting from checkpoint writes.
+
+    Reports metrics to Ray Tune on every boosting iteration so the ASHA
+    scheduler always has fresh data to prune trials, and writes **at most two**
+    Ray Tune checkpoints per trial:
+
+    1. A safety write on the *first* validation improvement, so trials that
+       are paused-then-killed by HyperBand still have at least one checkpoint
+       on disk (otherwise ``result.checkpoint`` is ``None`` and downstream
+       retrieval crashes).
+    2. A final write in ``after_training`` containing the best booster seen
+       during the run -- score-based retention by ``CheckpointConfig`` keeps
+       the better of the two.
+
+    Improvements *between* the first and the last are held in memory only
+    (``Booster.save_raw`` returns a compact UBJSON bytearray), so per-iteration
+    disk I/O stays at zero. Bounding writes to two per trial keeps the
+    experiment-state snapshotter from being saturated by concurrent trials.
+
+    Parent's ``checkpoint_at_end`` handling is disabled because it would
+    persist the *last* iteration's state, which for trials that overfit early
+    is worse than the best historical state we track in-memory.
+    """
+
+    def __init__(
+        self,
+        metrics,
+        filename,
+        results_postprocessing_fn,
+        score_attr,
+        score_mode,
+    ):
+        super().__init__(
+            metrics=metrics,
+            filename=filename,
+            frequency=0,
+            checkpoint_at_end=False,
+            results_postprocessing_fn=results_postprocessing_fn,
+        )
+        if score_mode not in ("min", "max"):
+            raise ValueError(f"score_mode must be 'min' or 'max', got {score_mode!r}")
+        self._score_attr = score_attr
+        self._score_mode = score_mode
+        self._best_score = float("inf") if score_mode == "min" else float("-inf")
+        # In-memory snapshot of the best booster seen so far. ``save_raw`` is
+        # cheap (a few KB to a few MB) and avoids per-iteration disk I/O.
+        self._best_model_bytes: Optional[bytearray] = None
+        self._best_report_dict: Optional[Dict] = None
+        # Tracks whether the first-improvement safety checkpoint has been
+        # written. Used so we only pay the Ray Tune write cost once during
+        # training (before the second write at after_training).
+        self._wrote_safety_checkpoint = False
+
+    def _is_improvement(self, score) -> bool:
+        if score is None:
+            return False
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            return False
+        if math.isnan(score):
+            return False
+        if self._score_mode == "min":
+            return score < self._best_score
+        return score > self._best_score
+
+    def after_iteration(self, model, epoch, evals_log):
+        self._evals_log = evals_log
+        report_dict = self._get_report_dict(evals_log)
+        score = report_dict.get(self._score_attr)
+        improved = self._is_improvement(score)
+        if improved:
+            self._best_score = score
+            # Snapshot the booster state in-memory (no disk I/O).
+            self._best_model_bytes = model.save_raw(raw_format="ubj")
+            self._best_report_dict = dict(report_dict)
+
+        if improved and not self._wrote_safety_checkpoint:
+            # Safety write: ensure paused-then-killed trials have a checkpoint.
+            self._wrote_safety_checkpoint = True
+            self._save_and_report_checkpoint(report_dict, model)
+        else:
+            # Cheap metric-only report so ASHA can prune.
+            self._report_metrics(report_dict)
+
+    def after_training(self, model):
+        # Final write of the best booster seen during training.
+        if self._best_model_bytes is not None:
+            best_booster = xgb.Booster()
+            best_booster.load_model(bytearray(self._best_model_bytes))
+            self._save_and_report_checkpoint(self._best_report_dict, best_booster)
+            return model
+
+        # Fallback: no improvement was ever recorded (e.g. NaN val-rmse for
+        # every iteration). Persist the current model state so downstream
+        # retrieval still works.
+        report_dict = self._get_report_dict(self._evals_log) if self._evals_log else {}
+        self._save_and_report_checkpoint(report_dict, model)
+        return model
+
+
 def custom_xgb_metric(
     predt: np.ndarray, dtrain: xgb.DMatrix
 ) -> List[Tuple[str, float]]:
@@ -815,10 +1017,9 @@ def train_xgb(
 
     _save_taxonomy(tax)
     # ! model
-    # Initialize the checkpoint callback - which is built-in support for xgb
-    # models in Ray Tune
-    checkpoint_callback = xgb_cc(
-        # tune:xgboost
+    # Decoupled metric/checkpoint reporting: per-iteration metrics for ASHA,
+    # checkpoint writes only on validation improvement.
+    checkpoint_callback = _RitmeXGBCheckpointCallback(
         metrics={
             "r2_train": "train-r2",
             "r2_val": "val-r2",
@@ -829,7 +1030,8 @@ def train_xgb(
         results_postprocessing_fn=lambda results: add_nb_features_to_results(
             results, X_train.shape[1]
         ),
-        frequency=1,
+        score_attr="rmse_val",
+        score_mode="min",
     )
     patience = max(10, int(0.1 * config["n_estimators"]))
     xgb.train(
