@@ -97,7 +97,7 @@ def compute_shap_values(
         sv = explainer.shap_values(xgb.DMatrix(X_test))
         explanation = shap.Explanation(
             values=sv,
-            base_values=explainer.expected_value,
+            base_values=np.atleast_1d(explainer.expected_value),
             data=X_test.values,
             feature_names=X_test.columns.tolist(),
         )
@@ -105,7 +105,7 @@ def compute_shap_values(
         sv = explainer.shap_values(X_test.values)
         explanation = shap.Explanation(
             values=np.array(sv),
-            base_values=explainer.expected_value,
+            base_values=np.atleast_1d(explainer.expected_value),
             data=X_test.values,
             feature_names=X_test.columns.tolist(),
         )
