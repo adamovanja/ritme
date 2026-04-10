@@ -281,7 +281,7 @@ class TestTrainables(unittest.TestCase):
             max_features=config["max_features"],
             min_impurity_decrease=config["min_impurity_decrease"],
             bootstrap=config["bootstrap"],
-            n_jobs=None,
+            n_jobs=1,
             random_state=0,
         )
         mock_rf_instance.fit.assert_called_once()
@@ -345,7 +345,9 @@ class TestTrainables(unittest.TestCase):
             self.tax,
         )
 
-        # Assert
+        # Assert nthread is set to default cpus_per_trial and no GPU device
+        self.assertEqual(config["nthread"], 1)
+        self.assertNotIn("device", config)
         mock_process_train.assert_called_once_with(
             config,
             self.train_val,
@@ -363,6 +365,44 @@ class TestTrainables(unittest.TestCase):
         )
         mock_xgb_train.assert_called_once()
         mock_checkpoint.assert_called_once()
+
+    @patch("ritme.model_space.static_trainables._save_taxonomy")
+    @patch("ritme.model_space.static_trainables.process_train")
+    @patch("ritme.model_space.static_trainables.xgb.DMatrix")
+    @patch("ritme.model_space.static_trainables.xgb.train")
+    @patch("ritme.model_space.static_trainables._RitmeXGBCheckpointCallback")
+    def test_train_xgb_with_gpu(
+        self,
+        mock_checkpoint,
+        mock_xgb_train,
+        mock_dmatrix,
+        mock_process_train,
+        mock_save_taxonomy,
+    ):
+        config = {"n_estimators": 100}
+        mock_process_train.return_value = (
+            np.zeros((2, 2)),
+            np.zeros(2),
+            np.zeros((1, 2)),
+            np.zeros(1),
+        )
+        mock_dmatrix.return_value = None
+
+        st.train_xgb(
+            config,
+            self.train_val,
+            self.target,
+            self.host_id,
+            None,
+            self.seed_data,
+            self.seed_model,
+            self.tax,
+            cpus_per_trial=4,
+            gpus_per_trial=1,
+        )
+
+        self.assertEqual(config["nthread"], 4)
+        self.assertEqual(config["device"], "cuda")
 
     @parameterized.expand(
         [
@@ -448,7 +488,9 @@ class TestTrainables(unittest.TestCase):
             seed_data,
             stratify_by=None,
         )
-        mock_load_data.assert_called()
+        # Verify DataLoader workers scale with cpus_per_trial (default=1 → 0 workers)
+        load_data_call = mock_load_data.call_args
+        self.assertEqual(load_data_call.kwargs.get("num_workers"), 0)
         mock_neural_net.assert_called_once_with(
             n_units=nb_units,
             learning_rate=0.01,
@@ -542,6 +584,7 @@ class TestTrainableLogging(unittest.TestCase):
                     stratify_by=None,
                     tax=self.tax,
                     tree_phylo=self.tree_phylo,
+                    cpus_per_trial=1,
                 ),
                 param_space=search_space,
                 tune_config=tune.TuneConfig(metric=metric, mode=mode, num_samples=1),

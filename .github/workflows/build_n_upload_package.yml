@@ -7,19 +7,24 @@ on:
 jobs:
   build-conda-package:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
     env:
       TZ: 'UTC'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # necessary for versioneer to derive the package version from git tags
+          fetch-depth: 0
       - name: Set up Miniconda
-        uses: conda-incubator/setup-miniconda@v2
+        uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: 'latest'
-          auto-update-conda: true
           activate-environment: build-env
           python-version: '3.10'
       - name: Install conda-build and anaconda-client
-        run: conda install -n build-env -y mamba conda-build anaconda-client
+        run: conda install -n build-env -y conda-build anaconda-client
       - name: Build Conda Package
         id: build
         run: |
@@ -29,13 +34,13 @@ jobs:
 
           # Capture the package path without building
           PACKAGE_PATH=$(conda run -n build-env conda build --no-test \
-            -c conda-forge -c bioconda -c pytorch -c defaults \
+            -c conda-forge \
             --croot $CONDA_BUILD_ROOT \
             ci/recipe --output)
 
           # Build the package using the specified build root
           conda run -n build-env conda build --no-test \
-            -c conda-forge -c bioconda -c pytorch -c defaults \
+            -c conda-forge \
             --croot $CONDA_BUILD_ROOT \
             ci/recipe
 
@@ -47,4 +52,4 @@ jobs:
           ANACONDA_USER: adamova
         run: |
           # Upload the built package using the captured path
-          conda run -n build-env anaconda upload "${{ steps.build.outputs.package_path }}" --user $ANACONDA_USER
+          conda run -n build-env anaconda upload --force "${{ steps.build.outputs.package_path }}" --user $ANACONDA_USER

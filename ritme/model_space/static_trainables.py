@@ -135,6 +135,8 @@ def train_linreg(
     seed_model: int,
     tax: pd.DataFrame = pd.DataFrame(),
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -231,6 +233,8 @@ def train_trac(
     seed_model: int,
     tax: pd.DataFrame,
     tree_phylo: skbio.TreeNode,
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
 ) -> None:
     """
     Train a trac model and report the results to Ray Tune.
@@ -292,6 +296,8 @@ def train_rf(
     seed_model: int,
     tax: pd.DataFrame = pd.DataFrame(),
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -303,6 +309,7 @@ def train_rf(
     host_id (str): The host ID.
     seed_data (int): The seed for the data.
     seed_model (int): The seed for the model.
+    cpus_per_trial (int): Number of CPUs allocated by Ray Tune for this trial.
 
     Returns:
     None
@@ -324,9 +331,7 @@ def train_rf(
         max_features=config["max_features"],
         min_impurity_decrease=config["min_impurity_decrease"],
         bootstrap=config["bootstrap"],
-        # ray tune uses joblib for parallelization - so this makes sure all
-        # available resources are used
-        n_jobs=None,
+        n_jobs=cpus_per_trial,
         # set randomness
         random_state=seed_model,
     )
@@ -507,7 +512,7 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
-def load_data(X_train, y_train, X_val, y_val, config, seed_model):
+def load_data(X_train, y_train, X_val, y_val, config, seed_model, num_workers=2):
     # fixed data loader - for reference on reproducibility:
     # https://docs.pytorch.org/docs/stable/notes/randomness.html
 
@@ -527,14 +532,14 @@ def load_data(X_train, y_train, X_val, y_val, config, seed_model):
         train_dataset,
         batch_size=config["batch_size"],
         shuffle=True,
-        num_workers=2,
+        num_workers=num_workers,
         worker_init_fn=seed_worker,
         generator=g,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=config["batch_size"],
-        num_workers=2,
+        num_workers=num_workers,
         worker_init_fn=seed_worker,
         generator=g,
     )
@@ -676,7 +681,12 @@ def train_nn(
     seed_model,
     stratify_by,
     nn_type="regression",
+    cpus_per_trial=1,
+    gpus_per_trial=0,
 ):
+    # Limit PyTorch threads to Ray-allocated CPUs to avoid oversubscription
+    torch.set_num_threads(cpus_per_trial)
+
     # Force deterministic algorithms and disable benchmark
     torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.deterministic = True
@@ -693,8 +703,10 @@ def train_nn(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
 
+    # Scale DataLoader workers to allocated CPUs (reserve at least 1 for training)
+    num_workers = max(0, cpus_per_trial - 1)
     train_loader, val_loader = load_data(
-        X_train, y_train, X_val, y_val, config, seed_model
+        X_train, y_train, X_val, y_val, config, seed_model, num_workers=num_workers
     )
 
     # Model
@@ -789,6 +801,8 @@ def train_nn_reg(
     seed_model,
     tax,
     tree_phylo,
+    cpus_per_trial=1,
+    gpus_per_trial=0,
 ):
     train_nn(
         config,
@@ -800,6 +814,8 @@ def train_nn_reg(
         seed_model,
         stratify_by,
         nn_type="regression",
+        cpus_per_trial=cpus_per_trial,
+        gpus_per_trial=gpus_per_trial,
     )
 
 
@@ -813,6 +829,8 @@ def train_nn_class(
     seed_model,
     tax,
     tree_phylo,
+    cpus_per_trial=1,
+    gpus_per_trial=0,
 ):
     train_nn(
         config,
@@ -824,6 +842,8 @@ def train_nn_class(
         seed_model,
         stratify_by,
         nn_type="classification",
+        cpus_per_trial=cpus_per_trial,
+        gpus_per_trial=gpus_per_trial,
     )
 
 
@@ -837,6 +857,8 @@ def train_nn_corn(
     seed_model,
     tax,
     tree_phylo,
+    cpus_per_trial=1,
+    gpus_per_trial=0,
 ):
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
@@ -849,6 +871,8 @@ def train_nn_corn(
         seed_model,
         stratify_by,
         nn_type="ordinal_regression",
+        cpus_per_trial=cpus_per_trial,
+        gpus_per_trial=gpus_per_trial,
     )
 
 
@@ -986,6 +1010,8 @@ def train_xgb(
     seed_model: int,
     tax: pd.DataFrame = pd.DataFrame(),
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
 ) -> None:
     """
     Train an XGBoost model and report the results to Ray Tune.
@@ -999,10 +1025,18 @@ def train_xgb(
     seed_model (int): The seed for the model.
     tax (pd.DataFrame): Taxonomy data.
     tree_phylo (skbio.TreeNode): Phylogenetic tree.
+    cpus_per_trial (int): Number of CPUs allocated by Ray Tune for this trial.
+    gpus_per_trial (int): Number of GPUs allocated by Ray Tune for this trial.
 
     Returns:
     None
     """
+    # Limit XGBoost threads to Ray-allocated CPUs to avoid oversubscription
+    config["nthread"] = cpus_per_trial
+    # Use GPU when allocated by Ray Tune
+    if gpus_per_trial > 0:
+        config["device"] = "cuda"
+
     # ! process dataset
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
