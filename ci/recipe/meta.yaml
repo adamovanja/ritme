@@ -25,7 +25,7 @@ requirements:
     - importlib-metadata
     - conda-forge::ipywidgets
     - lightning
-    - mlflow
+    - mlflow >=2.0
     - nbformat
     - numpy
     - optuna

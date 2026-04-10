@@ -236,12 +236,13 @@ def run_trials(
         # If not a SLURM process, default values are used
         resources = _get_resources(max_concurrent_trials)
 
-    # Fun facts about trainables and their parallelization/GPU capabilities:
-    # - linreg: not parallelizable + CPU-based
-    # - trac: solver Path-Alg not parallelized by default + Classo is a
-    #   CPU-based library
-    # - rf: parallel processing supported but no GPU support
-    # - xgb, nn_reg, nn_class, nn_corn: parallel processing supported with GPU support
+    # Trainable parallelization & GPU capabilities:
+    # - linreg: not parallelizable, CPU-only
+    # - trac: solver Path-Alg not parallelized, CPU-only (Classo)
+    # - rf: parallel via n_jobs, CPU-only
+    # - xgb: parallel via nthread, GPU via device='cuda' when allocated
+    # - nn_reg, nn_class, nn_corn: parallel via torch threads, GPU auto-detected
+    #   by Lightning via CUDA_VISIBLE_DEVICES set by Ray
 
     # Set seed for search algorithms/schedulers
     random.seed(seed_model)
@@ -291,6 +292,10 @@ def run_trials(
 
     callbacks = _define_callbacks(tracking_uri, exp_name, experiment_tag)
 
+    # Inject allocated resource counts so trainables can configure parallelism
+    cpus_per_trial = resources.get("cpu", 1)
+    gpus_per_trial = resources.get("gpu", 0)
+
     analysis = tune.Tuner(
         # Trainable with input parameters passed and set resources
         tune.with_resources(
@@ -304,6 +309,8 @@ def run_trials(
                 seed_model=seed_model,
                 tax=tax,
                 tree_phylo=tree_phylo,
+                cpus_per_trial=cpus_per_trial,
+                gpus_per_trial=gpus_per_trial,
             ),
             resources,
         ),
