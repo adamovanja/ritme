@@ -259,6 +259,7 @@ class TestFindBestModelConfig(unittest.TestCase):
                 fully_reproducible=False,
                 model_hyperparameters={},
                 optuna_searchspace_sampler="TPESampler",
+                task_type="regression",
             )
             # Verify temp storage paths are NOT under path_exp
             self.assertNotEqual(args[8], os.path.join(path_exp, "mlruns"))

@@ -245,6 +245,7 @@ def find_best_model_config(
             optuna_searchspace_sampler=config.get(
                 "optuna_searchspace_sampler", "TPESampler"
             ),
+            task_type=config.get("task_type", "regression"),
         )
 
         # ! Get best models of this experiment

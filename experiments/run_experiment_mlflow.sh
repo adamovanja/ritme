@@ -1,4 +1,19 @@
 #!/bin/bash
+# Usage: ./run_experiment_mlflow.sh [regression|classification]
+#   Default: regression
+
+TASK_TYPE="${1:-regression}"
+
+if [[ "$TASK_TYPE" == "regression" ]]; then
+  CONFIG="../config/trials_mlflow.json"
+  EXP_TAG="trials_mlflow"
+elif [[ "$TASK_TYPE" == "classification" ]]; then
+  CONFIG="../config/trials_mlflow_class.json"
+  EXP_TAG="trials_mlflow_class"
+else
+  echo "Unknown task type: $TASK_TYPE (expected 'regression' or 'classification')"
+  exit 1
+fi
 
 # fetch and convert data
 scripts/fetch_moving_pictures_data.sh
@@ -18,12 +33,12 @@ if [[ ! -f data_splits_mlflow/train_val.pkl ]]; then
 fi
 
 # run find-best-model-config only if logs folder empty
-if [[ -z "$(find ritme_example_logs/trials_mlflow -maxdepth 1 -mindepth 1 -print -quit)" ]]; then
+if [[ -z "$(find "ritme_example_logs/$EXP_TAG" -maxdepth 1 -mindepth 1 -print -quit 2>/dev/null)" ]]; then
   ritme find-best-model-config \
-    ../config/trials_mlflow.json data_splits_mlflow/train_val.pkl \
+    "$CONFIG" data_splits_mlflow/train_val.pkl \
     --path-to-tax data/movpic_taxonomy.tsv \
     --path-to-tree-phylo data/movpic_tree.nwk \
     --path-store-model-logs ritme_example_logs
 else
-  echo "trials_mlflow directory is not empty; not running find-best-model-config again."
+  echo "$EXP_TAG directory is not empty; not running find-best-model-config again."
 fi

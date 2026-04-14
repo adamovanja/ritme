@@ -1,0 +1,17 @@
+{
+  "experiment_tag": "example_logreg_py",
+  "fully_reproducible": true,
+  "group_by_column": null,
+  "ls_model_types": [
+    "logreg"
+  ],
+  "max_cuncurrent_trials": 5,
+  "model_hyperparameters": {},
+  "optuna_searchspace_sampler": "TPESampler",
+  "seed_data": 12,
+  "seed_model": 12,
+  "target": "body-site",
+  "task_type": "classification",
+  "time_budget_s": 120,
+  "tracking_uri": "mlruns"
+}

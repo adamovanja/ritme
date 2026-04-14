@@ -30,11 +30,11 @@ from ray import tune
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import ElasticNet
-from sklearn.metrics import r2_score, root_mean_squared_error
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import ElasticNet, LogisticRegression
+from sklearn.metrics import accuracy_score, f1_score, r2_score, root_mean_squared_error
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
@@ -61,6 +61,17 @@ def _predict_rmse_r2(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tupl
     """
     y_pred = model.predict(X)
     return root_mean_squared_error(y, y_pred), r2_score(y, y_pred)
+
+
+def _save_label_encoder(config: dict) -> None:
+    """Save label encoder from process_train config to the trial directory."""
+    le = config.pop("_label_encoder", None)
+    if le is not None:
+        le_path = os.path.join(
+            ray.tune.get_context().get_trial_dir(),
+            "label_encoder.pkl",
+        )
+        joblib.dump(le, le_path)
 
 
 def _save_sklearn_model(model: BaseEstimator) -> str:
@@ -125,6 +136,38 @@ def _report_results_manually(
     return None
 
 
+def _predict_accuracy_f1(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tuple:
+    y_pred = model.predict(X)
+    return accuracy_score(y, y_pred), f1_score(y, y_pred, average="weighted")
+
+
+def _report_classification_results_manually(
+    model: BaseEstimator,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    tax: pd.DataFrame,
+) -> None:
+    model_path = _save_sklearn_model(model)
+    _save_taxonomy(tax)
+
+    acc_train, f1_train = _predict_accuracy_f1(model, X_train, y_train)
+    acc_val, f1_val = _predict_accuracy_f1(model, X_val, y_val)
+
+    tune.report(
+        metrics={
+            "accuracy_val": acc_val,
+            "accuracy_train": acc_train,
+            "f1_weighted_val": f1_val,
+            "f1_weighted_train": f1_train,
+            "model_path": model_path,
+            "nb_features": X_train.shape[1],
+        }
+    )
+    return None
+
+
 def train_linreg(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -137,6 +180,7 @@ def train_linreg(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -235,6 +279,7 @@ def train_trac(
     tree_phylo: skbio.TreeNode,
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train a trac model and report the results to Ray Tune.
@@ -298,6 +343,7 @@ def train_rf(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -340,6 +386,88 @@ def train_rf(
     _report_results_manually(rf, X_train, y_train, X_val, y_val, tax)
 
 
+def train_logreg(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
+    task_type: str = "classification",
+) -> None:
+    X_train, y_train, X_val, y_val = process_train(
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
+    )
+    _save_label_encoder(config)
+    y_train = np.round(y_train).astype(int)
+    y_val = np.round(y_val).astype(int)
+
+    np.random.seed(seed_model)
+    logreg = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "logreg",
+                LogisticRegression(
+                    C=config["C"],
+                    penalty=config["penalty"],
+                    l1_ratio=config.get("l1_ratio"),
+                    solver="saga",
+                    max_iter=2000,
+                    random_state=seed_model,
+                ),
+            ),
+        ]
+    )
+    logreg.fit(X_train, y_train)
+
+    _report_classification_results_manually(logreg, X_train, y_train, X_val, y_val, tax)
+
+
+def train_rf_class(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
+    task_type: str = "classification",
+) -> None:
+    X_train, y_train, X_val, y_val = process_train(
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
+    )
+    _save_label_encoder(config)
+    y_train = np.round(y_train).astype(int)
+    y_val = np.round(y_val).astype(int)
+
+    np.random.seed(seed_model)
+    rf_cls = RandomForestClassifier(
+        n_estimators=config["n_estimators"],
+        max_depth=config["max_depth"],
+        min_samples_split=config["min_samples_split"],
+        min_weight_fraction_leaf=config["min_weight_fraction_leaf"],
+        min_samples_leaf=config["min_samples_leaf"],
+        max_features=config["max_features"],
+        min_impurity_decrease=config["min_impurity_decrease"],
+        bootstrap=config["bootstrap"],
+        n_jobs=cpus_per_trial,
+        random_state=seed_model,
+    )
+    rf_cls.fit(X_train, y_train)
+
+    _report_classification_results_manually(rf_cls, X_train, y_train, X_val, y_val, tax)
+
+
 class NeuralNet(LightningModule):
     def __init__(
         self,
@@ -349,11 +477,13 @@ class NeuralNet(LightningModule):
         dropout_rate=0.0,
         weight_decay=0.0,
         classes: Optional[list] = None,
+        task_type: str = "regression",
     ):
         super(NeuralNet, self).__init__()
         self.save_hyperparameters()  # This saves all passed arguments to self.hparams
         self.learning_rate = learning_rate
         self.nn_type = nn_type
+        self.task_type = task_type
         self.dropout_rate = dropout_rate
         self.weight_decay = weight_decay
 
@@ -408,12 +538,21 @@ class NeuralNet(LightningModule):
     def _calculate_metrics(self, predictions, targets):
         preds = self._prepare_predictions(predictions)
 
-        rmse = torch.sqrt(nn.functional.mse_loss(preds, targets))
-
-        r2score = torchmetrics.regression.R2Score()
-        r2 = r2score(preds, targets)
-
-        return rmse, r2
+        if self.task_type == "regression":
+            rmse = torch.sqrt(nn.functional.mse_loss(preds, targets))
+            r2score = torchmetrics.regression.R2Score().to(preds.device)
+            r2 = r2score(preds, targets)
+            return {"rmse": rmse, "r2": r2}
+        else:
+            preds_int = preds.long()
+            targets_int = targets.long()
+            acc = (preds_int == targets_int).float().mean()
+            num_classes = self.num_classes
+            f1 = torchmetrics.F1Score(
+                task="multiclass", num_classes=num_classes, average="weighted"
+            ).to(preds_int.device)
+            f1_val = f1(preds_int, targets_int)
+            return {"accuracy": acc, "f1_weighted": f1_val}
 
     def _calculate_loss(self, predictions, targets):
         # loss: corn_loss, cross-entropy or mse
@@ -476,25 +615,22 @@ class NeuralNet(LightningModule):
         loss = self._calculate_loss(all_preds, all_targets)
         self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
-        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("train_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
-        self.log("train_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+        metrics = self._calculate_metrics(all_preds, all_targets)
+        for name, value in metrics.items():
+            self.log(f"train_{name}", value, on_epoch=True, prog_bar=True, logger=True)
         self.train_predictions.clear()
         self.train_targets.clear()
 
     def on_validation_epoch_end(self):
-        # make use of all outputs from each validation_step()
         all_preds = torch.cat(self.validation_predictions)
         all_targets = torch.cat(self.validation_targets)
 
-        # do something with all preds and targets
         loss = self._calculate_loss(all_preds, all_targets)
         self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
-        # rmse and r2
-        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("val_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+        metrics = self._calculate_metrics(all_preds, all_targets)
+        for name, value in metrics.items():
+            self.log(f"val_{name}", value, on_epoch=True, prog_bar=True, logger=True)
 
         self.validation_predictions.clear()
         self.validation_targets.clear()
@@ -683,6 +819,7 @@ def train_nn(
     nn_type="regression",
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="regression",
 ):
     # Limit PyTorch threads to Ray-allocated CPUs to avoid oversubscription
     torch.set_num_threads(cpus_per_trial)
@@ -702,6 +839,8 @@ def train_nn(
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
+    if nn_type != "regression":
+        _save_label_encoder(config)
 
     # Scale DataLoader workers to allocated CPUs (reserve at least 1 for training)
     num_workers = max(0, cpus_per_trial - 1)
@@ -750,6 +889,7 @@ def train_nn(
         dropout_rate=config["dropout_rate"],
         weight_decay=config["weight_decay"],
         classes=classes,
+        task_type=task_type,
     )
 
     _save_taxonomy(tax)
@@ -758,19 +898,37 @@ def train_nn(
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    if task_type == "regression":
+        nn_metrics = {
+            "rmse_val": "val_rmse",
+            "rmse_train": "train_rmse",
+            "r2_val": "val_r2",
+            "r2_train": "train_r2",
+            "loss_val": "val_loss",
+            "loss_train": "train_loss",
+        }
+        nn_score_attr = "rmse_val"
+        nn_score_mode = "min"
+    else:
+        nn_metrics = {
+            "accuracy_val": "val_accuracy",
+            "accuracy_train": "train_accuracy",
+            "f1_weighted_val": "val_f1_weighted",
+            "f1_weighted_train": "train_f1_weighted",
+            "loss_val": "val_loss",
+            "loss_train": "train_loss",
+        }
+        nn_score_attr = "accuracy_val"
+        nn_score_mode = "max"
+
     callbacks = [
         NNTuneReportCheckpointCallback(
-            metrics={
-                "rmse_val": "val_rmse",
-                "rmse_train": "train_rmse",
-                "r2_val": "val_r2",
-                "r2_train": "train_r2",
-                "loss_val": "val_loss",
-                "loss_train": "train_loss",
-            },
+            metrics=nn_metrics,
             filename="checkpoint",
             on="validation_end",
             nb_features=X_train.shape[1],
+            score_attr=nn_score_attr,
+            score_mode=nn_score_mode,
         ),
         EarlyStopping(
             monitor="val_loss",
@@ -803,6 +961,7 @@ def train_nn_reg(
     tree_phylo,
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="regression",
 ):
     train_nn(
         config,
@@ -816,6 +975,7 @@ def train_nn_reg(
         nn_type="regression",
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
+        task_type=task_type,
     )
 
 
@@ -831,6 +991,7 @@ def train_nn_class(
     tree_phylo,
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="classification",
 ):
     train_nn(
         config,
@@ -844,6 +1005,7 @@ def train_nn_class(
         nn_type="classification",
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
+        task_type=task_type,
     )
 
 
@@ -859,6 +1021,7 @@ def train_nn_corn(
     tree_phylo,
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="classification",
 ):
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
@@ -873,6 +1036,7 @@ def train_nn_corn(
         nn_type="ordinal_regression",
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
+        task_type=task_type,
     )
 
 
@@ -1012,6 +1176,7 @@ def train_xgb(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train an XGBoost model and report the results to Ray Tune.
@@ -1078,5 +1243,93 @@ def train_xgb(
         evals=[(dtrain, "train"), (dval, "val")],
         callbacks=[checkpoint_callback],
         custom_metric=custom_xgb_metric,
+        early_stopping_rounds=patience,
+    )
+
+
+def custom_xgb_class_metric(
+    predt: np.ndarray, dtrain: xgb.DMatrix
+) -> List[Tuple[str, float]]:
+    y = dtrain.get_label().astype(int)
+    y_pred = predt.astype(int)
+    return [
+        ("accuracy", accuracy_score(y, y_pred)),
+        ("f1_weighted", f1_score(y, y_pred, average="weighted")),
+    ]
+
+
+def train_xgb_class(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
+    task_type: str = "classification",
+) -> None:
+    config["nthread"] = cpus_per_trial
+    if gpus_per_trial > 0:
+        config["device"] = "cuda"
+
+    X_train, y_train, X_val, y_val = process_train(
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
+    )
+
+    # Get label encoder for string targets (from process_train) or create
+    # one for numeric targets to ensure 0-indexed integer labels
+    le = config.pop("_label_encoder", None)
+    if le is not None:
+        # String targets: already 0-indexed by process_train
+        y_train_enc = np.round(y_train).astype(int)
+        y_val_enc = np.round(y_val).astype(int)
+    else:
+        le = LabelEncoder()
+        y_all = np.concatenate([y_train, y_val])
+        le.fit(np.round(y_all).astype(int))
+        y_train_enc = le.transform(np.round(y_train).astype(int))
+        y_val_enc = le.transform(np.round(y_val).astype(int))
+
+    config["objective"] = "multi:softmax"
+    config["num_class"] = len(le.classes_)
+
+    np.random.seed(seed_model)
+    random.seed(seed_model)
+
+    dtrain = xgb.DMatrix(X_train, label=y_train_enc)
+    dval = xgb.DMatrix(X_val, label=y_val_enc)
+
+    _save_taxonomy(tax)
+
+    # Save label encoder for prediction-time inverse transform
+    le_path = os.path.join(ray.tune.get_context().get_trial_dir(), "label_encoder.pkl")
+    joblib.dump(le, le_path)
+
+    checkpoint_callback = _RitmeXGBCheckpointCallback(
+        metrics={
+            "accuracy_train": "train-accuracy",
+            "accuracy_val": "val-accuracy",
+            "f1_weighted_train": "train-f1_weighted",
+            "f1_weighted_val": "val-f1_weighted",
+        },
+        filename="checkpoint",
+        results_postprocessing_fn=lambda results: add_nb_features_to_results(
+            results, X_train.shape[1]
+        ),
+        score_attr="accuracy_val",
+        score_mode="max",
+    )
+    patience = max(10, int(0.1 * config["n_estimators"]))
+    xgb.train(
+        config,
+        dtrain,
+        num_boost_round=config["n_estimators"],
+        evals=[(dtrain, "train"), (dval, "val")],
+        callbacks=[checkpoint_callback],
+        custom_metric=custom_xgb_class_metric,
         early_stopping_rounds=patience,
     )

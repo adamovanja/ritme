@@ -1,0 +1,20 @@
+{
+  "experiment_tag": "trials_mlflow_class",
+  "fully_reproducible": true,
+  "group_by_column": null,
+  "ls_model_types": [
+    "logreg",
+    "xgb_class",
+    "nn_class",
+    "nn_corn",
+    "rf_class"
+  ],
+  "max_cuncurrent_trials": 5,
+  "optuna_searchspace_sampler": "TPESampler",
+  "seed_data": 12,
+  "seed_model": 12,
+  "target": "body-site",
+  "task_type": "classification",
+  "time_budget_s": 300,
+  "tracking_uri": "mlruns"
+}

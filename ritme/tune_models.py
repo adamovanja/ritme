@@ -31,12 +31,23 @@ from ritme.model_space import static_trainables as st
 MODEL_TRAINABLES = {
     # model_type: trainable
     "xgb": st.train_xgb,
+    "xgb_class": st.train_xgb_class,
     "nn_reg": st.train_nn_reg,
     "nn_class": st.train_nn_class,
     "nn_corn": st.train_nn_corn,
     "linreg": st.train_linreg,
+    "logreg": st.train_logreg,
     "rf": st.train_rf,
+    "rf_class": st.train_rf_class,
     "trac": st.train_trac,
+}
+
+REGRESSION_MODELS = {"xgb", "nn_reg", "linreg", "rf", "trac"}
+CLASSIFICATION_MODELS = {"xgb_class", "nn_class", "nn_corn", "logreg", "rf_class"}
+
+TASK_METRICS = {
+    "regression": ("rmse_val", "min"),
+    "classification": ("accuracy_val", "max"),
 }
 
 DEFAULT_SCHEDULER_GRACE_PERIOD = 10
@@ -228,6 +239,7 @@ def run_trials(
     scheduler_grace_period: int = DEFAULT_SCHEDULER_GRACE_PERIOD,
     scheduler_max_t: int = DEFAULT_SCHEDULER_MAX_T,
     resources: dict = None,
+    task_type: str = "regression",
 ) -> ResultGrid:
     if model_hyperparameters is None:
         model_hyperparameters = {}
@@ -266,8 +278,7 @@ def run_trials(
     print(f"Dashboard URL at: {context.dashboard_url}")
 
     # Define metric and mode to optimize
-    metric = "rmse_val"
-    mode = "min"
+    metric, mode = TASK_METRICS[task_type]
 
     # Define schedulers
     scheduler = _define_scheduler(
@@ -311,6 +322,7 @@ def run_trials(
                 tree_phylo=tree_phylo,
                 cpus_per_trial=cpus_per_trial,
                 gpus_per_trial=gpus_per_trial,
+                task_type=task_type,
             ),
             resources,
         ),
@@ -383,8 +395,28 @@ def run_all_trials(
     fully_reproducible: bool = False,
     model_hyperparameters: dict = {},
     optuna_searchspace_sampler: str = "TPESampler",
+    task_type: str = "regression",
 ) -> dict[str, ResultGrid]:
     results_all = {}
+
+    # Validate task_type
+    if task_type not in TASK_METRICS:
+        raise ValueError(
+            f"Invalid task_type '{task_type}'. Must be one of: "
+            f"{list(TASK_METRICS.keys())}."
+        )
+
+    # Validate model types against task_type
+    # nn_class and nn_corn are dual-task: they use classification/ordinal nn_type
+    # internally but report metrics matching the overall task_type
+    allowed = REGRESSION_MODELS if task_type == "regression" else CLASSIFICATION_MODELS
+    allowed = allowed | {"nn_class", "nn_corn"}
+    invalid = set(model_types) - allowed
+    if invalid:
+        raise ValueError(
+            f"Model types {sorted(invalid)} are not compatible with task_type "
+            f"'{task_type}'. Allowed models: {sorted(allowed)}."
+        )
 
     # First apply snapshot-related constraints for models
     model_types = model_types.copy()
@@ -397,13 +429,17 @@ def run_all_trials(
         else False
     )
     if has_snapshots and has_snapshot_nans:
-        # Restrict to xgb only when NaNs in snapshot feature tables
-        if "xgb" not in model_types:
-            print("NaNs in snapshot features detected. Using only 'xgb'.")
+        # Restrict to xgb/xgb_class only when NaNs in snapshot feature tables
+        xgb_model = "xgb_class" if task_type == "classification" else "xgb"
+        if xgb_model not in model_types:
+            print(f"NaNs in snapshot features detected. Using only '{xgb_model}'.")
         else:
             if len(model_types) != 1:
-                print("NaNs in snapshot features detected. Restricting to 'xgb'.")
-        model_types = ["xgb"]
+                print(
+                    f"NaNs in snapshot features detected. Restricting to "
+                    f"'{xgb_model}'."
+                )
+        model_types = [xgb_model]
     elif has_snapshots and "trac" in model_types:
         # Remove trac when dynamic snapshots present
         model_types.remove("trac")
@@ -425,6 +461,14 @@ def run_all_trials(
         # If there are any, get the range of hyperparameters to check
         if model.startswith("nn"):
             model_hparams_type = model_hyperparameters.get("nn_all_types", {})
+        elif model == "rf_class":
+            model_hparams_type = model_hyperparameters.get(
+                "rf_class", model_hyperparameters.get("rf", {})
+            )
+        elif model == "xgb_class":
+            model_hparams_type = model_hyperparameters.get(
+                "xgb_class", model_hyperparameters.get("xgb", {})
+            )
         else:
             model_hparams_type = model_hyperparameters.get(model, {})
         # Get data hparam
@@ -463,6 +507,7 @@ def run_all_trials(
             fully_reproducible=fully_reproducible,
             model_hyperparameters=model_hparams_type,
             optuna_searchspace_sampler=optuna_searchspace_sampler,
+            task_type=task_type,
         )
         results_all[model] = result
     return results_all
