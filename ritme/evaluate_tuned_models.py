@@ -78,8 +78,8 @@ def _calculate_classification_metrics(
     metrics = pd.DataFrame()
     for split in ["train", "test"]:
         pred_split = all_preds[all_preds["split"] == split].copy()
-        y_true = pred_split["true"].astype(int)
-        y_pred = pred_split["pred"].astype(int)
+        y_true = pred_split["true"]
+        y_pred = pred_split["pred"]
 
         metrics.loc[model_type, f"accuracy_{split}"] = accuracy_score(y_true, y_pred)
         metrics.loc[model_type, f"balanced_accuracy_{split}"] = balanced_accuracy_score(
@@ -197,8 +197,8 @@ def _plot_confusion_matrices(
             axs_set = axs[row_idx, i]
 
         pred_split = all_preds[all_preds["split"] == split].copy()
-        y_true = pred_split["true"].astype(int)
-        y_pred = pred_split["pred"].astype(int)
+        y_true = pred_split["true"]
+        y_pred = pred_split["pred"]
         labels = sorted(set(y_true) | set(y_pred))
 
         cm = confusion_matrix(y_true, y_pred, labels=labels)

@@ -2,6 +2,7 @@ from typing import List
 
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import LabelEncoder
 
 from ritme.feature_space.aggregate_features import aggregate_microbial_features
 from ritme.feature_space.enrich_features import enrich_features
@@ -131,7 +132,16 @@ def process_train(
     )
 
     X_train = train[ft_ls_used].fillna(np.nan).astype(float)
-    y_train = train[target].fillna(np.nan).astype(float)
     X_val = val[ft_ls_used].fillna(np.nan).astype(float)
-    y_val = val[target].fillna(np.nan).astype(float)
-    return (X_train.values, y_train.values, X_val.values, y_val.values)
+
+    if pd.api.types.is_numeric_dtype(train_val[target]):
+        y_train = train[target].fillna(np.nan).astype(float).values
+        y_val = val[target].fillna(np.nan).astype(float).values
+    else:
+        le = LabelEncoder()
+        le.fit(train_val[target].dropna())
+        config["_label_encoder"] = le
+        y_train = le.transform(train[target]).astype(float)
+        y_val = le.transform(val[target]).astype(float)
+
+    return (X_train.values, y_train, X_val.values, y_val)

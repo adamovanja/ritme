@@ -63,6 +63,17 @@ def _predict_rmse_r2(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tupl
     return root_mean_squared_error(y, y_pred), r2_score(y, y_pred)
 
 
+def _save_label_encoder(config: dict) -> None:
+    """Save label encoder from process_train config to the trial directory."""
+    le = config.pop("_label_encoder", None)
+    if le is not None:
+        le_path = os.path.join(
+            ray.tune.get_context().get_trial_dir(),
+            "label_encoder.pkl",
+        )
+        joblib.dump(le, le_path)
+
+
 def _save_sklearn_model(model: BaseEstimator) -> str:
     """
     Save a Scikit-learn model to a file.
@@ -388,6 +399,7 @@ def train_logreg(
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
+    _save_label_encoder(config)
     y_train = np.round(y_train).astype(int)
     y_val = np.round(y_val).astype(int)
 
@@ -429,6 +441,7 @@ def train_rf_class(
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
+    _save_label_encoder(config)
     y_train = np.round(y_train).astype(int)
     y_val = np.round(y_val).astype(int)
 
@@ -818,6 +831,8 @@ def train_nn(
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
+    if nn_type != "regression":
+        _save_label_encoder(config)
 
     # Scale DataLoader workers to allocated CPUs (reserve at least 1 for training)
     num_workers = max(0, cpus_per_trial - 1)
@@ -1248,12 +1263,19 @@ def train_xgb_class(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
 
-    # Encode labels to 0-indexed integers
-    le = LabelEncoder()
-    y_all = np.concatenate([y_train, y_val])
-    le.fit(np.round(y_all).astype(int))
-    y_train_enc = le.transform(np.round(y_train).astype(int))
-    y_val_enc = le.transform(np.round(y_val).astype(int))
+    # Get label encoder for string targets (from process_train) or create
+    # one for numeric targets to ensure 0-indexed integer labels
+    le = config.pop("_label_encoder", None)
+    if le is not None:
+        # String targets: already 0-indexed by process_train
+        y_train_enc = np.round(y_train).astype(int)
+        y_val_enc = np.round(y_val).astype(int)
+    else:
+        le = LabelEncoder()
+        y_all = np.concatenate([y_train, y_val])
+        le.fit(np.round(y_all).astype(int))
+        y_train_enc = le.transform(np.round(y_train).astype(int))
+        y_val_enc = le.transform(np.round(y_val).astype(int))
 
     config["objective"] = "multi:softmax"
     config["num_class"] = len(le.classes_)

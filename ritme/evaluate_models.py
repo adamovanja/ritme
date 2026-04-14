@@ -358,10 +358,11 @@ class TunedModel:
             predicted = log_geom.dot(alpha[1:]) + alpha[0]
         elif isinstance(self.model, xgb.core.Booster):
             predicted = self.model.predict(xgb.DMatrix(X)).flatten()
-            if self.model_type == "xgb_class" and self.label_encoder is not None:
-                predicted = self.label_encoder.inverse_transform(predicted.astype(int))
         else:
             predicted = self.model.predict(X.values).flatten()
+
+        if self.label_encoder is not None:
+            predicted = self.label_encoder.inverse_transform(predicted.astype(int))
         return predicted
 
 
@@ -394,11 +395,10 @@ def retrieve_n_init_best_models(
             best_model, best_data_proc, best_tax, best_path, model_type=model_type
         )
 
-        # Load label encoder for XGB classification
-        if model_type == "xgb_class":
-            le_path = os.path.join(best_result.path, "label_encoder.pkl")
-            if os.path.exists(le_path):
-                tmodel.label_encoder = load(le_path)
+        # Load label encoder for classification models (string targets)
+        le_path = os.path.join(best_result.path, "label_encoder.pkl")
+        if os.path.exists(le_path):
+            tmodel.label_encoder = load(le_path)
 
         best_model_dic[model_type] = tmodel
         # init all model's feature engineering approaches in TunedModel
