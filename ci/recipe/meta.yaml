@@ -37,8 +37,8 @@ requirements:
     - py-xgboost
     - python-dotenv
     - pytorch
-    - conda-forge::ray-default
-    - conda-forge::ray-tune
+    - conda-forge::ray-default >=2.54
+    - conda-forge::ray-tune >=2.54
     - scikit-bio
     - scikit-learn
     - scipy
