@@ -406,7 +406,9 @@ def run_all_trials(
         )
 
     # Validate model types against task_type
+    # nn_class and nn_corn support both regression and classification tasks
     allowed = REGRESSION_MODELS if task_type == "regression" else CLASSIFICATION_MODELS
+    allowed = allowed | {"nn_class", "nn_corn"}
     invalid = set(model_types) - allowed
     if invalid:
         raise ValueError(

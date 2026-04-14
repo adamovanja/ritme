@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from ray.tune import ResultGrid
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.pipeline import Pipeline
@@ -34,6 +35,12 @@ class TestTaskTypeConstants(unittest.TestCase):
 
     def test_no_overlap_between_task_models(self):
         self.assertEqual(len(REGRESSION_MODELS & CLASSIFICATION_MODELS), 0)
+
+    def test_nn_class_nn_corn_allowed_for_both_task_types(self):
+        # nn_class and nn_corn should be in CLASSIFICATION_MODELS
+        self.assertIn("nn_class", CLASSIFICATION_MODELS)
+        self.assertIn("nn_corn", CLASSIFICATION_MODELS)
+        # but also allowed for regression (validated in run_all_trials)
 
     def test_task_metrics(self):
         self.assertEqual(TASK_METRICS["regression"], ("rmse_val", "min"))
@@ -361,6 +368,33 @@ class TestRunAllTrialsTaskTypeValidation(unittest.TestCase):
                 model_types=["xgb"],
                 task_type="classification",
             )
+
+    @patch("ritme.tune_models.run_trials")
+    def test_nn_class_nn_corn_allowed_for_regression(self, mock_run_trials):
+        from ritme.tune_models import run_all_trials
+
+        mock_run_trials.return_value = MagicMock(spec=ResultGrid)
+        train_val = pd.DataFrame({"F1": [0.1, 0.2], "t": [1.0, 2.0], "h": ["a", "b"]})
+
+        # Should NOT raise ValueError for nn_class/nn_corn with regression
+        results = run_all_trials(
+            train_val=train_val,
+            target="t",
+            host_id="h",
+            stratify_by=None,
+            seed_data=0,
+            seed_model=0,
+            tax=None,
+            tree_phylo=None,
+            mlflow_uri="mlruns",
+            path_exp="/tmp/exp",
+            time_budget_s=10,
+            max_concurrent_trials=1,
+            model_types=["nn_class", "nn_corn"],
+            task_type="regression",
+        )
+        self.assertIn("nn_class", results)
+        self.assertIn("nn_corn", results)
 
 
 class TestXgbClassMetric(unittest.TestCase):
