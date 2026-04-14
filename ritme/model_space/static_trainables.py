@@ -533,7 +533,7 @@ class NeuralNet(LightningModule):
 
         if self.nn_type == "regression":
             rmse = torch.sqrt(nn.functional.mse_loss(preds, targets))
-            r2score = torchmetrics.regression.R2Score()
+            r2score = torchmetrics.regression.R2Score().to(preds.device)
             r2 = r2score(preds, targets)
             return {"rmse": rmse, "r2": r2}
         else:
@@ -543,7 +543,7 @@ class NeuralNet(LightningModule):
             num_classes = self.num_classes
             f1 = torchmetrics.F1Score(
                 task="multiclass", num_classes=num_classes, average="weighted"
-            )
+            ).to(preds_int.device)
             f1_val = f1(preds_int, targets_int)
             return {"accuracy": acc, "f1_weighted": f1_val}
 

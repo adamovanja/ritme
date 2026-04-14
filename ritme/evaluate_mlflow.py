@@ -175,22 +175,27 @@ def plot_complexity_vs_metric(
 
 
 def parallel_coordinates_plot(
-    trials, first_metric_col, first_metric_name, first_metric_cat=False
+    trials,
+    first_metric_col,
+    first_metric_name,
+    first_metric_cat=False,
+    metric_col="metrics.rmse_val",
+    metric_name="RMSE Validation",
 ):
     """
     Create parallel coordinates plot with 3 axes: first_metric_col, model type,
-    and RMSE Validation. If first_metric_cat is True, the first metric is
+    and a performance metric. If first_metric_cat is True, the first metric is
     treated as a categorical variable.
     """
     # pick, rename & encode
     df_pc = (
-        trials[[first_metric_col, "params.model", "metrics.rmse_val"]]
+        trials[[first_metric_col, "params.model", metric_col]]
         .dropna()
         .rename(
             columns={
                 first_metric_col: first_metric_name,
                 "params.model": "Model",
-                "metrics.rmse_val": "RMSE Validation",
+                metric_col: metric_name,
             }
         )
     )
@@ -218,13 +223,13 @@ def parallel_coordinates_plot(
     fig = go.Figure(
         go.Parcoords(
             line=dict(
-                color=df_pc["RMSE Validation"],
+                color=df_pc[metric_name],
                 colorscale="Spectral_r",
                 showscale=True,
-                cmin=df_pc["RMSE Validation"].min(),
-                cmax=df_pc["RMSE Validation"].max(),
+                cmin=df_pc[metric_name].min(),
+                cmax=df_pc[metric_name].max(),
                 colorbar=dict(
-                    title="RMSE Validation",
+                    title=metric_name,
                     thickness=15,
                     lenmode="fraction",
                     len=1.0,
@@ -240,12 +245,12 @@ def parallel_coordinates_plot(
                     values=df_pc["model_numbering"],
                 ),
                 dict(
-                    label="RMSE Validation",
+                    label=metric_name,
                     range=[
-                        df_pc["RMSE Validation"].min(),
-                        df_pc["RMSE Validation"].max(),
+                        df_pc[metric_name].min(),
+                        df_pc[metric_name].max(),
                     ],
-                    values=df_pc["RMSE Validation"],
+                    values=df_pc[metric_name],
                 ),
             ],
         )
