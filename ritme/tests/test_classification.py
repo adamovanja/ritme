@@ -252,6 +252,7 @@ class TestNeuralNetClassificationMetrics(unittest.TestCase):
             learning_rate=0.01,
             nn_type="classification",
             classes=[0, 1, 2],
+            task_type="classification",
         )
         # 3-class logits
         preds = torch.tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])

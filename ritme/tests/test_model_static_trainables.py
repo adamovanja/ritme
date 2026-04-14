@@ -498,6 +498,7 @@ class TestTrainables(unittest.TestCase):
             dropout_rate=0.0,
             weight_decay=0.0,
             classes=classes,
+            task_type="regression",
         )
         mock_trainer_instance.fit.assert_called()
 

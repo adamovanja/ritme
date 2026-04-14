@@ -180,6 +180,7 @@ def train_linreg(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -278,6 +279,7 @@ def train_trac(
     tree_phylo: skbio.TreeNode,
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train a trac model and report the results to Ray Tune.
@@ -341,6 +343,7 @@ def train_rf(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -395,6 +398,7 @@ def train_logreg(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "classification",
 ) -> None:
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
@@ -437,6 +441,7 @@ def train_rf_class(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "classification",
 ) -> None:
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
@@ -472,11 +477,13 @@ class NeuralNet(LightningModule):
         dropout_rate=0.0,
         weight_decay=0.0,
         classes: Optional[list] = None,
+        task_type: str = "regression",
     ):
         super(NeuralNet, self).__init__()
         self.save_hyperparameters()  # This saves all passed arguments to self.hparams
         self.learning_rate = learning_rate
         self.nn_type = nn_type
+        self.task_type = task_type
         self.dropout_rate = dropout_rate
         self.weight_decay = weight_decay
 
@@ -531,7 +538,7 @@ class NeuralNet(LightningModule):
     def _calculate_metrics(self, predictions, targets):
         preds = self._prepare_predictions(predictions)
 
-        if self.nn_type == "regression":
+        if self.task_type == "regression":
             rmse = torch.sqrt(nn.functional.mse_loss(preds, targets))
             r2score = torchmetrics.regression.R2Score().to(preds.device)
             r2 = r2score(preds, targets)
@@ -812,6 +819,7 @@ def train_nn(
     nn_type="regression",
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="regression",
 ):
     # Limit PyTorch threads to Ray-allocated CPUs to avoid oversubscription
     torch.set_num_threads(cpus_per_trial)
@@ -881,6 +889,7 @@ def train_nn(
         dropout_rate=config["dropout_rate"],
         weight_decay=config["weight_decay"],
         classes=classes,
+        task_type=task_type,
     )
 
     _save_taxonomy(tax)
@@ -889,7 +898,7 @@ def train_nn(
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    if nn_type == "regression":
+    if task_type == "regression":
         nn_metrics = {
             "rmse_val": "val_rmse",
             "rmse_train": "train_rmse",
@@ -952,6 +961,7 @@ def train_nn_reg(
     tree_phylo,
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="regression",
 ):
     train_nn(
         config,
@@ -965,6 +975,7 @@ def train_nn_reg(
         nn_type="regression",
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
+        task_type=task_type,
     )
 
 
@@ -980,6 +991,7 @@ def train_nn_class(
     tree_phylo,
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="classification",
 ):
     train_nn(
         config,
@@ -993,6 +1005,7 @@ def train_nn_class(
         nn_type="classification",
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
+        task_type=task_type,
     )
 
 
@@ -1008,6 +1021,7 @@ def train_nn_corn(
     tree_phylo,
     cpus_per_trial=1,
     gpus_per_trial=0,
+    task_type="classification",
 ):
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
@@ -1022,6 +1036,7 @@ def train_nn_corn(
         nn_type="ordinal_regression",
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
+        task_type=task_type,
     )
 
 
@@ -1161,6 +1176,7 @@ def train_xgb(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "regression",
 ) -> None:
     """
     Train an XGBoost model and report the results to Ray Tune.
@@ -1254,6 +1270,7 @@ def train_xgb_class(
     tree_phylo: skbio.TreeNode = skbio.TreeNode(),
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
+    task_type: str = "classification",
 ) -> None:
     config["nthread"] = cpus_per_trial
     if gpus_per_trial > 0:

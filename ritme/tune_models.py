@@ -322,6 +322,7 @@ def run_trials(
                 tree_phylo=tree_phylo,
                 cpus_per_trial=cpus_per_trial,
                 gpus_per_trial=gpus_per_trial,
+                task_type=task_type,
             ),
             resources,
         ),
@@ -406,7 +407,8 @@ def run_all_trials(
         )
 
     # Validate model types against task_type
-    # nn_class and nn_corn support both regression and classification tasks
+    # nn_class and nn_corn are dual-task: they use classification/ordinal nn_type
+    # internally but report metrics matching the overall task_type
     allowed = REGRESSION_MODELS if task_type == "regression" else CLASSIFICATION_MODELS
     allowed = allowed | {"nn_class", "nn_corn"}
     invalid = set(model_types) - allowed
