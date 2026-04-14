@@ -7,7 +7,16 @@ import seaborn as sns
 import typer
 from matplotlib.transforms import offset_copy
 from scipy.stats import pearsonr
-from sklearn.metrics import r2_score, root_mean_squared_error
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
+    balanced_accuracy_score,
+    cohen_kappa_score,
+    confusion_matrix,
+    f1_score,
+    r2_score,
+    root_mean_squared_error,
+)
 
 from ritme._decorators import helper_function, main_function
 from ritme.evaluate_models import (
@@ -59,6 +68,29 @@ def _calculate_metrics(all_preds: pd.DataFrame, model_type: str) -> pd.DataFrame
         metrics.loc[model_type, f"pearson_corr_{split}"] = pearson_results[0]
         # two-sided alternative
         metrics.loc[model_type, f"pearson_corr_{split}_pvalue"] = pearson_results[1]
+    return metrics
+
+
+@helper_function
+def _calculate_classification_metrics(
+    all_preds: pd.DataFrame, model_type: str
+) -> pd.DataFrame:
+    metrics = pd.DataFrame()
+    for split in ["train", "test"]:
+        pred_split = all_preds[all_preds["split"] == split].copy()
+        y_true = pred_split["true"].astype(int)
+        y_pred = pred_split["pred"].astype(int)
+
+        metrics.loc[model_type, f"accuracy_{split}"] = accuracy_score(y_true, y_pred)
+        metrics.loc[model_type, f"balanced_accuracy_{split}"] = balanced_accuracy_score(
+            y_true, y_pred
+        )
+        metrics.loc[model_type, f"f1_weighted_{split}"] = f1_score(
+            y_true, y_pred, average="weighted"
+        )
+        metrics.loc[model_type, f"cohen_kappa_{split}"] = cohen_kappa_score(
+            y_true, y_pred
+        )
     return metrics
 
 
@@ -148,6 +180,48 @@ def _plot_scatter_plots(
         i += 1
 
 
+@helper_function
+def _plot_confusion_matrices(
+    all_preds: pd.DataFrame,
+    metrics_split: pd.DataFrame,
+    axs: list,
+    row_idx: int,
+    model_name: str,
+    only_one_model: bool = False,
+):
+    colors = {"train": "Blues", "test": "Oranges"}
+    for i, split in enumerate(["train", "test"]):
+        if only_one_model:
+            axs_set = axs[i]
+        else:
+            axs_set = axs[row_idx, i]
+
+        pred_split = all_preds[all_preds["split"] == split].copy()
+        y_true = pred_split["true"].astype(int)
+        y_pred = pred_split["pred"].astype(int)
+        labels = sorted(set(y_true) | set(y_pred))
+
+        cm = confusion_matrix(y_true, y_pred, labels=labels)
+        ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels).plot(
+            ax=axs_set, cmap=colors[split], colorbar=False
+        )
+
+        acc = metrics_split[f"accuracy_{split}"].values[0]
+        f1 = metrics_split[f"f1_weighted_{split}"].values[0]
+        kappa = metrics_split[f"cohen_kappa_{split}"].values[0]
+        axs_set.set_xlabel(
+            f"Predicted\nAcc: {acc:.3f} | F1: {f1:.3f} | Kappa: {kappa:.3f}"
+        )
+
+        if i == 0:
+            axs_set.set_ylabel(rf"$\mathbf{{{model_name}}}$" + "\n\nTrue label")
+        else:
+            axs_set.set_ylabel("True label")
+
+        if row_idx == 0:
+            axs_set.set_title(f"{split.capitalize()} set")
+
+
 # ----------------------------------------------------------------------------
 @main_function
 def evaluate_tuned_models(
@@ -170,32 +244,48 @@ def evaluate_tuned_models(
         test (pd.DataFrame): Test set.
 
     Returns:
-        pd.DataFrame: R2 and RMSE metrics for train and test split.
-        plt.Figure: Matplotlib figure object containing scatter plots of true vs.
-        predicted values for each model.
+        pd.DataFrame: Metrics for train and test split (regression: RMSE, R2,
+        Pearson; classification: accuracy, balanced accuracy, F1, Cohen's kappa).
+        plt.Figure: Matplotlib figure object containing scatter plots (regression)
+        or confusion matrices (classification) for each model.
     """
+    task_type = exp_config.get("task_type", "regression")
+    is_classification = task_type == "classification"
+
     df_metrics = pd.DataFrame()
     nb_models = len(dic_tuned_models)
     r = 0
     fig, axs = plt.subplots(nb_models, 2, figsize=(12, nb_models * 5), dpi=400)
 
     for model_type, model in dic_tuned_models.items():
-        # create predictions on train_val & test
         preds_model_type = _predict_w_tuned_model(model, exp_config, train_val, test)
 
-        # calculate metrics for models and append
-        metrics_split = _calculate_metrics(preds_model_type, model_type)
-        df_metrics = pd.concat([df_metrics, metrics_split])
+        if is_classification:
+            metrics_split = _calculate_classification_metrics(
+                preds_model_type, model_type
+            )
+            df_metrics = pd.concat([df_metrics, metrics_split])
 
-        # create scatterplot true vs. predicted
-        _plot_scatter_plots(
-            all_preds=preds_model_type,
-            metrics_split=metrics_split,
-            axs=axs,
-            row_idx=r,
-            model_name=model_type,
-            only_one_model=nb_models == 1,
-        )
+            _plot_confusion_matrices(
+                all_preds=preds_model_type,
+                metrics_split=metrics_split,
+                axs=axs,
+                row_idx=r,
+                model_name=model_type,
+                only_one_model=nb_models == 1,
+            )
+        else:
+            metrics_split = _calculate_metrics(preds_model_type, model_type)
+            df_metrics = pd.concat([df_metrics, metrics_split])
+
+            _plot_scatter_plots(
+                all_preds=preds_model_type,
+                metrics_split=metrics_split,
+                axs=axs,
+                row_idx=r,
+                model_name=model_type,
+                only_one_model=nb_models == 1,
+            )
         r += 1
 
     return df_metrics, fig

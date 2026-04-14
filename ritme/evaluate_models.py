@@ -91,9 +91,12 @@ def get_model(model_type: str, result: Result) -> Any:
     """
     model_loaders = {
         "linreg": load_sklearn_model,
+        "logreg": load_sklearn_model,
         "trac": load_trac_model,
         "rf": load_sklearn_model,
+        "rf_class": load_sklearn_model,
         "xgb": load_xgb_model,
+        "xgb_class": load_xgb_model,
         "nn_reg": load_nn_model,
         "nn_class": load_nn_model,
         "nn_corn": load_nn_model,
@@ -123,12 +126,19 @@ def get_data_processing(result: Result) -> Dict[str, str]:
 
 class TunedModel:
     def __init__(
-        self, model: Any, data_config: Dict[str, str], tax: pd.DataFrame, path: str
+        self,
+        model: Any,
+        data_config: Dict[str, str],
+        tax: pd.DataFrame,
+        path: str,
+        model_type: str = None,
     ):
         self.model = model
         self.data_config = data_config
         self.tax = tax
         self.path = path
+        self.model_type = model_type
+        self.label_encoder = None
         self.ft_prefix = "F"
         # per-snapshot enrichment tracking
         self.snapshot_enriched_cols: Dict[str, List[str]] = {}
@@ -348,6 +358,8 @@ class TunedModel:
             predicted = log_geom.dot(alpha[1:]) + alpha[0]
         elif isinstance(self.model, xgb.core.Booster):
             predicted = self.model.predict(xgb.DMatrix(X)).flatten()
+            if self.model_type == "xgb_class" and self.label_encoder is not None:
+                predicted = self.label_encoder.inverse_transform(predicted.astype(int))
         else:
             predicted = self.model.predict(X.values).flatten()
         return predicted
@@ -378,9 +390,17 @@ def retrieve_n_init_best_models(
         best_tax = get_taxonomy(best_result)
         best_path = best_result.path
 
-        best_model_dic[model_type] = TunedModel(
-            best_model, best_data_proc, best_tax, best_path
+        tmodel = TunedModel(
+            best_model, best_data_proc, best_tax, best_path, model_type=model_type
         )
+
+        # Load label encoder for XGB classification
+        if model_type == "xgb_class":
+            le_path = os.path.join(best_result.path, "label_encoder.pkl")
+            if os.path.exists(le_path):
+                tmodel.label_encoder = load(le_path)
+
+        best_model_dic[model_type] = tmodel
         # init all model's feature engineering approaches in TunedModel
         _ = best_model_dic[model_type].predict(train_val, "train")
     return best_model_dic

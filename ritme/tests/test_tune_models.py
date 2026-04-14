@@ -357,6 +357,7 @@ class TestMainTuneModels(unittest.TestCase):
             fully_reproducible=False,
             model_hyperparameters={"data_enrich_with": None},
             optuna_searchspace_sampler="TPESampler",
+            task_type="regression",
         )
 
     @patch("ritme.tune_models.run_trials")
@@ -429,6 +430,205 @@ class TestMainTuneModels(unittest.TestCase):
             model_hyperparameters=self.model_hyperparameters,
         )
         self.assertEqual(list(results.keys()), ["xgb"])
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    def test_run_trials_classification(
+        self, mock_tuner_class, mock_resources, mock_init
+    ):
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+
+        mock_resources.return_value = {}
+
+        mock_tuner = MagicMock()
+        mock_tuner.fit.return_value = MagicMock(spec=ResultGrid, num_errors=0)
+        mock_tuner_class.return_value = mock_tuner
+
+        trainable = MagicMock()
+
+        result = run_trials(
+            tracking_uri=self.mlflow_uri,
+            exp_name="test_experiment",
+            trainable=trainable,
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            path2exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            fully_reproducible=False,
+            model_hyperparameters=self.model_hyperparameters,
+            task_type="classification",
+        )
+
+        # Verify Tuner was configured with classification metric/mode
+        tuner_call_kwargs = mock_tuner_class.call_args
+        tune_config = tuner_call_kwargs.kwargs["tune_config"]
+        self.assertEqual(tune_config.metric, "accuracy_val")
+        self.assertEqual(tune_config.mode, "max")
+
+        # Verify checkpoint config also uses classification metric
+        run_config = tuner_call_kwargs.kwargs["run_config"]
+        self.assertEqual(
+            run_config.checkpoint_config.checkpoint_score_attribute, "accuracy_val"
+        )
+        self.assertEqual(run_config.checkpoint_config.checkpoint_score_order, "max")
+
+        self.assertIsInstance(result, ResultGrid)
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_classification(self, mock_run_trials):
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_run_trials.return_value = mock_result
+
+        model_types = ["logreg", "rf_class"]
+        results = run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            model_types=model_types,
+            model_hyperparameters=self.model_hyperparameters,
+            task_type="classification",
+        )
+
+        # Assertions
+        self.assertEqual(len(results), len(model_types))
+        for model in model_types:
+            self.assertIn(model, results)
+            self.assertEqual(results[model], mock_result)
+        self.assertEqual(mock_run_trials.call_count, len(model_types))
+
+        # Verify task_type="classification" was passed through to run_trials
+        for call in mock_run_trials.call_args_list:
+            self.assertEqual(call.kwargs.get("task_type"), "classification")
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nan_snapshots_restrict_xgb_class(self, mock_run_trials):
+        # dataframe with NaN in snapshot features
+        self.train_val = pd.DataFrame(
+            {
+                "F1": [0.1, 0.2],
+                "F2": [0.3, 0.4],
+                "F1__t-1": [np.nan, 0.15],
+                "F2__t-1": [0.25, np.nan],
+                "meta": [1, 2],
+                self.target: [0.5, 0.6],
+                self.host_id: ["a", "b"],
+            }
+        )
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_run_trials.return_value = mock_result
+        model_types = ["xgb_class", "rf_class", "logreg"]
+        results = run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            model_types=model_types,
+            model_hyperparameters=self.model_hyperparameters,
+            task_type="classification",
+        )
+        # Only xgb_class should remain when NaN snapshots detected
+        self.assertEqual(list(results.keys()), ["xgb_class"])
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_classification_hparams_fallback_rf_class(
+        self, mock_run_trials
+    ):
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_run_trials.return_value = mock_result
+
+        # Provide hparams under "rf" key only - rf_class should fall back to it
+        model_hyperparameters = {
+            "rf": {"n_estimators": {"min": 10, "max": 200}},
+        }
+        model_types = ["rf_class"]
+        run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            model_types=model_types,
+            model_hyperparameters=model_hyperparameters,
+            task_type="classification",
+        )
+
+        # Verify run_trials received the "rf" hparams for rf_class
+        call_kwargs = mock_run_trials.call_args
+        fallback = call_kwargs[0][15] if len(call_kwargs[0]) > 15 else None
+        passed_hparams = call_kwargs.kwargs.get("model_hyperparameters", fallback)
+        self.assertIn("n_estimators", passed_hparams)
+        self.assertEqual(passed_hparams["n_estimators"], {"min": 10, "max": 200})
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_classification_hparams_fallback_xgb_class(
+        self, mock_run_trials
+    ):
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_run_trials.return_value = mock_result
+
+        # Provide hparams under "xgb" key only - xgb_class should fall back to it
+        model_hyperparameters = {
+            "xgb": {"n_estimators": {"min": 50, "max": 500}},
+        }
+        model_types = ["xgb_class"]
+        run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            model_types=model_types,
+            model_hyperparameters=model_hyperparameters,
+            task_type="classification",
+        )
+
+        # Verify run_trials received the "xgb" hparams for xgb_class
+        call_kwargs = mock_run_trials.call_args
+        fallback = call_kwargs[0][15] if len(call_kwargs[0]) > 15 else None
+        passed_hparams = call_kwargs.kwargs.get("model_hyperparameters", fallback)
+        self.assertIn("n_estimators", passed_hparams)
+        self.assertEqual(passed_hparams["n_estimators"], {"min": 50, "max": 500})
 
 
 if __name__ == "__main__":

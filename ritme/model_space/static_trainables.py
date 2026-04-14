@@ -30,11 +30,11 @@ from ray import tune
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import ElasticNet
-from sklearn.metrics import r2_score, root_mean_squared_error
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import ElasticNet, LogisticRegression
+from sklearn.metrics import accuracy_score, f1_score, r2_score, root_mean_squared_error
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
@@ -118,6 +118,38 @@ def _report_results_manually(
             "rmse_train": rmse_train,
             "r2_val": r2_val,
             "r2_train": r2_train,
+            "model_path": model_path,
+            "nb_features": X_train.shape[1],
+        }
+    )
+    return None
+
+
+def _predict_accuracy_f1(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tuple:
+    y_pred = model.predict(X)
+    return accuracy_score(y, y_pred), f1_score(y, y_pred, average="weighted")
+
+
+def _report_classification_results_manually(
+    model: BaseEstimator,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    tax: pd.DataFrame,
+) -> None:
+    model_path = _save_sklearn_model(model)
+    _save_taxonomy(tax)
+
+    acc_train, f1_train = _predict_accuracy_f1(model, X_train, y_train)
+    acc_val, f1_val = _predict_accuracy_f1(model, X_val, y_val)
+
+    tune.report(
+        metrics={
+            "accuracy_val": acc_val,
+            "accuracy_train": acc_train,
+            "f1_weighted_val": f1_val,
+            "f1_weighted_train": f1_train,
             "model_path": model_path,
             "nb_features": X_train.shape[1],
         }
@@ -340,6 +372,84 @@ def train_rf(
     _report_results_manually(rf, X_train, y_train, X_val, y_val, tax)
 
 
+def train_logreg(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
+) -> None:
+    X_train, y_train, X_val, y_val = process_train(
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
+    )
+    y_train = np.round(y_train).astype(int)
+    y_val = np.round(y_val).astype(int)
+
+    np.random.seed(seed_model)
+    logreg = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "logreg",
+                LogisticRegression(
+                    C=config["C"],
+                    penalty=config["penalty"],
+                    l1_ratio=config.get("l1_ratio"),
+                    solver="saga",
+                    max_iter=2000,
+                    random_state=seed_model,
+                ),
+            ),
+        ]
+    )
+    logreg.fit(X_train, y_train)
+
+    _report_classification_results_manually(logreg, X_train, y_train, X_val, y_val, tax)
+
+
+def train_rf_class(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
+) -> None:
+    X_train, y_train, X_val, y_val = process_train(
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
+    )
+    y_train = np.round(y_train).astype(int)
+    y_val = np.round(y_val).astype(int)
+
+    np.random.seed(seed_model)
+    rf_cls = RandomForestClassifier(
+        n_estimators=config["n_estimators"],
+        max_depth=config["max_depth"],
+        min_samples_split=config["min_samples_split"],
+        min_weight_fraction_leaf=config["min_weight_fraction_leaf"],
+        min_samples_leaf=config["min_samples_leaf"],
+        max_features=config["max_features"],
+        min_impurity_decrease=config["min_impurity_decrease"],
+        bootstrap=config["bootstrap"],
+        n_jobs=cpus_per_trial,
+        random_state=seed_model,
+    )
+    rf_cls.fit(X_train, y_train)
+
+    _report_classification_results_manually(rf_cls, X_train, y_train, X_val, y_val, tax)
+
+
 class NeuralNet(LightningModule):
     def __init__(
         self,
@@ -408,12 +518,21 @@ class NeuralNet(LightningModule):
     def _calculate_metrics(self, predictions, targets):
         preds = self._prepare_predictions(predictions)
 
-        rmse = torch.sqrt(nn.functional.mse_loss(preds, targets))
-
-        r2score = torchmetrics.regression.R2Score()
-        r2 = r2score(preds, targets)
-
-        return rmse, r2
+        if self.nn_type == "regression":
+            rmse = torch.sqrt(nn.functional.mse_loss(preds, targets))
+            r2score = torchmetrics.regression.R2Score()
+            r2 = r2score(preds, targets)
+            return {"rmse": rmse, "r2": r2}
+        else:
+            preds_int = preds.long()
+            targets_int = targets.long()
+            acc = (preds_int == targets_int).float().mean()
+            num_classes = self.num_classes
+            f1 = torchmetrics.F1Score(
+                task="multiclass", num_classes=num_classes, average="weighted"
+            )
+            f1_val = f1(preds_int, targets_int)
+            return {"accuracy": acc, "f1_weighted": f1_val}
 
     def _calculate_loss(self, predictions, targets):
         # loss: corn_loss, cross-entropy or mse
@@ -476,25 +595,22 @@ class NeuralNet(LightningModule):
         loss = self._calculate_loss(all_preds, all_targets)
         self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
-        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("train_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
-        self.log("train_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+        metrics = self._calculate_metrics(all_preds, all_targets)
+        for name, value in metrics.items():
+            self.log(f"train_{name}", value, on_epoch=True, prog_bar=True, logger=True)
         self.train_predictions.clear()
         self.train_targets.clear()
 
     def on_validation_epoch_end(self):
-        # make use of all outputs from each validation_step()
         all_preds = torch.cat(self.validation_predictions)
         all_targets = torch.cat(self.validation_targets)
 
-        # do something with all preds and targets
         loss = self._calculate_loss(all_preds, all_targets)
         self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
-        # rmse and r2
-        rmse, r2 = self._calculate_metrics(all_preds, all_targets)
-        self.log("val_rmse", rmse, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val_r2", r2, on_epoch=True, prog_bar=True, logger=True)
+        metrics = self._calculate_metrics(all_preds, all_targets)
+        for name, value in metrics.items():
+            self.log(f"val_{name}", value, on_epoch=True, prog_bar=True, logger=True)
 
         self.validation_predictions.clear()
         self.validation_targets.clear()
@@ -758,19 +874,37 @@ def train_nn(
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    if nn_type == "regression":
+        nn_metrics = {
+            "rmse_val": "val_rmse",
+            "rmse_train": "train_rmse",
+            "r2_val": "val_r2",
+            "r2_train": "train_r2",
+            "loss_val": "val_loss",
+            "loss_train": "train_loss",
+        }
+        nn_score_attr = "rmse_val"
+        nn_score_mode = "min"
+    else:
+        nn_metrics = {
+            "accuracy_val": "val_accuracy",
+            "accuracy_train": "train_accuracy",
+            "f1_weighted_val": "val_f1_weighted",
+            "f1_weighted_train": "train_f1_weighted",
+            "loss_val": "val_loss",
+            "loss_train": "train_loss",
+        }
+        nn_score_attr = "accuracy_val"
+        nn_score_mode = "max"
+
     callbacks = [
         NNTuneReportCheckpointCallback(
-            metrics={
-                "rmse_val": "val_rmse",
-                "rmse_train": "train_rmse",
-                "r2_val": "val_r2",
-                "r2_train": "train_r2",
-                "loss_val": "val_loss",
-                "loss_train": "train_loss",
-            },
+            metrics=nn_metrics,
             filename="checkpoint",
             on="validation_end",
             nb_features=X_train.shape[1],
+            score_attr=nn_score_attr,
+            score_mode=nn_score_mode,
         ),
         EarlyStopping(
             monitor="val_loss",
@@ -1078,5 +1212,85 @@ def train_xgb(
         evals=[(dtrain, "train"), (dval, "val")],
         callbacks=[checkpoint_callback],
         custom_metric=custom_xgb_metric,
+        early_stopping_rounds=patience,
+    )
+
+
+def custom_xgb_class_metric(
+    predt: np.ndarray, dtrain: xgb.DMatrix
+) -> List[Tuple[str, float]]:
+    y = dtrain.get_label().astype(int)
+    y_pred = predt.astype(int)
+    return [
+        ("accuracy", accuracy_score(y, y_pred)),
+        ("f1_weighted", f1_score(y, y_pred, average="weighted")),
+    ]
+
+
+def train_xgb_class(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame = pd.DataFrame(),
+    tree_phylo: skbio.TreeNode = skbio.TreeNode(),
+    cpus_per_trial: int = 1,
+    gpus_per_trial: int = 0,
+) -> None:
+    config["nthread"] = cpus_per_trial
+    if gpus_per_trial > 0:
+        config["device"] = "cuda"
+
+    X_train, y_train, X_val, y_val = process_train(
+        config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
+    )
+
+    # Encode labels to 0-indexed integers
+    le = LabelEncoder()
+    y_all = np.concatenate([y_train, y_val])
+    le.fit(np.round(y_all).astype(int))
+    y_train_enc = le.transform(np.round(y_train).astype(int))
+    y_val_enc = le.transform(np.round(y_val).astype(int))
+
+    config["objective"] = "multi:softmax"
+    config["num_class"] = len(le.classes_)
+
+    np.random.seed(seed_model)
+    random.seed(seed_model)
+
+    dtrain = xgb.DMatrix(X_train, label=y_train_enc)
+    dval = xgb.DMatrix(X_val, label=y_val_enc)
+
+    _save_taxonomy(tax)
+
+    # Save label encoder for prediction-time inverse transform
+    le_path = os.path.join(ray.tune.get_context().get_trial_dir(), "label_encoder.pkl")
+    joblib.dump(le, le_path)
+
+    checkpoint_callback = _RitmeXGBCheckpointCallback(
+        metrics={
+            "accuracy_train": "train-accuracy",
+            "accuracy_val": "val-accuracy",
+            "f1_weighted_train": "train-f1_weighted",
+            "f1_weighted_val": "val-f1_weighted",
+        },
+        filename="checkpoint",
+        results_postprocessing_fn=lambda results: add_nb_features_to_results(
+            results, X_train.shape[1]
+        ),
+        score_attr="accuracy_val",
+        score_mode="max",
+    )
+    patience = max(10, int(0.1 * config["n_estimators"]))
+    xgb.train(
+        config,
+        dtrain,
+        num_boost_round=config["n_estimators"],
+        evals=[(dtrain, "train"), (dval, "val")],
+        callbacks=[checkpoint_callback],
+        custom_metric=custom_xgb_class_metric,
         early_stopping_rounds=patience,
     )

@@ -37,6 +37,8 @@ class TestConfigFiles(unittest.TestCase):
             "run_config.json",
             "example_linreg.json",
             "example_linreg_py.json",
+            "example_logreg.json",
+            "example_logreg_py.json",
             "run_config_whparams.json",
         ]
     )
@@ -73,12 +75,15 @@ class TestConfigFiles(unittest.TestCase):
         config_models = set(run_config["ls_model_types"])
         allowed_models = {
             "linreg",
+            "logreg",
             "trac",
             "xgb",
+            "xgb_class",
             "nn_reg",
             "nn_class",
             "nn_corn",
             "rf",
+            "rf_class",
         }
         self.assertTrue(
             config_models.issubset(allowed_models),

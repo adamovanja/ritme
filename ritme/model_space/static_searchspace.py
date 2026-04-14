@@ -413,6 +413,36 @@ def get_trac_space(
     return {"model": "trac", **data_eng_space_trac}
 
 
+def get_logreg_space(
+    trial, train_val, tax, model_hyperparameters: dict = {}
+) -> Dict[str, str]:
+    data_enrich_with = get_data_eng_space(trial, train_val, tax, model_hyperparameters)
+
+    C_param = model_hyperparameters.get("C", {"min": 1e-4, "max": 1e4, "log": True})
+    trial.suggest_float("C", C_param["min"], C_param["max"], log=C_param["log"])
+
+    penalty_options = model_hyperparameters.get("penalty", ["l1", "l2", "elasticnet"])
+    penalty = trial.suggest_categorical("penalty", penalty_options)
+
+    if penalty == "elasticnet":
+        l1_ratio = model_hyperparameters.get("l1_ratio", {"min": 0.0, "max": 1.0})
+        trial.suggest_float("l1_ratio", l1_ratio["min"], l1_ratio["max"])
+
+    return {"model": "logreg", "data_enrich_with": data_enrich_with}
+
+
+def get_rf_class_space(
+    trial, train_val, tax, model_hyperparameters: dict = {}
+) -> Dict[str, str]:
+    return get_rf_space(trial, train_val, tax, model_hyperparameters)
+
+
+def get_xgb_class_space(
+    trial, train_val, tax, model_hyperparameters: dict = {}
+) -> Dict[str, Any]:
+    return get_xgb_space(trial, train_val, tax, model_hyperparameters)
+
+
 def get_search_space(
     trial,
     model_type: str,
@@ -421,15 +451,20 @@ def get_search_space(
     model_hyperparameters: Dict[str, Any] = {},
 ) -> Optional[Dict[str, Any]]:
     """Creates the search space"""
-    if model_type in ["xgb", "linreg", "rf", "trac"]:
-        space_functions = {
-            "xgb": get_xgb_space,
-            "linreg": get_linreg_space,
-            "rf": get_rf_space,
-            "trac": get_trac_space,
-        }
+    space_functions = {
+        "xgb": get_xgb_space,
+        "xgb_class": get_xgb_class_space,
+        "linreg": get_linreg_space,
+        "logreg": get_logreg_space,
+        "rf": get_rf_space,
+        "rf_class": get_rf_class_space,
+        "trac": get_trac_space,
+    }
+    nn_types = {"nn_reg", "nn_class", "nn_corn"}
+
+    if model_type in space_functions:
         return space_functions[model_type](trial, train_val, tax, model_hyperparameters)
-    elif model_type in ["nn_reg", "nn_class", "nn_corn"]:
+    elif model_type in nn_types:
         return get_nn_space(trial, train_val, tax, model_type, model_hyperparameters)
     else:
         raise ValueError(f"Model type {model_type} not supported.")
