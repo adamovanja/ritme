@@ -344,6 +344,7 @@ class TestRunAllTrialsTaskTypeValidation(unittest.TestCase):
                 path_exp="/tmp/exp",
                 time_budget_s=10,
                 max_concurrent_trials=1,
+                experiment_tag="test_experiment",
                 model_types=["xgb"],
                 task_type="invalid",
             )
@@ -366,6 +367,7 @@ class TestRunAllTrialsTaskTypeValidation(unittest.TestCase):
                 path_exp="/tmp/exp",
                 time_budget_s=10,
                 max_concurrent_trials=1,
+                experiment_tag="test_experiment",
                 model_types=["xgb"],
                 task_type="classification",
             )
@@ -391,6 +393,7 @@ class TestRunAllTrialsTaskTypeValidation(unittest.TestCase):
             path_exp="/tmp/exp",
             time_budget_s=10,
             max_concurrent_trials=1,
+            experiment_tag="test_experiment",
             model_types=["nn_class", "nn_corn"],
             task_type="regression",
         )

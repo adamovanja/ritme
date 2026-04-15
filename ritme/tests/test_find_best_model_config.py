@@ -255,6 +255,7 @@ class TestFindBestModelConfig(unittest.TestCase):
                 ANY,  # tmp_storage (temp dir)
                 self.config["time_budget_s"],
                 self.config["max_cuncurrent_trials"],
+                self.config["experiment_tag"],
                 model_types=self.config["ls_model_types"],
                 fully_reproducible=False,
                 model_hyperparameters={},
