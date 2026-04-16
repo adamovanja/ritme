@@ -231,10 +231,58 @@ class TestMainTuneModels(unittest.TestCase):
         self.tax = pd.DataFrame()
         self.tree_phylo = skbio.TreeNode()
         self.path2exp = "/tmp/experiment"
+        self.experiment_tag = "test_experiment_tag"
         self.time_budget_s = 5
         self.max_concurrent_trials = 2
         self.model_hyperparameters = {}
         self.mlflow_uri = "sqlite:///tmp/experiment/mlflow.db"
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    def test_run_trials_uses_passed_experiment_tag_for_callback(
+        self, mock_tuner_class, mock_resources, mock_init
+    ):
+        # Regression test: experiment_tag must come from the caller, not from
+        # os.path.basename(path2exp). path2exp here is a throwaway temp dir,
+        # but the MLflow tag should still be the user-supplied experiment_tag.
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_tuner = MagicMock()
+        mock_tuner.fit.return_value = MagicMock(spec=ResultGrid, num_errors=0)
+        mock_tuner_class.return_value = mock_tuner
+
+        temp_path2exp = "/tmp/tmp_throwaway_abc123"
+        user_tag = "my_real_experiment"
+
+        run_trials(
+            tracking_uri=self.mlflow_uri,
+            exp_name="test_experiment",
+            trainable=MagicMock(),
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            path2exp=temp_path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=user_tag,
+            fully_reproducible=False,
+            model_hyperparameters=self.model_hyperparameters,
+        )
+
+        run_config = mock_tuner_class.call_args.kwargs["run_config"]
+        mlflow_cb = run_config.callbacks[0]
+        self.assertEqual(mlflow_cb.tags, {"experiment_tag": user_tag})
+        self.assertNotEqual(
+            mlflow_cb.tags["experiment_tag"], os.path.basename(temp_path2exp)
+        )
 
     @patch("ritme.tune_models.init")
     @patch("ritme.tune_models.ray.cluster_resources")
@@ -269,6 +317,7 @@ class TestMainTuneModels(unittest.TestCase):
             path2exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             fully_reproducible=False,
             model_hyperparameters=self.model_hyperparameters,
         )
@@ -298,6 +347,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
         )
@@ -330,6 +380,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
         )
@@ -354,6 +405,7 @@ class TestMainTuneModels(unittest.TestCase):
             self.path2exp,
             self.time_budget_s,
             self.max_concurrent_trials,
+            self.experiment_tag,
             fully_reproducible=False,
             model_hyperparameters={"data_enrich_with": None},
             optuna_searchspace_sampler="TPESampler",
@@ -390,6 +442,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
         )
@@ -426,6 +479,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
         )
@@ -464,6 +518,7 @@ class TestMainTuneModels(unittest.TestCase):
             path2exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             fully_reproducible=False,
             model_hyperparameters=self.model_hyperparameters,
             task_type="classification",
@@ -503,6 +558,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
             task_type="classification",
@@ -549,6 +605,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=self.model_hyperparameters,
             task_type="classification",
@@ -581,6 +638,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=model_hyperparameters,
             task_type="classification",
@@ -618,6 +676,7 @@ class TestMainTuneModels(unittest.TestCase):
             path_exp=self.path2exp,
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
             model_types=model_types,
             model_hyperparameters=model_hyperparameters,
             task_type="classification",

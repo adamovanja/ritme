@@ -233,6 +233,7 @@ def run_trials(
     path2exp: str,
     time_budget_s: int,
     max_concurrent_trials: int,
+    experiment_tag: str,
     fully_reproducible: bool = False,
     model_hyperparameters: dict = None,
     optuna_searchspace_sampler: str = "TPESampler",
@@ -299,7 +300,6 @@ def run_trials(
     )
 
     storage_path = os.path.abspath(path2exp)
-    experiment_tag = os.path.basename(path2exp)
 
     callbacks = _define_callbacks(tracking_uri, exp_name, experiment_tag)
 
@@ -383,6 +383,7 @@ def run_all_trials(
     path_exp: str,
     time_budget_s: int,
     max_concurrent_trials: int,
+    experiment_tag: str,
     model_types: list = [
         "xgb",
         "nn_reg",
@@ -504,6 +505,7 @@ def run_all_trials(
             path_exp,
             time_budget_s,
             max_concurrent_trials_launched,
+            experiment_tag,
             fully_reproducible=fully_reproducible,
             model_hyperparameters=model_hparams_type,
             optuna_searchspace_sampler=optuna_searchspace_sampler,

@@ -239,6 +239,7 @@ def find_best_model_config(
             # time_budget for search
             config["time_budget_s"],
             config["max_cuncurrent_trials"],
+            config["experiment_tag"],
             model_types=config["ls_model_types"],
             fully_reproducible=config["fully_reproducible"],
             model_hyperparameters=config.get("model_hyperparameters", {}),
