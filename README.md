@@ -64,7 +64,7 @@ To prevent data leakage, set `group_by_column` (e.g. `"host_id"`) so that all sa
 
 - **Identical feature columns across snapshots** — all time points for a host must share the same set of microbial feature columns.
 - **TRAC is incompatible with dynamic snapshotting** — TRAC requires a single compositional snapshot and phylogenetic tree; it is automatically removed from the model search when past snapshots are detected.
-- **`missing_mode="nan"` restricts to XGBoost** — only XGBoost handles NaN values natively, so when NaN-filled snapshots are present, the model search is automatically restricted to XGBoost.
+- **`missing_mode="nan"` requires XGBoost** — only XGBoost handles NaN values natively. When NaN-filled snapshots are present and `ls_model_types` contains any non-XGBoost model, `find_best_model_config` raises an error. Either set `missing_mode="exclude"` or restrict `ls_model_types` to `["xgb"]` (regression) / `["xgb_class"]` (classification).
 - **`time_col` must be numeric** — values are interpreted as ordered integers or floats; non-numeric values raise an error.
 
 ## Finding the best model configuration with `find_best_model_config`

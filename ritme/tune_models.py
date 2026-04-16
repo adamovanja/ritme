@@ -430,17 +430,17 @@ def run_all_trials(
         else False
     )
     if has_snapshots and has_snapshot_nans:
-        # Restrict to xgb/xgb_class only when NaNs in snapshot feature tables
+        # Only xgb/xgb_class support native NaN handling; reject any other request
         xgb_model = "xgb_class" if task_type == "classification" else "xgb"
-        if xgb_model not in model_types:
-            print(f"NaNs in snapshot features detected. Using only '{xgb_model}'.")
-        else:
-            if len(model_types) != 1:
-                print(
-                    f"NaNs in snapshot features detected. Restricting to "
-                    f"'{xgb_model}'."
-                )
-        model_types = [xgb_model]
+        incompatible = sorted(set(model_types) - {xgb_model})
+        if incompatible:
+            raise ValueError(
+                f"NaNs in snapshot features detected (missing_mode='nan'); only "
+                f"'{xgb_model}' supports native NaN handling. Requested model "
+                f"types {incompatible} are incompatible. Either set "
+                f"missing_mode='exclude' in split_train_test or restrict "
+                f"ls_model_types to ['{xgb_model}']."
+            )
     elif has_snapshots and "trac" in model_types:
         # Remove trac when dynamic snapshots present
         model_types.remove("trac")
