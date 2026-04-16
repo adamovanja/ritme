@@ -450,7 +450,7 @@ class TestMainTuneModels(unittest.TestCase):
         self.assertNotIn("trac", results)
 
     @patch("ritme.tune_models.run_trials")
-    def test_run_all_trials_nan_snapshots_restrict_xgb(self, mock_run_trials):
+    def test_run_all_trials_nan_snapshots_rejects_non_xgb(self, mock_run_trials):
         # dataframe with NaN in snapshot features
         self.train_val = pd.DataFrame(
             {
@@ -466,6 +466,42 @@ class TestMainTuneModels(unittest.TestCase):
         mock_result = MagicMock(spec=ResultGrid)
         mock_run_trials.return_value = mock_result
         model_types = ["xgb", "rf", "trac"]
+        with self.assertRaisesRegex(ValueError, r"NaNs in snapshot features"):
+            run_all_trials(
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                mlflow_uri=self.mlflow_uri,
+                path_exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                model_types=model_types,
+                model_hyperparameters=self.model_hyperparameters,
+            )
+        mock_run_trials.assert_not_called()
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nan_snapshots_xgb_only_ok(self, mock_run_trials):
+        # dataframe with NaN in snapshot features; only xgb requested
+        self.train_val = pd.DataFrame(
+            {
+                "F1": [0.1, 0.2],
+                "F2": [0.3, 0.4],
+                "F1__t-1": [np.nan, 0.15],
+                "F2__t-1": [0.25, np.nan],
+                "meta": [1, 2],
+                self.target: [0.5, 0.6],
+                self.host_id: ["a", "b"],
+            }
+        )
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_run_trials.return_value = mock_result
         results = run_all_trials(
             train_val=self.train_val,
             target=self.target,
@@ -480,7 +516,7 @@ class TestMainTuneModels(unittest.TestCase):
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
             experiment_tag=self.experiment_tag,
-            model_types=model_types,
+            model_types=["xgb"],
             model_hyperparameters=self.model_hyperparameters,
         )
         self.assertEqual(list(results.keys()), ["xgb"])
@@ -576,8 +612,44 @@ class TestMainTuneModels(unittest.TestCase):
             self.assertEqual(call.kwargs.get("task_type"), "classification")
 
     @patch("ritme.tune_models.run_trials")
-    def test_run_all_trials_nan_snapshots_restrict_xgb_class(self, mock_run_trials):
+    def test_run_all_trials_nan_snapshots_rejects_non_xgb_class(self, mock_run_trials):
         # dataframe with NaN in snapshot features
+        self.train_val = pd.DataFrame(
+            {
+                "F1": [0.1, 0.2],
+                "F2": [0.3, 0.4],
+                "F1__t-1": [np.nan, 0.15],
+                "F2__t-1": [0.25, np.nan],
+                "meta": [1, 2],
+                self.target: [0.5, 0.6],
+                self.host_id: ["a", "b"],
+            }
+        )
+        model_types = ["xgb_class", "rf_class", "logreg"]
+        with self.assertRaisesRegex(ValueError, r"NaNs in snapshot features"):
+            run_all_trials(
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                mlflow_uri=self.mlflow_uri,
+                path_exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                model_types=model_types,
+                model_hyperparameters=self.model_hyperparameters,
+                task_type="classification",
+            )
+        mock_run_trials.assert_not_called()
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nan_snapshots_xgb_class_only_ok(self, mock_run_trials):
+        # dataframe with NaN in snapshot features; only xgb_class requested
         self.train_val = pd.DataFrame(
             {
                 "F1": [0.1, 0.2],
@@ -591,7 +663,6 @@ class TestMainTuneModels(unittest.TestCase):
         )
         mock_result = MagicMock(spec=ResultGrid)
         mock_run_trials.return_value = mock_result
-        model_types = ["xgb_class", "rf_class", "logreg"]
         results = run_all_trials(
             train_val=self.train_val,
             target=self.target,
@@ -606,11 +677,10 @@ class TestMainTuneModels(unittest.TestCase):
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
             experiment_tag=self.experiment_tag,
-            model_types=model_types,
+            model_types=["xgb_class"],
             model_hyperparameters=self.model_hyperparameters,
             task_type="classification",
         )
-        # Only xgb_class should remain when NaN snapshots detected
         self.assertEqual(list(results.keys()), ["xgb_class"])
 
     @patch("ritme.tune_models.run_trials")

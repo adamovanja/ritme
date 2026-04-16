@@ -43,7 +43,7 @@ class TestFeatureTableHelpers(unittest.TestCase):
         self.assertListEqual(renamed.columns.tolist(), expected_columns)
 
     def test_ft_remove_zero_features(self):
-        with self.assertWarnsRegex(Warning, r".*all zero values: \['F2'\]"):
+        with self.assertWarnsRegex(Warning, r".*all zero values.*\['F2'\]"):
             removed = _ft_remove_zero_features(self.ft_renamed)
             pd.testing.assert_frame_equal(removed, self.ft_zero_remov)
 
@@ -380,6 +380,21 @@ class TestMainFunctions(unittest.TestCase):
                 seed=123,
                 stratify_by=["covariate"],
             )
+
+    def test_split_train_test_static_drops_ghost_zero_features(self):
+        """Features non-zero only in ft-only samples must not survive."""
+        md = pd.DataFrame(
+            {"host_id": ["a", "b"], "target": [1, 2]},
+            index=["s1", "s2"],
+        )
+        ft = pd.DataFrame(
+            {"0": [0.5, 0.5, 0.0], "1": [0.5, 0.5, 0.0], "2": [0.0, 0.0, 1.0]},
+            index=["s1", "s2", "s3"],
+        )
+        train, test = split_train_test(md, ft, train_size=0.0, seed=0)
+        self.assertNotIn("F2", test.columns)
+        self.assertIn("F0", test.columns)
+        self.assertIn("F1", test.columns)
 
 
 class TestSplitTrainTestTemporalSnapshots(unittest.TestCase):

@@ -48,7 +48,9 @@ def _ft_remove_zero_features(ft: pd.DataFrame) -> pd.DataFrame:
     ft_removed = ft.copy()
     drop_fts = ft_removed.loc[:, ft_removed.sum(axis=0) == 0.0].columns.tolist()
     if len(drop_fts) > 0:
-        warnings.warn(f"Dropping these features with all zero values: {drop_fts}")
+        warnings.warn(
+            f"Dropping {len(drop_fts)} features with all zero values: {drop_fts}"
+        )
         ft_removed.drop(columns=drop_fts, inplace=True)
     else:
         ft_removed = ft.copy()
@@ -529,7 +531,8 @@ def split_train_test(
         md_base, ft_merged = _merge_time_snapshots(md_list, ft_list)
     else:
         md_base = md.copy()
-        ft_merged = _prepare_single_feature_table(ft)
+        common_idx = md.index.intersection(ft.index)
+        ft_merged = _prepare_single_feature_table(ft.loc[common_idx])
 
     # merge md and feature table (inner join on sample ids)
     data = md_base.join(ft_merged, how="inner")
