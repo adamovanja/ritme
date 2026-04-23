@@ -1,6 +1,7 @@
 import json
 import os
 import pickle
+import warnings
 from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
@@ -185,15 +186,21 @@ class TunedModel:
             )
         sel_cols = self.snapshot_selected_map[time_label]
 
-        # group remaining if necessary
+        # group remaining (unseen) features into the training group column
         ft_to_sum = [c for c in data.columns if c not in sel_cols]
-        if len(ft_to_sum) > 0:
+        if len(ft_to_sum) > 0 and method is not None:
             group_name = "_low_abun" if method.startswith("abundance") else "_low_var"
             data[f"{self.ft_prefix}{group_name}"] = data[ft_to_sum].sum(axis=1)
-            # ensure grouped column present if part of original selection output
             if f"{self.ft_prefix}{group_name}" not in sel_cols:
                 sel_cols = sel_cols + [f"{self.ft_prefix}{group_name}"]
-        return data[sel_cols]
+        # features kept during training but missing from test are filled with 0
+        missing = [c for c in sel_cols if c not in data.columns]
+        if missing:
+            warnings.warn(
+                f"Snapshot {time_label!r}: features present during training but "
+                f"missing from the test set are filled with 0: {missing}."
+            )
+        return data.reindex(columns=sel_cols, fill_value=0)
 
     def transform(self, data: pd.DataFrame, time_label: str) -> pd.DataFrame:
         """Transform a single snapshot (unsuffixed)."""
