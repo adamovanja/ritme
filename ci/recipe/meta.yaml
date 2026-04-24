@@ -47,7 +47,7 @@ requirements:
     - torchmetrics
     - torchvision
     - typer
-    - wandb >= 0.26.1
+    - wandb ==0.25.1
     - zipp
 
 test:
