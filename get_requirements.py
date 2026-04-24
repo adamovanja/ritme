@@ -33,8 +33,14 @@ def print_requirements(meta_yaml_data: Dict, req_type: str) -> None:
 
         for requirement in run_requirements:
             if " " in requirement:
-                package, version = requirement.split(" ")
-                print(f"{package}=={version}")
+                package, version = requirement.split(" ", 1)
+                # If the version already starts with an operator (>=, <=, >, <,
+                # =, !=, ~=), pass it through verbatim. Otherwise treat the
+                # bare version as an exact pin and prepend '=='.
+                if version.lstrip().startswith(("=", ">", "<", "!", "~")):
+                    print(f"{package}{version}")
+                else:
+                    print(f"{package}=={version}")
             else:
                 print(requirement)
     elif req_type == "pip":

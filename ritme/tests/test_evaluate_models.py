@@ -348,6 +348,37 @@ class TestTunedModelImplementation(unittest.TestCase):
         expected["F_low_abun"] = self.data_test[other_cols].sum(axis=1)
         assert_frame_equal(df_test_selected, expected)
 
+    @patch("ritme.evaluate_models.select_microbial_features")
+    def test_select_test_missing_a_selected_feature(self, mock_select):
+        # Train selects F1 and F2; test data is missing F2 entirely
+        mock_select.return_value = self.data[["F1", "F2"]]
+        _ = self.tmodel.select(
+            self.data[self.microb_raw_fts], time_label="t0", split="train"
+        )
+        test_data = self.data_test[["F1", "F3", "F4"]].copy()
+        with self.assertWarnsRegex(UserWarning, r"filled with 0.*F2"):
+            df_test_selected = self.tmodel.select(
+                test_data, time_label="t0", split="test"
+            )
+        # Missing F2 is filled with 0, present F1 retained, F3/F4 grouped
+        self.assertIn("F1", df_test_selected.columns)
+        self.assertIn("F2", df_test_selected.columns)
+        self.assertIn("F_low_abun", df_test_selected.columns)
+        self.assertTrue((df_test_selected["F2"] == 0).all())
+        assert_array_equal(
+            df_test_selected["F_low_abun"].values,
+            test_data[["F3", "F4"]].sum(axis=1).values,
+        )
+
+    def test_predict_test_missing_train_features(self):
+        # Train with F1-F6, predict on test that is missing F2 and F3
+        _ = self.tmodel.predict(self.data, split="train")
+        test_data = self.data.drop(columns=["F2", "F3"]).head(3).copy()
+        test_data.index = [f"T{i}" for i in range(1, 4)]
+        # Must not raise KeyError
+        preds = self.tmodel.predict(test_data, split="test")
+        self.assertEqual(len(preds), 3)
+
     def test_predict_sklearn_model_w_all_ft_engineering_options(self):
         # aggregate: F1, ..., F6 -> c__Bacilli, c__Clostridia
         # selected: c__Bacilli, c__Clostridia -> c__Bacilli, c__Clostridia
