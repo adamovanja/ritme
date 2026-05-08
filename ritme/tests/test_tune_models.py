@@ -26,6 +26,7 @@ from ritme.tune_models import (
     _get_slurm_resource,
     _load_wandb_api_key,
     _load_wandb_entity,
+    _SafeMLflowLoggerCallback,
     run_all_trials,
     run_trials,
 )
@@ -185,10 +186,41 @@ class TestHelpersTuneModels(unittest.TestCase):
         callbacks = _define_callbacks(tracking_uri, exp_name, experiment_tag)
 
         self.assertEqual(len(callbacks), 1)
+        self.assertIsInstance(callbacks[0], _SafeMLflowLoggerCallback)
         self.assertIsInstance(callbacks[0], MLflowLoggerCallback)
         self.assertEqual(callbacks[0].tracking_uri, tracking_uri)
         self.assertEqual(callbacks[0].experiment_name, exp_name)
         self.assertEqual(callbacks[0].tags, {"experiment_tag": experiment_tag})
+
+    def test_safe_mlflow_log_trial_end_skips_unknown_trial(self):
+        # Trials whose actor died before log_trial_start should not raise.
+        cb = _SafeMLflowLoggerCallback(
+            tracking_uri="sqlite:///tmp/mlflow.db",
+            experiment_name="test_exp",
+            tags={"experiment_tag": "test_tag"},
+        )
+        cb.mlflow_util = MagicMock()
+        cb._trial_runs = {}
+        unknown_trial = MagicMock()
+
+        cb.log_trial_end(unknown_trial, failed=True)
+
+        cb.mlflow_util.end_run.assert_not_called()
+
+    def test_safe_mlflow_log_trial_end_delegates_known_trial(self):
+        # Trials that did start must still be finalized via the parent impl.
+        cb = _SafeMLflowLoggerCallback(
+            tracking_uri="sqlite:///tmp/mlflow.db",
+            experiment_name="test_exp",
+            tags={"experiment_tag": "test_tag"},
+        )
+        known_trial = MagicMock()
+        cb._trial_runs = {known_trial: "run-123"}
+
+        with patch.object(MLflowLoggerCallback, "log_trial_end") as mock_super_end:
+            cb.log_trial_end(known_trial, failed=True)
+
+        mock_super_end.assert_called_once_with(known_trial, failed=True)
 
     @patch("ritme.tune_models._load_wandb_api_key")
     @patch("ritme.tune_models._load_wandb_entity")
