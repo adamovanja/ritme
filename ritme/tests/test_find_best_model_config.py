@@ -454,6 +454,51 @@ class TestExtractMlflowLogsToCsv(unittest.TestCase):
             self.assertEqual(set(df["experiment_name"]), {"xgb", "rf"})
 
     @patch("mlflow.tracking.MlflowClient")
+    def test_extract_mlflow_logs_paginated(self, mock_client_class):
+        # Verifies that all runs are collected when MLflow returns multiple
+        # pages (regression test for the search_runs default max_results=1000
+        # cap).
+        mock_client = mock_client_class.return_value
+
+        mock_exp = MagicMock()
+        mock_exp.experiment_id = "1"
+        mock_exp.name = "xgb"
+        mock_client.search_experiments.return_value = [mock_exp]
+
+        class FakePage(list):
+            def __init__(self, items, token=None):
+                super().__init__(items)
+                self.token = token
+
+        def make_run(run_id):
+            run = MagicMock()
+            run.info.run_id = run_id
+            run.info.experiment_id = "1"
+            run.info.status = "FINISHED"
+            run.info.start_time = 1000
+            run.info.end_time = 2000
+            run.data.params = {"model": "xgb"}
+            run.data.metrics = {"rmse_val": 0.5}
+            run.data.tags = {}
+            return run
+
+        page1 = FakePage([make_run(f"run{i}") for i in range(1000)], token="t1")
+        page2 = FakePage([make_run(f"run{i}") for i in range(1000, 1500)], token=None)
+        mock_client.search_runs.side_effect = [page1, page2]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _extract_mlflow_logs_to_csv("sqlite:///fake/mlflow.db", temp_dir)
+
+            df = pd.read_csv(os.path.join(temp_dir, "mlflow_logs.csv"))
+            self.assertEqual(len(df), 1500)
+            self.assertEqual(mock_client.search_runs.call_count, 2)
+
+            first_call_kwargs = mock_client.search_runs.call_args_list[0].kwargs
+            second_call_kwargs = mock_client.search_runs.call_args_list[1].kwargs
+            self.assertIsNone(first_call_kwargs.get("page_token"))
+            self.assertEqual(second_call_kwargs.get("page_token"), "t1")
+
+    @patch("mlflow.tracking.MlflowClient")
     def test_extract_mlflow_logs_no_experiments(self, mock_client_class):
         mock_client = mock_client_class.return_value
         mock_client.search_experiments.return_value = []
