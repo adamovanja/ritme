@@ -268,6 +268,86 @@ class TestPlotShapSummary(unittest.TestCase):
         plt.close(fig)
 
 
+class TestPlotShapMulticlass(unittest.TestCase):
+    """Multi-class (3-D values) plot helpers must label classes and not crash."""
+
+    def _make_multiclass_explanation(self, n_classes=3, output_names=None):
+        rng = np.random.RandomState(0)
+        values = rng.randn(8, 4, n_classes)
+        data = rng.randn(8, 4)
+        explanation = shap.Explanation(
+            values=values,
+            base_values=np.zeros((8, n_classes)),
+            data=data,
+            feature_names=[f"feat_{i}" for i in range(4)],
+        )
+        if output_names is not None:
+            explanation.output_names = output_names
+        return explanation
+
+    def test_summary_plot_multiclass_renders_one_subplot_per_class(self):
+        explanation = self._make_multiclass_explanation(
+            n_classes=3, output_names=["gut", "tongue", "skin"]
+        )
+        fig = plot_shap_summary(explanation, max_display=4, show=False)
+        self.assertIsInstance(fig, plt.Figure)
+        titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
+        self.assertIn("Class: gut", titles)
+        self.assertIn("Class: tongue", titles)
+        self.assertIn("Class: skin", titles)
+        plt.close(fig)
+
+    def test_summary_plot_multiclass_falls_back_to_indexed_names(self):
+        explanation = self._make_multiclass_explanation(n_classes=3)
+        # No output_names attached — helper must still render without raising.
+        fig = plot_shap_summary(explanation, max_display=4, show=False)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_bar_plot_multiclass_renders_one_subplot_per_class(self):
+        explanation = self._make_multiclass_explanation(
+            n_classes=3, output_names=["a", "b", "c"]
+        )
+        fig = plot_shap_bar(explanation, max_display=4, show=False)
+        self.assertIsInstance(fig, plt.Figure)
+        # One title per class.
+        titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
+        self.assertIn("Class: a", titles)
+        self.assertIn("Class: b", titles)
+        self.assertIn("Class: c", titles)
+        plt.close(fig)
+
+
+class TestClassificationClassNames(unittest.TestCase):
+    """``_classification_class_names`` must recover original-target labels."""
+
+    def test_returns_none_for_regression_sklearn_model(self):
+        from ritme.explain_features import _classification_class_names
+
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = DummySklearnModel()  # has no classes_ attribute
+        tmodel.label_encoder = None
+        self.assertIsNone(_classification_class_names(tmodel))
+
+    def test_recovers_string_labels_via_label_encoder(self):
+        from sklearn.preprocessing import LabelEncoder
+
+        from ritme.explain_features import _classification_class_names
+
+        le = LabelEncoder().fit(["gut", "tongue", "skin"])
+
+        class _SklearnClassifier:
+            classes_ = np.array([0, 1, 2])
+
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = _SklearnClassifier()
+        tmodel.label_encoder = le
+        self.assertEqual(
+            sorted(_classification_class_names(tmodel)),
+            sorted([str(c) for c in le.classes_]),
+        )
+
+
 class TestCliExplainFeatures(unittest.TestCase):
     @patch("ritme.explain_features.plot_shap_bar")
     @patch("ritme.explain_features.plot_shap_summary")

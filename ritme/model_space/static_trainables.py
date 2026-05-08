@@ -32,7 +32,15 @@ from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import ElasticNet, LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, r2_score, root_mean_squared_error
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    f1_score,
+    log_loss,
+    matthews_corrcoef,
+    r2_score,
+    roc_auc_score,
+    root_mean_squared_error,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch import nn
@@ -136,9 +144,46 @@ def _report_results_manually(
     return None
 
 
-def _predict_accuracy_f1(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tuple:
+def _classification_metrics_dict(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: np.ndarray,
+    classes: List,
+) -> Dict[str, float]:
+    """Compute the standard ritme classification metric set.
+
+    f1_macro / balanced_accuracy / MCC are recorded at the model's argmax
+    decision (= 0.5 on the positive-class probability for binary);
+    roc_auc_macro_ovr and log_loss are threshold-free.
+    """
+    classes = list(classes)
+    if len(classes) == 2:
+        auc = roc_auc_score(y_true, y_proba[:, 1])
+    else:
+        auc = roc_auc_score(
+            y_true,
+            y_proba,
+            multi_class="ovr",
+            average="macro",
+            labels=classes,
+        )
+    return {
+        "roc_auc_macro_ovr": float(auc),
+        "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "mcc": float(matthews_corrcoef(y_true, y_pred)),
+        "log_loss": float(log_loss(y_true, y_proba, labels=classes)),
+    }
+
+
+def _predict_classification_metrics(
+    model: BaseEstimator, X: np.ndarray, y: np.ndarray
+) -> Dict[str, float]:
+    """Compute classification metrics for an sklearn-compatible classifier."""
     y_pred = model.predict(X)
-    return accuracy_score(y, y_pred), f1_score(y, y_pred, average="weighted")
+    y_proba = model.predict_proba(X)
+    classes = list(model.classes_)
+    return _classification_metrics_dict(y, y_pred, y_proba, classes)
 
 
 def _report_classification_results_manually(
@@ -152,19 +197,19 @@ def _report_classification_results_manually(
     model_path = _save_sklearn_model(model)
     _save_taxonomy(tax)
 
-    acc_train, f1_train = _predict_accuracy_f1(model, X_train, y_train)
-    acc_val, f1_val = _predict_accuracy_f1(model, X_val, y_val)
+    train_metrics = _predict_classification_metrics(model, X_train, y_train)
+    val_metrics = _predict_classification_metrics(model, X_val, y_val)
 
-    tune.report(
-        metrics={
-            "accuracy_val": acc_val,
-            "accuracy_train": acc_train,
-            "f1_weighted_val": f1_val,
-            "f1_weighted_train": f1_train,
-            "model_path": model_path,
-            "nb_features": X_train.shape[1],
-        }
-    )
+    metrics = {
+        "model_path": model_path,
+        "nb_features": X_train.shape[1],
+    }
+    for name, value in train_metrics.items():
+        metrics[f"{name}_train"] = value
+    for name, value in val_metrics.items():
+        metrics[f"{name}_val"] = value
+
+    tune.report(metrics=metrics)
     return None
 
 
@@ -535,6 +580,19 @@ class NeuralNet(LightningModule):
             ]
             return torch.tensor(mapped, device=predictions.device, dtype=torch.float32)
 
+    def _predict_proba(self, predictions: torch.Tensor) -> np.ndarray:
+        """Per-class probabilities for classification / CORN heads."""
+        if self.nn_type == "classification":
+            return torch.softmax(predictions, dim=1).detach().cpu().numpy()
+        # CORN: conditional sigmoids -> cumulative P(y>k) -> per-class probs.
+        if predictions.ndim == 1:
+            predictions = predictions.unsqueeze(1)
+        cum = torch.cumprod(torch.sigmoid(predictions), dim=1)
+        proba = torch.cat(
+            [1.0 - cum[:, :1], cum[:, :-1] - cum[:, 1:], cum[:, -1:]], dim=1
+        )
+        return proba.detach().cpu().numpy()
+
     def _calculate_metrics(self, predictions, targets):
         preds = self._prepare_predictions(predictions)
 
@@ -543,16 +601,13 @@ class NeuralNet(LightningModule):
             r2score = torchmetrics.regression.R2Score().to(preds.device)
             r2 = r2score(preds, targets)
             return {"rmse": rmse, "r2": r2}
-        else:
-            preds_int = preds.long()
-            targets_int = targets.long()
-            acc = (preds_int == targets_int).float().mean()
-            num_classes = self.num_classes
-            f1 = torchmetrics.F1Score(
-                task="multiclass", num_classes=num_classes, average="weighted"
-            ).to(preds_int.device)
-            f1_val = f1(preds_int, targets_int)
-            return {"accuracy": acc, "f1_weighted": f1_val}
+
+        y_pred_np = preds.detach().cpu().numpy().astype(int)
+        y_true_np = targets.detach().cpu().numpy().astype(int)
+        y_proba_np = self._predict_proba(predictions)
+        return _classification_metrics_dict(
+            y_true_np, y_pred_np, y_proba_np, list(self.classes)
+        )
 
     def _calculate_loss(self, predictions, targets):
         # loss: corn_loss, cross-entropy or mse
@@ -911,14 +966,20 @@ def train_nn(
         nn_score_mode = "min"
     else:
         nn_metrics = {
-            "accuracy_val": "val_accuracy",
-            "accuracy_train": "train_accuracy",
-            "f1_weighted_val": "val_f1_weighted",
-            "f1_weighted_train": "train_f1_weighted",
+            "roc_auc_macro_ovr_val": "val_roc_auc_macro_ovr",
+            "roc_auc_macro_ovr_train": "train_roc_auc_macro_ovr",
+            "log_loss_val": "val_log_loss",
+            "log_loss_train": "train_log_loss",
+            "f1_macro_val": "val_f1_macro",
+            "f1_macro_train": "train_f1_macro",
+            "balanced_accuracy_val": "val_balanced_accuracy",
+            "balanced_accuracy_train": "train_balanced_accuracy",
+            "mcc_val": "val_mcc",
+            "mcc_train": "train_mcc",
             "loss_val": "val_loss",
             "loss_train": "train_loss",
         }
-        nn_score_attr = "accuracy_val"
+        nn_score_attr = "roc_auc_macro_ovr_val"
         nn_score_mode = "max"
 
     callbacks = [
@@ -1250,12 +1311,13 @@ def train_xgb(
 def custom_xgb_class_metric(
     predt: np.ndarray, dtrain: xgb.DMatrix
 ) -> List[Tuple[str, float]]:
+    """Eval metric for ``multi:softprob``: computes the ritme classification
+    metric set from the booster's per-class probabilities."""
     y = dtrain.get_label().astype(int)
-    y_pred = predt.astype(int)
-    return [
-        ("accuracy", accuracy_score(y, y_pred)),
-        ("f1_weighted", f1_score(y, y_pred, average="weighted")),
-    ]
+    classes = list(range(predt.shape[1]))
+    y_pred = predt.argmax(axis=1)
+    metrics = _classification_metrics_dict(y, y_pred, predt, classes)
+    return [(name, value) for name, value in metrics.items()]
 
 
 def train_xgb_class(
@@ -1294,7 +1356,7 @@ def train_xgb_class(
         y_train_enc = le.transform(np.round(y_train).astype(int))
         y_val_enc = le.transform(np.round(y_val).astype(int))
 
-    config["objective"] = "multi:softmax"
+    config["objective"] = "multi:softprob"
     config["num_class"] = len(le.classes_)
 
     np.random.seed(seed_model)
@@ -1311,16 +1373,22 @@ def train_xgb_class(
 
     checkpoint_callback = _RitmeXGBCheckpointCallback(
         metrics={
-            "accuracy_train": "train-accuracy",
-            "accuracy_val": "val-accuracy",
-            "f1_weighted_train": "train-f1_weighted",
-            "f1_weighted_val": "val-f1_weighted",
+            "roc_auc_macro_ovr_train": "train-roc_auc_macro_ovr",
+            "roc_auc_macro_ovr_val": "val-roc_auc_macro_ovr",
+            "log_loss_train": "train-log_loss",
+            "log_loss_val": "val-log_loss",
+            "f1_macro_train": "train-f1_macro",
+            "f1_macro_val": "val-f1_macro",
+            "balanced_accuracy_train": "train-balanced_accuracy",
+            "balanced_accuracy_val": "val-balanced_accuracy",
+            "mcc_train": "train-mcc",
+            "mcc_val": "val-mcc",
         },
         filename="checkpoint",
         results_postprocessing_fn=lambda results: add_nb_features_to_results(
             results, X_train.shape[1]
         ),
-        score_attr="accuracy_val",
+        score_attr="roc_auc_macro_ovr_val",
         score_mode="max",
     )
     patience = max(10, int(0.1 * config["n_estimators"]))

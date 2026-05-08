@@ -10,6 +10,9 @@
   "optuna_searchspace_sampler": "TPESampler",
   "seed_data": 12,
   "seed_model": 12,
+  "stratify_by": [
+    "body-site"
+  ],
   "target": "body-site",
   "task_type": "classification",
   "time_budget_s": 120,

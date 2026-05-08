@@ -62,11 +62,12 @@ class TestEvaluateTunedModels(unittest.TestCase):
             pred_test,
         ]
 
-        all_preds = _predict_w_tuned_model(
+        all_preds, proba_dict = _predict_w_tuned_model(
             self.mock_tuned_model, self.exp_config, self.train_val, self.test
         )
         mock_get_predictions.assert_called_with(ANY, ANY, "test_target", ANY)
         assert_frame_equal(all_preds, exp_all_preds)
+        self.assertIsNone(proba_dict)
 
     def test_calculate_metrics(self):
         metrics = _calculate_metrics(self.all_preds, self.model_type)
@@ -130,8 +131,8 @@ class TestEvaluateTunedModels(unittest.TestCase):
     @patch("ritme.evaluate_tuned_models._predict_w_tuned_model")
     def test_evaluate_tuned_models(self, mock_predict_w_tuned_model):
         mock_predict_w_tuned_model.side_effect = [
-            self.all_preds,
-            self.all_preds,
+            (self.all_preds, None),
+            (self.all_preds, None),
         ]
 
         dic_tuned_models = {

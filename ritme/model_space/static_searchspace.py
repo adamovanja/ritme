@@ -434,13 +434,17 @@ def get_logreg_space(
 def get_rf_class_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, str]:
-    return get_rf_space(trial, train_val, tax, model_hyperparameters)
+    space = get_rf_space(trial, train_val, tax, model_hyperparameters)
+    space["model"] = "rf_class"
+    return space
 
 
 def get_xgb_class_space(
     trial, train_val, tax, model_hyperparameters: dict = {}
 ) -> Dict[str, Any]:
-    return get_xgb_space(trial, train_val, tax, model_hyperparameters)
+    space = get_xgb_space(trial, train_val, tax, model_hyperparameters)
+    space["model"] = "xgb_class"
+    return space
 
 
 def get_search_space(
