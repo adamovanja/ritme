@@ -21,10 +21,8 @@ jobs:
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: 'latest'
-          activate-environment: build-env
-          python-version: '3.10'
       - name: Install conda-build and anaconda-client
-        run: conda install -n build-env -y conda-build anaconda-client
+        run: conda install -n base -y conda-build anaconda-client
       - name: Build Conda Package
         id: build
         run: |
@@ -33,13 +31,13 @@ jobs:
           mkdir -p $CONDA_BUILD_ROOT
 
           # Capture the package path without building
-          PACKAGE_PATH=$(conda run -n build-env conda build --no-test \
+          PACKAGE_PATH=$(conda build --no-test \
             -c conda-forge \
             --croot $CONDA_BUILD_ROOT \
             ci/recipe --output)
 
           # Build the package using the specified build root
-          conda run -n build-env conda build --no-test \
+          conda build --no-test \
             -c conda-forge \
             --croot $CONDA_BUILD_ROOT \
             ci/recipe
@@ -52,4 +50,4 @@ jobs:
           ANACONDA_USER: adamova
         run: |
           # Upload the built package using the captured path
-          conda run -n build-env anaconda upload --force "${{ steps.build.outputs.package_path }}" --user $ANACONDA_USER
+          anaconda upload --force "${{ steps.build.outputs.package_path }}" --user $ANACONDA_USER
