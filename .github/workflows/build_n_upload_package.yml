@@ -49,5 +49,8 @@ jobs:
           ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_TOKEN }}
           ANACONDA_USER: adamova
         run: |
-          # Upload the built package using the captured path
-          anaconda upload --force "${{ steps.build.outputs.package_path }}" --user $ANACONDA_USER
+          # Upload the built package using the captured path.
+          # `anaconda` lives in base/bin, but setup-miniconda@v3 activates the
+          # default `test` env, so the script isn't on PATH — invoke via
+          # `conda run -n base` so it resolves regardless of activation.
+          conda run -n base anaconda upload --force "${{ steps.build.outputs.package_path }}" --user $ANACONDA_USER
