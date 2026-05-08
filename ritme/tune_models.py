@@ -186,13 +186,31 @@ def _load_wandb_entity() -> str:
     return entity
 
 
+class _SafeMLflowLoggerCallback(MLflowLoggerCallback):
+    """MLflowLoggerCallback that tolerates trials which never started.
+
+    Why: when a Ray worker actor dies before ``log_trial_start`` runs (e.g.
+    SIGSEGV during actor bootstrap on busy HPC nodes), Ray Tune still calls
+    ``on_trial_error`` → ``log_trial_end``. The upstream implementation does
+    a bare ``self._trial_runs[trial]`` lookup and raises ``KeyError``, which
+    propagates out of ``Tuner.fit`` and tears down the whole sweep. Skipping
+    the call is safe: no MLflow run was ever opened for that trial, so there
+    is nothing to finalize.
+    """
+
+    def log_trial_end(self, trial, failed: bool = False) -> None:
+        if trial not in self._trial_runs:
+            return
+        super().log_trial_end(trial, failed=failed)
+
+
 def _define_callbacks(tracking_uri: str, exp_name: str, experiment_tag: str) -> list:
     """Define callbacks based on the tracking URI."""
     callbacks = []
 
     if tracking_uri.startswith("sqlite:///"):
         callbacks.append(
-            MLflowLoggerCallback(
+            _SafeMLflowLoggerCallback(
                 tracking_uri=tracking_uri,
                 experiment_name=exp_name,
                 # Below would be double saving: local_dir as artifact here
@@ -344,6 +362,7 @@ def run_trials(
                 # produce visible bottleneck warnings (see ritme#84).
                 num_to_keep=3,
             ),
+            failure_config=tune.FailureConfig(max_failures=2),
             callbacks=callbacks,
         ),
         tune_config=tune.TuneConfig(
