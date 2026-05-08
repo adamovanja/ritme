@@ -117,12 +117,26 @@ def _extract_mlflow_logs_to_csv(tracking_uri: str, output_dir: str) -> None:
         return
 
     exp_name_map = {e.experiment_id: e.name for e in experiments}
-    runs = client.search_runs(experiment_ids=exp_ids)
-    if not runs:
+
+    # MLflow's search_runs is paginated (default max_results=1000); loop on
+    # the page token to retrieve every run.
+    all_runs = []
+    page_token = None
+    while True:
+        page = client.search_runs(
+            experiment_ids=exp_ids,
+            page_token=page_token,
+        )
+        all_runs.extend(page)
+        page_token = getattr(page, "token", None)
+        if not page_token:
+            break
+
+    if not all_runs:
         return
 
     all_run_data = []
-    for run in runs:
+    for run in all_runs:
         row = {
             "run_id": run.info.run_id,
             "experiment_id": run.info.experiment_id,
