@@ -2,13 +2,20 @@ import os
 
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 from ritme.feature_space.transform_features import PSEUDOCOUNT
 
 
 def _verify_matrix_a(A, feature_columns, tree_phylo):
     # no all 1 in one column
-    assert not np.any(np.all(A == 1.0, axis=0))
+    if sp.issparse(A):
+        col_sums = np.asarray(A.sum(axis=0)).ravel()
+        # A is binary at construction time, so an all-ones column has
+        # sum equal to the number of rows.
+        assert not np.any(col_sums == A.shape[0])
+    else:
+        assert not np.any(np.all(A == 1.0, axis=0))
 
     # shape should be = feature_count + node_count
     nb_features = len(feature_columns)
@@ -31,7 +38,7 @@ def _get_internal_nodes(tree):
 
 
 def _create_identity_matrix_for_leaves(num_leaves, tax, leaves):
-    A1 = np.eye(num_leaves)
+    A1 = sp.identity(num_leaves, dtype=float, format="csc")
     # taxonomic name should include OTU name
     tax_e = tax.copy()
     tax_e["tax_ft"] = tax_e["Taxon"] + "; otu__" + tax_e.index
@@ -40,15 +47,15 @@ def _create_identity_matrix_for_leaves(num_leaves, tax, leaves):
     return A1, a1_node_names
 
 
-def _populate_A2_for_node(A2, node, leaf_index_map, j):
-    node_leaf_names = []
-    # flag leaves that match to a node
+def _descendant_leaf_indices(node, leaf_index_map):
     descendant_leaves = {leaf.name for leaf in node.tips()}
-    for leaf_name in leaf_index_map:
+    leaf_indices = []
+    leaf_names = []
+    for leaf_name, idx in leaf_index_map.items():
         if leaf_name in descendant_leaves:
-            node_leaf_names.append(leaf_name)
-            A2[leaf_index_map[leaf_name], j] = 1
-    return A2, node_leaf_names
+            leaf_indices.append(idx)
+            leaf_names.append(leaf_name)
+    return leaf_indices, leaf_names
 
 
 def _create_consensus_taxonomy(node_leaf_names, tax, a2_node_names, j):
@@ -65,25 +72,40 @@ def _create_consensus_taxonomy(node_leaf_names, tax, a2_node_names, j):
 
 
 def _create_matrix_for_internal_nodes(num_leaves, internal_nodes, leaf_index_map, tax):
-    # initialise it with zeros
-    A2 = np.zeros((num_leaves, len(internal_nodes)))
+    # Build A2 directly from the leaf-membership pattern of each internal node.
+    # Collinear columns (identical leaf sets) are dropped on the fly via a
+    # signature lookup - no dense num_leaves x num_internal_nodes intermediate
+    # and no transpose-based duplicate scan, both of which scale as O(F^2)
+    # for high-dimensional feature spaces.
+    rows = []
+    cols = []
     a2_node_names = []
-    # Populate A2 with 1s for the leaves linked by each internal node # iterate
-    # over all internal nodes to find descendents of this node and mark them
-    # accordingly
+    seen_signatures = {}
+    next_col = 0
+
     for j, node in enumerate(internal_nodes):
-        A2, node_leaf_names = _populate_A2_for_node(A2, node, leaf_index_map, j)
-        # create consensus taxonomy from all leaf_names- since node.name is just float
+        leaf_indices, node_leaf_names = _descendant_leaf_indices(node, leaf_index_map)
+        signature = tuple(sorted(leaf_indices))
+
+        if signature in seen_signatures:
+            # collinear with an earlier kept column - drop (keep="first")
+            continue
+
         node_consensus_taxon = _create_consensus_taxonomy(
             node_leaf_names, tax, a2_node_names, j
         )
+        seen_signatures[signature] = next_col
+        rows.extend(leaf_indices)
+        cols.extend([next_col] * len(leaf_indices))
         a2_node_names.append(node_consensus_taxon)
+        next_col += 1
 
-    # remove collinear (duplicated) columns and keep name of the first duplicate
-    A2_df = pd.DataFrame(A2, columns=a2_node_names)
-    A2_df_uni = A2_df.loc[:, ~A2_df.T.duplicated(keep="first")]
-
-    return A2_df_uni.values, A2_df_uni.columns.tolist()
+    data = np.ones(len(rows), dtype=float)
+    A2 = sp.coo_matrix(
+        (data, (rows, cols)),
+        shape=(num_leaves, next_col),
+    ).tocsc()
+    return A2, a2_node_names
 
 
 def create_matrix_from_tree(tree, tax) -> pd.DataFrame:
@@ -102,23 +124,51 @@ def create_matrix_from_tree(tree, tax) -> pd.DataFrame:
         num_leaves, internal_nodes, leaf_index_map, tax
     )
 
-    # Concatenate A1 and A2 to create the final matrix A
-    A = np.hstack((A1, A2))
-    df_a = pd.DataFrame(
-        A, columns=a1_node_names + a2_node_names, index=[leaf.name for leaf in leaves]
-    )
-    # transform to sparse matrix for memory efficiency
-    df_a_sparse = df_a.astype(pd.SparseDtype("float", 0))
-    _verify_matrix_a(df_a_sparse.values, tax.index.tolist(), tree)
+    # Concatenate A1 and A2 in sparse form to avoid a dense O(F^2) hstack copy.
+    A_sparse = sp.hstack([A1, A2], format="csc")
+    _verify_matrix_a(A_sparse, tax.index.tolist(), tree)
 
+    df_a_sparse = pd.DataFrame.sparse.from_spmatrix(
+        A_sparse,
+        columns=a1_node_names + a2_node_names,
+        index=[leaf.name for leaf in leaves],
+    )
     return df_a_sparse
 
 
+def _as_aggregation_matrix(A):
+    """Return a numpy or scipy.sparse 2D matrix usable for taxonomy aggregation.
+
+    Pandas DataFrames whose columns all have ``SparseDtype`` are converted to a
+    scipy CSC matrix without densifying - the path that keeps RAM low for
+    high-dimensional feature spaces.
+    """
+    if sp.issparse(A):
+        return A
+    if isinstance(A, pd.DataFrame):
+        all_sparse = len(A.columns) > 0 and all(
+            isinstance(dt, pd.SparseDtype) for dt in A.dtypes
+        )
+        if all_sparse:
+            return A.sparse.to_coo().tocsc()
+        return A.values
+    return A
+
+
 def _preprocess_taxonomy_aggregation(x, A):
+    A_eff = _as_aggregation_matrix(A)
     X = np.log(PSEUDOCOUNT + x)
-    nleaves = np.sum(A, axis=0)
     # safekeeping: dot-product would not work with wrong dimensions
     # X: n_samples, n_features,  A: n_features, (n_features+n_nodes)
-    log_geom = X.dot(A) / nleaves
+    if sp.issparse(A_eff):
+        nleaves = np.asarray(A_eff.sum(axis=0)).ravel()
+        log_geom = X @ A_eff
+        # Classo expects a dense design matrix
+        if sp.issparse(log_geom):
+            log_geom = log_geom.toarray()
+        log_geom = log_geom / nleaves
+    else:
+        nleaves = np.sum(A_eff, axis=0)
+        log_geom = X.dot(A_eff) / nleaves
 
     return log_geom, nleaves

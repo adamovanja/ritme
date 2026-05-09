@@ -1095,9 +1095,12 @@ class TestProcessTracSpecific(unittest.TestCase):
         self.assertEqual(internal_nodes[0].name, "node1")
 
     def test_create_identity_matrix_for_leaves(self):
+        import scipy.sparse as sp
+
         leaves = list(self.tree.tips())
         A1, a1_node_names = _create_identity_matrix_for_leaves(3, self.tax, leaves)
-        np.testing.assert_array_equal(A1, np.eye(3))
+        self.assertTrue(sp.issparse(A1))
+        np.testing.assert_array_equal(A1.toarray(), np.eye(3))
         self.assertEqual(
             a1_node_names,
             [
@@ -1110,12 +1113,15 @@ class TestProcessTracSpecific(unittest.TestCase):
         )
 
     def test_create_matrix_for_internal_nodes(self):
+        import scipy.sparse as sp
+
         leaves, leaf_index_map = _get_leaves_and_index_map(self.tree)
         internal_nodes = _get_internal_nodes(self.tree)
         A2, a2_node_names = _create_matrix_for_internal_nodes(
             3, internal_nodes, leaf_index_map, self.tax
         )
-        np.testing.assert_array_equal(A2, np.array([[1], [1], [0]]))
+        self.assertTrue(sp.issparse(A2))
+        np.testing.assert_array_equal(A2.toarray(), np.array([[1], [1], [0]]))
         self.assertEqual(
             a2_node_names,
             [
@@ -1133,7 +1139,7 @@ class TestProcessTracSpecific(unittest.TestCase):
         A2, a2_node_names = _create_matrix_for_internal_nodes(
             3, internal_nodes, leaf_index_map, self.tax
         )
-        np.testing.assert_array_equal(A2, np.array([[1, 0], [1, 0], [0, 1]]))
+        np.testing.assert_array_equal(A2.toarray(), np.array([[1, 0], [1, 0], [0, 1]]))
         self.assertEqual(
             a2_node_names,
             [
@@ -1153,15 +1159,13 @@ class TestProcessTracSpecific(unittest.TestCase):
         ]
         leaf_names = (self.tax["Taxon"] + "; otu__" + self.tax.index).values.tolist()
         ft_names = ["F1", "F2", "F3"]
-        ma_exp = pd.DataFrame(
-            ma_exp,
-            columns=leaf_names + node_taxon_names,
-            index=ft_names,
-        )
-        ma_exp = ma_exp.astype(pd.SparseDtype("float", 0))
         ma_act = create_matrix_from_tree(self.tree, self.tax)
 
-        assert_frame_equal(ma_exp, ma_act)
+        self.assertEqual(list(ma_act.columns), leaf_names + node_taxon_names)
+        self.assertEqual(list(ma_act.index), ft_names)
+        # Result must remain a sparse-dtype DataFrame (zero-storage backing).
+        self.assertTrue(all(isinstance(dt, pd.SparseDtype) for dt in ma_act.dtypes))
+        np.testing.assert_array_equal(ma_act.sparse.to_dense().to_numpy(), ma_exp)
 
     def test_preprocess_taxonomy_aggregation(self):
         # Create sample input data
@@ -1179,3 +1183,68 @@ class TestProcessTracSpecific(unittest.TestCase):
         # Assert the expected output
         np.testing.assert_array_equal(log_geom_actual, log_geom_expected)
         np.testing.assert_array_equal(nleaves_actual, nleaves_expected)
+
+    def test_preprocess_taxonomy_aggregation_sparse_dataframe(self):
+        # A sparse-dtype DataFrame (the actual return type of
+        # `create_matrix_from_tree`) must produce the same result as the
+        # equivalent dense matrix - without densifying internally.
+        x = np.array([[0.1, 0.8, 0.1], [0.2, 0.7, 0.1]])
+        A_dense = np.array(
+            [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]]
+        )
+        A_df = pd.DataFrame(A_dense).astype(pd.SparseDtype("float", 0))
+
+        log_geom_dense, nleaves_dense = _preprocess_taxonomy_aggregation(x, A_dense)
+        log_geom_sparse, nleaves_sparse = _preprocess_taxonomy_aggregation(x, A_df)
+
+        np.testing.assert_allclose(log_geom_sparse, log_geom_dense)
+        np.testing.assert_array_equal(nleaves_sparse, nleaves_dense)
+
+    def test_create_matrix_from_tree_high_dim_stays_sparse(self):
+        # Builds a balanced binary-ish tree with 256 leaves to exercise the
+        # high-dimensional path. The result must stay sparse-dtype - the
+        # original implementation densified A (~num_leaves^2) here.
+        import scipy.sparse as sp
+
+        num_leaves = 256
+        leaves = [TreeNode(name=f"L{i}", length=1.0) for i in range(num_leaves)]
+
+        # Balanced binary internal-node structure.
+        current_level = leaves
+        while len(current_level) > 1:
+            next_level = []
+            for i in range(0, len(current_level), 2):
+                if i + 1 < len(current_level):
+                    parent = TreeNode(name=f"n_{len(next_level)}_{i}", length=1.0)
+                    parent.extend([current_level[i], current_level[i + 1]])
+                    next_level.append(parent)
+                else:
+                    next_level.append(current_level[i])
+            current_level = next_level
+        tree = current_level[0]
+
+        tax = pd.DataFrame(
+            {
+                "Taxon": [f"d__Bacteria; p__P; c__C{i}" for i in range(num_leaves)],
+                "Confidence": [0.9] * num_leaves,
+            },
+            index=[f"L{i}" for i in range(num_leaves)],
+        )
+        tax.index.name = "Feature ID"
+
+        a_df = create_matrix_from_tree(tree, tax)
+        # Public contract: sparse-dtype DataFrame with leaves as the row index.
+        self.assertTrue(all(isinstance(dt, pd.SparseDtype) for dt in a_df.dtypes))
+        self.assertEqual(a_df.shape[0], num_leaves)
+
+        # The sparse representation must round-trip through scipy.sparse with
+        # nnz << num_leaves**2 (the cost the original dense path was paying).
+        a_coo = a_df.sparse.to_coo()
+        self.assertTrue(sp.issparse(a_coo))
+        self.assertLess(a_coo.nnz, num_leaves * num_leaves)
+
+        # Aggregation must work on the sparse-dtype DataFrame directly.
+        x = np.random.RandomState(0).rand(4, num_leaves)
+        log_geom, nleaves = _preprocess_taxonomy_aggregation(x, a_df)
+        self.assertEqual(log_geom.shape, (4, a_df.shape[1]))
+        self.assertEqual(nleaves.shape, (a_df.shape[1],))

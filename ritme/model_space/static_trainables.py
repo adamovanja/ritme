@@ -349,8 +349,9 @@ def train_trac(
     a_df = create_matrix_from_tree(tree_phylo, tax)
 
     # ! get log_geom
-    log_geom_train, nleaves = _preprocess_taxonomy_aggregation(X_train, a_df.values)
-    log_geom_val, _ = _preprocess_taxonomy_aggregation(X_val, a_df.values)
+    # pass a_df directly so the sparse representation is not densified.
+    log_geom_train, nleaves = _preprocess_taxonomy_aggregation(X_train, a_df)
+    log_geom_val, _ = _preprocess_taxonomy_aggregation(X_val, a_df)
 
     # ! model
     np.random.seed(seed_model)
