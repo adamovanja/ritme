@@ -359,7 +359,7 @@ class TunedModel:
         elif isinstance(self.model, dict):
             # trac model
             log_geom, _ = _preprocess_taxonomy_aggregation(
-                X.values, self.model["matrix_a"].values
+                X.values, self.model["matrix_a"]
             )
             alpha = self.model["model"].values
             predicted = log_geom.dot(alpha[1:]) + alpha[0]
