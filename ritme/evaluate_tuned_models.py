@@ -2,6 +2,7 @@ import os
 import re
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import typer
@@ -9,12 +10,13 @@ from matplotlib.transforms import offset_copy
 from scipy.stats import pearsonr
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
-    accuracy_score,
     balanced_accuracy_score,
-    cohen_kappa_score,
     confusion_matrix,
     f1_score,
+    log_loss,
+    matthews_corrcoef,
     r2_score,
+    roc_auc_score,
     root_mean_squared_error,
 )
 
@@ -37,8 +39,10 @@ def _predict_w_tuned_model(
     exp_config: dict,
     train_val: pd.DataFrame,
     test: pd.DataFrame,
+    is_classification: bool = False,
 ):
-    # define
+    """Predict on both splits; for classification also return per-split
+    ``(y_proba, classes)``."""
     target = exp_config["target"]
 
     # create predictions on train_val and test set - note: ft aggregation,
@@ -49,7 +53,16 @@ def _predict_w_tuned_model(
     test_pred = get_predictions(test, tuned_model, target, "test")
     all_pred = pd.concat([train_pred, test_pred])
 
-    return all_pred
+    if not is_classification:
+        return all_pred, None
+
+    train_proba, train_classes = tuned_model.predict_proba(train_val, "train")
+    test_proba, test_classes = tuned_model.predict_proba(test, "test")
+    proba_dict = {
+        "train": (train_proba, list(train_classes)),
+        "test": (test_proba, list(test_classes)),
+    }
+    return all_pred, proba_dict
 
 
 @helper_function
@@ -73,23 +86,47 @@ def _calculate_metrics(all_preds: pd.DataFrame, model_type: str) -> pd.DataFrame
 
 @helper_function
 def _calculate_classification_metrics(
-    all_preds: pd.DataFrame, model_type: str
+    all_preds: pd.DataFrame,
+    proba_dict: dict,
+    model_type: str,
 ) -> pd.DataFrame:
+    """Compute the ritme classification metric set for both splits.
+
+    f1_macro / balanced_accuracy / mcc are recorded at the model's argmax
+    decision (= 0.5 on the positive-class probability for binary);
+    roc_auc_macro_ovr and log_loss are threshold-free.
+    """
     metrics = pd.DataFrame()
     for split in ["train", "test"]:
         pred_split = all_preds[all_preds["split"] == split].copy()
-        y_true = pred_split["true"]
-        y_pred = pred_split["pred"]
+        y_true = pred_split["true"].to_numpy()
+        y_pred = pred_split["pred"].to_numpy()
+        y_proba, classes = proba_dict[split]
+        y_proba = np.asarray(y_proba)
+        classes = list(classes)
 
-        metrics.loc[model_type, f"accuracy_{split}"] = accuracy_score(y_true, y_pred)
-        metrics.loc[model_type, f"balanced_accuracy_{split}"] = balanced_accuracy_score(
-            y_true, y_pred
+        if len(classes) == 2:
+            auc = roc_auc_score(y_true, y_proba[:, 1])
+        else:
+            auc = roc_auc_score(
+                y_true,
+                y_proba,
+                multi_class="ovr",
+                average="macro",
+                labels=classes,
+            )
+        metrics.loc[model_type, f"roc_auc_macro_ovr_{split}"] = float(auc)
+        metrics.loc[model_type, f"log_loss_{split}"] = float(
+            log_loss(y_true, y_proba, labels=classes)
         )
-        metrics.loc[model_type, f"f1_weighted_{split}"] = f1_score(
-            y_true, y_pred, average="weighted"
+        metrics.loc[model_type, f"f1_macro_{split}"] = float(
+            f1_score(y_true, y_pred, average="macro")
         )
-        metrics.loc[model_type, f"cohen_kappa_{split}"] = cohen_kappa_score(
-            y_true, y_pred
+        metrics.loc[model_type, f"balanced_accuracy_{split}"] = float(
+            balanced_accuracy_score(y_true, y_pred)
+        )
+        metrics.loc[model_type, f"mcc_{split}"] = float(
+            matthews_corrcoef(y_true, y_pred)
         )
     return metrics
 
@@ -206,11 +243,15 @@ def _plot_confusion_matrices(
             ax=axs_set, cmap=colors[split], colorbar=False
         )
 
-        acc = metrics_split[f"accuracy_{split}"].values[0]
-        f1 = metrics_split[f"f1_weighted_{split}"].values[0]
-        kappa = metrics_split[f"cohen_kappa_{split}"].values[0]
+        auc = metrics_split[f"roc_auc_macro_ovr_{split}"].values[0]
+        ll = metrics_split[f"log_loss_{split}"].values[0]
+        f1m = metrics_split[f"f1_macro_{split}"].values[0]
+        bacc = metrics_split[f"balanced_accuracy_{split}"].values[0]
+        mcc = metrics_split[f"mcc_{split}"].values[0]
         axs_set.set_xlabel(
-            f"Predicted\nAcc: {acc:.3f} | F1: {f1:.3f} | Kappa: {kappa:.3f}"
+            "Predicted\n"
+            f"AUC: {auc:.3f} | LogLoss: {ll:.3f}\n"
+            f"F1m: {f1m:.3f} | BAcc: {bacc:.3f} | MCC: {mcc:.3f}"
         )
 
         if i == 0:
@@ -244,8 +285,9 @@ def evaluate_tuned_models(
         test (pd.DataFrame): Test set.
 
     Returns:
-        pd.DataFrame: Metrics for train and test split (regression: RMSE, R2,
-        Pearson; classification: accuracy, balanced accuracy, F1, Cohen's kappa).
+        pd.DataFrame: Metrics for train and test split. Regression reports
+        RMSE, R2, Pearson. Classification reports roc_auc_macro_ovr,
+        log_loss, f1_macro, balanced_accuracy, MCC.
         plt.Figure: Matplotlib figure object containing scatter plots (regression)
         or confusion matrices (classification) for each model.
     """
@@ -258,11 +300,13 @@ def evaluate_tuned_models(
     fig, axs = plt.subplots(nb_models, 2, figsize=(12, nb_models * 5), dpi=400)
 
     for model_type, model in dic_tuned_models.items():
-        preds_model_type = _predict_w_tuned_model(model, exp_config, train_val, test)
+        preds_model_type, proba_dict = _predict_w_tuned_model(
+            model, exp_config, train_val, test, is_classification=is_classification
+        )
 
         if is_classification:
             metrics_split = _calculate_classification_metrics(
-                preds_model_type, model_type
+                preds_model_type, proba_dict, model_type
             )
             df_metrics = pd.concat([df_metrics, metrics_split])
 

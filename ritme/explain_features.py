@@ -1,6 +1,6 @@
 import os
 import pickle
-from typing import Optional
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,6 +9,7 @@ import shap
 import torch
 import typer
 import xgboost as xgb
+from matplotlib.figure import Figure
 
 from ritme._decorators import helper_function, main_function
 from ritme.evaluate_models import TunedModel, load_best_model
@@ -38,6 +39,32 @@ def _get_predict_fn(tmodel: TunedModel):
         return lambda X: model.predict(xgb.DMatrix(X)).flatten()
     # sklearn-like (linreg, rf)
     return lambda X: model.predict(X).flatten()
+
+
+@helper_function
+def _classification_class_names(tmodel: TunedModel) -> Optional[List[str]]:
+    """Return original-target-space class labels for a classification
+    ``TunedModel``, or ``None`` for non-classification models."""
+    model = tmodel.model
+    if isinstance(model, dict):  # TRAC
+        return None
+    if isinstance(model, NeuralNet):
+        if model.nn_type not in ("classification", "ordinal_regression"):
+            return None
+        classes = list(model.classes)
+    elif isinstance(model, xgb.core.Booster):
+        if tmodel.model_type != "xgb_class" or tmodel.label_encoder is None:
+            return None
+        return [str(c) for c in tmodel.label_encoder.classes_]
+    else:
+        if not hasattr(model, "classes_"):
+            return None
+        classes = list(model.classes_)
+    if tmodel.label_encoder is not None:
+        classes = list(
+            tmodel.label_encoder.inverse_transform(np.asarray(classes).astype(int))
+        )
+    return [str(c) for c in classes]
 
 
 @helper_function
@@ -112,6 +139,11 @@ def compute_shap_values(
     else:
         explanation = explainer(X_test)
 
+    if explanation.values.ndim == 3:
+        class_names = _classification_class_names(tmodel)
+        if class_names is not None and len(class_names) == explanation.values.shape[2]:
+            explanation.output_names = class_names
+
     return explanation
 
 
@@ -121,22 +153,62 @@ def plot_shap_summary(
     max_display: int = 20,
     plot_type: str = "dot",
     show: bool = True,
-) -> plt.Figure:
-    """Create a SHAP summary plot showing global feature importance.
+) -> Optional[Figure]:
+    """Create a SHAP summary plot showing per-sample SHAP value distributions.
+
+    For multi-class explanations (3-D values), one summary plot is rendered
+    per class in a vertically stacked figure, using ``plot_type``.
 
     Args:
         shap_values: SHAP Explanation object from ``compute_shap_values``.
         max_display: Maximum number of features to display.
-        plot_type: One of "dot", "bar", "violin".
-        show: Whether to display the plot immediately.
+        plot_type: One of "dot" (beeswarm, default), "bar", "violin".
+        show: When True, render via ``plt.show()`` and return ``None`` (so
+            Jupyter does not auto-render the return value, causing a duplicate
+            plot). When False, return the Figure for further manipulation.
 
     Returns:
-        The matplotlib Figure.
+        The matplotlib Figure, or ``None`` when ``show=True``.
     """
+    values = shap_values.values
+    if values.ndim == 3:
+        n_classes = values.shape[2]
+        class_names = (
+            list(shap_values.output_names)
+            if getattr(shap_values, "output_names", None) is not None
+            else [f"class_{i}" for i in range(n_classes)]
+        )
+        per_class_height = max(6, max_display * 0.35)
+        fig, axes = plt.subplots(
+            n_classes, 1, figsize=(10, per_class_height * n_classes)
+        )
+        if n_classes == 1:
+            axes = [axes]
+        for i, (ax, name) in enumerate(zip(axes, class_names)):
+            plt.sca(ax)
+            shap.summary_plot(
+                values[:, :, i],
+                shap_values.data,
+                feature_names=shap_values.feature_names,
+                max_display=max_display,
+                plot_type=plot_type,
+                show=False,
+            )
+            ax.set_title(f"Class: {name}")
+        # shap.summary_plot resizes the active figure; restore so all subplots
+        # actually get their intended height.
+        fig.set_size_inches(10, per_class_height * n_classes)
+        plt.tight_layout()
+        if show:
+            plt.show()
+            plt.close(fig)
+            return None
+        return fig
+
     fig, ax = plt.subplots(1, 1, figsize=(10, max(6, max_display * 0.35)))
     plt.sca(ax)
     shap.summary_plot(
-        shap_values.values,
+        values,
         shap_values.data,
         feature_names=shap_values.feature_names,
         max_display=max_display,
@@ -146,6 +218,8 @@ def plot_shap_summary(
     plt.tight_layout()
     if show:
         plt.show()
+        plt.close(fig)
+        return None
     return fig
 
 
@@ -154,23 +228,71 @@ def plot_shap_bar(
     shap_values: shap.Explanation,
     max_display: int = 20,
     show: bool = True,
-) -> plt.Figure:
+) -> Optional[Figure]:
     """Create a SHAP bar plot of mean absolute SHAP values.
+
+    For multi-class explanations (3-D values), one bar plot is rendered per
+    class in a vertically stacked figure.
 
     Args:
         shap_values: SHAP Explanation object from ``compute_shap_values``.
         max_display: Maximum number of features to display.
-        show: Whether to display the plot immediately.
+        show: When True, render via ``plt.show()`` and return ``None`` (so
+            Jupyter does not auto-render the return value, causing a duplicate
+            plot). When False, return the Figure for further manipulation.
 
     Returns:
-        The matplotlib Figure.
+        The matplotlib Figure, or ``None`` when ``show=True``.
     """
+    values = shap_values.values
+    if values.ndim == 3:
+        n_classes = values.shape[2]
+        class_names = (
+            list(shap_values.output_names)
+            if getattr(shap_values, "output_names", None) is not None
+            else [f"class_{i}" for i in range(n_classes)]
+        )
+        per_class_height = max(6, max_display * 0.35)
+        fig, axes = plt.subplots(
+            n_classes, 1, figsize=(10, per_class_height * n_classes)
+        )
+        if n_classes == 1:
+            axes = [axes]
+        base = shap_values.base_values
+        for i, (ax, name) in enumerate(zip(axes, class_names)):
+            plt.sca(ax)
+            base_i = (
+                base[:, i]
+                if (base is not None and np.asarray(base).ndim == 2)
+                else base
+            )
+            sub = shap.Explanation(
+                values=values[:, :, i],
+                base_values=base_i,
+                data=shap_values.data,
+                feature_names=shap_values.feature_names,
+            )
+            shap.plots.bar(sub, max_display=max_display, show=False)
+            ax.set_title(f"Class: {name}")
+            ax.set_xlabel("mean(|SHAP value|)" if i == n_classes - 1 else "")
+        # shap.plots.bar resizes the active figure; restore so all subplots
+        # actually get their intended height.
+        fig.set_size_inches(10, per_class_height * n_classes)
+        plt.tight_layout()
+        if show:
+            plt.show()
+            plt.close(fig)
+            return None
+        return fig
+
     fig, ax = plt.subplots(1, 1, figsize=(10, max(6, max_display * 0.35)))
     plt.sca(ax)
     shap.plots.bar(shap_values, max_display=max_display, show=False)
     plt.tight_layout()
     if show:
         plt.show()
+        plt.close(fig)
+        return None
     return fig
 
 
@@ -224,6 +346,7 @@ def cli_explain_features(
         max_display=max_display,
         show=False,
     )
+    assert fig_summary is not None  # show=False guarantees a Figure
     summary_path = os.path.join(path_to_exp, f"shap_summary_{model_type}.png")
     fig_summary.savefig(summary_path, bbox_inches="tight")
     plt.close(fig_summary)
@@ -234,6 +357,7 @@ def cli_explain_features(
         max_display=max_display,
         show=False,
     )
+    assert fig_bar is not None  # show=False guarantees a Figure
     bar_path = os.path.join(path_to_exp, f"shap_bar_{model_type}.png")
     fig_bar.savefig(bar_path, bbox_inches="tight")
     plt.close(fig_bar)

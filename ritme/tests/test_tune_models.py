@@ -595,13 +595,14 @@ class TestMainTuneModels(unittest.TestCase):
         # Verify Tuner was configured with classification metric/mode
         tuner_call_kwargs = mock_tuner_class.call_args
         tune_config = tuner_call_kwargs.kwargs["tune_config"]
-        self.assertEqual(tune_config.metric, "accuracy_val")
+        self.assertEqual(tune_config.metric, "roc_auc_macro_ovr_val")
         self.assertEqual(tune_config.mode, "max")
 
         # Verify checkpoint config also uses classification metric
         run_config = tuner_call_kwargs.kwargs["run_config"]
         self.assertEqual(
-            run_config.checkpoint_config.checkpoint_score_attribute, "accuracy_val"
+            run_config.checkpoint_config.checkpoint_score_attribute,
+            "roc_auc_macro_ovr_val",
         )
         self.assertEqual(run_config.checkpoint_config.checkpoint_score_order, "max")
 

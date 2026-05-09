@@ -340,7 +340,7 @@ class TunedModel:
         return X
 
     def predict(self, data: pd.DataFrame, split: str) -> Any:
-        """Run per-snapshot pipeline and predict."""
+        """Run per-snapshot pipeline and predict hard labels / regression values."""
         X = self.build_design_matrix(data, split)
 
         if isinstance(self.model, NeuralNet):
@@ -364,13 +364,84 @@ class TunedModel:
             alpha = self.model["model"].values
             predicted = log_geom.dot(alpha[1:]) + alpha[0]
         elif isinstance(self.model, xgb.core.Booster):
-            predicted = self.model.predict(xgb.DMatrix(X)).flatten()
+            raw = self.model.predict(xgb.DMatrix(X))
+            if self.model_type == "xgb_class" and raw.ndim == 2:
+                predicted = raw.argmax(axis=1)
+            else:
+                predicted = raw.flatten()
         else:
             predicted = self.model.predict(X.values).flatten()
 
         if self.label_encoder is not None:
             predicted = self.label_encoder.inverse_transform(predicted.astype(int))
         return predicted
+
+    def predict_proba(self, data: pd.DataFrame, split: str) -> tuple:
+        """Return ``(proba, classes)`` for classification models.
+
+        ``proba`` has shape ``(n_samples, n_classes)`` and its columns align
+        with ``classes`` in the original target space.
+        """
+        X = self.build_design_matrix(data, split)
+
+        if isinstance(self.model, NeuralNet):
+            if self.model.nn_type not in ("classification", "ordinal_regression"):
+                raise ValueError(
+                    "predict_proba is only defined for classification "
+                    f"models; nn_type={self.model.nn_type!r}."
+                )
+            self.model.eval()
+            with torch.no_grad():
+                model_device = next(self.model.parameters()).device
+                X_t = (
+                    torch.tensor(X.values, dtype=torch.float32)
+                    .clone()
+                    .detach()
+                    .to(model_device)
+                )
+                logits = self.model(X_t)
+                proba = self.model._predict_proba(logits)
+            classes = list(self.model.classes)
+            if self.label_encoder is not None:
+                classes = list(
+                    self.label_encoder.inverse_transform(
+                        np.asarray(classes).astype(int)
+                    )
+                )
+            return proba, classes
+
+        if isinstance(self.model, xgb.core.Booster):
+            if self.model_type != "xgb_class":
+                raise ValueError(
+                    "predict_proba is only defined for classification XGBoost "
+                    f"models; got model_type={self.model_type!r}."
+                )
+            proba = self.model.predict(xgb.DMatrix(X))
+            if proba.ndim == 1:
+                proba = np.column_stack([1.0 - proba, proba])
+            if self.label_encoder is None:
+                raise ValueError(
+                    "xgb_class TunedModel is missing its label_encoder; "
+                    "cannot recover original class labels."
+                )
+            classes = list(self.label_encoder.classes_)
+            return proba, classes
+
+        if isinstance(self.model, dict):
+            raise ValueError("predict_proba is not defined for TRAC models.")
+
+        if not hasattr(self.model, "predict_proba"):
+            raise ValueError(
+                f"Underlying model of type {type(self.model).__name__} does "
+                "not support predict_proba."
+            )
+        proba = self.model.predict_proba(X.values)
+        classes = list(self.model.classes_)
+        if self.label_encoder is not None:
+            classes = list(
+                self.label_encoder.inverse_transform(np.asarray(classes).astype(int))
+            )
+        return proba, classes
 
 
 def retrieve_n_init_best_models(

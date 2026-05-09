@@ -10,7 +10,13 @@ import pandas as pd
 import torch
 from ray.tune import ResultGrid
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    f1_score,
+    log_loss,
+    matthews_corrcoef,
+    roc_auc_score,
+)
 from sklearn.pipeline import Pipeline
 
 from ritme.evaluate_models import TunedModel
@@ -44,7 +50,9 @@ class TestTaskTypeConstants(unittest.TestCase):
 
     def test_task_metrics(self):
         self.assertEqual(TASK_METRICS["regression"], ("rmse_val", "min"))
-        self.assertEqual(TASK_METRICS["classification"], ("accuracy_val", "max"))
+        self.assertEqual(
+            TASK_METRICS["classification"], ("roc_auc_macro_ovr_val", "max")
+        )
 
 
 class TestClassificationHelpers(unittest.TestCase):
@@ -55,11 +63,23 @@ class TestClassificationHelpers(unittest.TestCase):
             self.X, self.y
         )
 
-    def test_predict_accuracy_f1(self):
-        acc, f1 = st._predict_accuracy_f1(self.model, self.X, self.y)
+    def test_predict_classification_metrics(self):
+        result = st._predict_classification_metrics(self.model, self.X, self.y)
         y_pred = self.model.predict(self.X)
-        self.assertAlmostEqual(acc, accuracy_score(self.y, y_pred))
-        self.assertAlmostEqual(f1, f1_score(self.y, y_pred, average="weighted"))
+        y_proba = self.model.predict_proba(self.X)
+        self.assertAlmostEqual(
+            result["roc_auc_macro_ovr"], roc_auc_score(self.y, y_proba[:, 1])
+        )
+        self.assertAlmostEqual(
+            result["f1_macro"], f1_score(self.y, y_pred, average="macro")
+        )
+        self.assertAlmostEqual(
+            result["balanced_accuracy"], balanced_accuracy_score(self.y, y_pred)
+        )
+        self.assertAlmostEqual(result["mcc"], matthews_corrcoef(self.y, y_pred))
+        self.assertAlmostEqual(
+            result["log_loss"], log_loss(self.y, y_proba, labels=[0, 1])
+        )
 
     @patch("ray.tune.report")
     @patch("ray.tune.get_context")
@@ -78,10 +98,15 @@ class TestClassificationHelpers(unittest.TestCase):
             )
             mock_report.assert_called_once()
             reported_metrics = mock_report.call_args[1]["metrics"]
-            self.assertIn("accuracy_val", reported_metrics)
-            self.assertIn("f1_weighted_val", reported_metrics)
-            self.assertIn("accuracy_train", reported_metrics)
-            self.assertIn("f1_weighted_train", reported_metrics)
+            for name in (
+                "roc_auc_macro_ovr",
+                "log_loss",
+                "f1_macro",
+                "balanced_accuracy",
+                "mcc",
+            ):
+                self.assertIn(f"{name}_val", reported_metrics)
+                self.assertIn(f"{name}_train", reported_metrics)
             self.assertIn("model_path", reported_metrics)
             self.assertIn("nb_features", reported_metrics)
 
@@ -227,8 +252,7 @@ class TestClassificationTrainables(unittest.TestCase):
             )
 
             mock_xgb_train.assert_called_once()
-            # Verify classification-specific config was set
-            self.assertEqual(config["objective"], "multi:softmax")
+            self.assertEqual(config["objective"], "multi:softprob")
             self.assertIn("num_class", config)
 
 
@@ -254,19 +278,26 @@ class TestNeuralNetClassificationMetrics(unittest.TestCase):
             classes=[0, 1, 2],
             task_type="classification",
         )
-        # 3-class logits
         preds = torch.tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])
         targets = torch.tensor([0.0, 1.0, 2.0])
         metrics = model._calculate_metrics(preds, targets)
-        self.assertIn("accuracy", metrics)
-        self.assertIn("f1_weighted", metrics)
+        for name in (
+            "roc_auc_macro_ovr",
+            "log_loss",
+            "f1_macro",
+            "balanced_accuracy",
+            "mcc",
+        ):
+            self.assertIn(name, metrics)
         self.assertNotIn("rmse", metrics)
-        self.assertAlmostEqual(metrics["accuracy"].item(), 1.0)
+        self.assertAlmostEqual(metrics["roc_auc_macro_ovr"], 1.0)
+        self.assertAlmostEqual(metrics["f1_macro"], 1.0)
 
 
 class TestClassificationEvaluation(unittest.TestCase):
     def setUp(self):
         self.model_type = "logreg"
+        self.classes = [0, 1, 2]
         self.all_preds = pd.DataFrame(
             {
                 "true": [0, 1, 2, 0, 1],
@@ -274,23 +305,55 @@ class TestClassificationEvaluation(unittest.TestCase):
                 "split": ["train", "train", "train", "test", "test"],
             }
         )
+        self.proba_dict = {
+            "train": (
+                np.array(
+                    [
+                        [0.9, 0.05, 0.05],
+                        [0.05, 0.9, 0.05],
+                        [0.05, 0.05, 0.9],
+                    ]
+                ),
+                self.classes,
+            ),
+            "test": (
+                np.array(
+                    [
+                        [0.8, 0.1, 0.1],
+                        [0.1, 0.2, 0.7],
+                    ]
+                ),
+                self.classes,
+            ),
+        }
 
     def test_calculate_classification_metrics(self):
-        metrics = _calculate_classification_metrics(self.all_preds, self.model_type)
+        metrics = _calculate_classification_metrics(
+            self.all_preds, self.proba_dict, self.model_type
+        )
 
-        self.assertIn("accuracy_train", metrics.columns)
-        self.assertIn("balanced_accuracy_train", metrics.columns)
-        self.assertIn("f1_weighted_train", metrics.columns)
-        self.assertIn("cohen_kappa_train", metrics.columns)
-        self.assertIn("accuracy_test", metrics.columns)
+        for name in (
+            "roc_auc_macro_ovr",
+            "log_loss",
+            "f1_macro",
+            "balanced_accuracy",
+            "mcc",
+        ):
+            self.assertIn(f"{name}_train", metrics.columns)
+            self.assertIn(f"{name}_test", metrics.columns)
 
-        # Train set: all correct
-        self.assertAlmostEqual(metrics.loc[self.model_type, "accuracy_train"], 1.0)
-        # Test set: 1 out of 2 correct
-        self.assertAlmostEqual(metrics.loc[self.model_type, "accuracy_test"], 0.5)
+        self.assertAlmostEqual(
+            metrics.loc[self.model_type, "roc_auc_macro_ovr_train"], 1.0
+        )
+        self.assertAlmostEqual(metrics.loc[self.model_type, "f1_macro_train"], 1.0)
+        self.assertAlmostEqual(
+            metrics.loc[self.model_type, "balanced_accuracy_train"], 1.0
+        )
 
     def test_plot_confusion_matrices(self):
-        metrics = _calculate_classification_metrics(self.all_preds, self.model_type)
+        metrics = _calculate_classification_metrics(
+            self.all_preds, self.proba_dict, self.model_type
+        )
         _, axs = plt.subplots(1, 2)
         _plot_confusion_matrices(
             all_preds=self.all_preds,
@@ -307,7 +370,7 @@ class TestClassificationEvaluation(unittest.TestCase):
 
     @patch("ritme.evaluate_tuned_models._predict_w_tuned_model")
     def test_evaluate_tuned_models_classification(self, mock_predict):
-        mock_predict.return_value = self.all_preds
+        mock_predict.return_value = (self.all_preds, self.proba_dict)
         mock_tuned_model = MagicMock(spec=TunedModel)
 
         exp_config = {"target": "target", "task_type": "classification"}
@@ -319,8 +382,10 @@ class TestClassificationEvaluation(unittest.TestCase):
             dic_tuned_models, exp_config, train_val, test
         )
 
-        self.assertIn("accuracy_train", metrics.columns)
-        self.assertIn("f1_weighted_test", metrics.columns)
+        self.assertIn("roc_auc_macro_ovr_train", metrics.columns)
+        self.assertIn("log_loss_test", metrics.columns)
+        self.assertIn("f1_macro_test", metrics.columns)
+        self.assertIn("mcc_test", metrics.columns)
         self.assertNotIn("rmse_train", metrics.columns)
         plt.close(fig)
 
@@ -405,14 +470,27 @@ class TestXgbClassMetric(unittest.TestCase):
     def test_custom_xgb_class_metric(self):
         import xgboost as xgb
 
-        predt = np.array([0, 1, 2, 0])
+        predt = np.array(
+            [
+                [0.8, 0.1, 0.1],
+                [0.1, 0.8, 0.1],
+                [0.1, 0.1, 0.8],
+                [0.7, 0.2, 0.1],
+            ]
+        )
         dtrain = xgb.DMatrix(np.array([[1], [2], [3], [4]]))
         dtrain.set_label(np.array([0, 1, 2, 1]))
 
         result = st.custom_xgb_class_metric(predt, dtrain)
         metric_names = [r[0] for r in result]
-        self.assertIn("accuracy", metric_names)
-        self.assertIn("f1_weighted", metric_names)
+        for name in (
+            "roc_auc_macro_ovr",
+            "log_loss",
+            "f1_macro",
+            "balanced_accuracy",
+            "mcc",
+        ):
+            self.assertIn(name, metric_names)
 
 
 class TestTunedModelClassification(unittest.TestCase):
@@ -467,7 +545,7 @@ class TestSearchSpaceClassification(unittest.TestCase):
             tax=None,
             train_val=pd.DataFrame({"F1": [0.5]}),
         )
-        self.assertEqual(result["model"], "rf")
+        self.assertEqual(result["model"], "rf_class")
 
     def test_xgb_class_space_registered(self):
         from ritme.model_space.static_searchspace import get_search_space
@@ -483,7 +561,7 @@ class TestSearchSpaceClassification(unittest.TestCase):
             tax=None,
             train_val=pd.DataFrame({"F1": [0.5]}),
         )
-        self.assertEqual(result["model"], "xgb")
+        self.assertEqual(result["model"], "xgb_class")
 
 
 if __name__ == "__main__":

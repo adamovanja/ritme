@@ -47,7 +47,7 @@ CLASSIFICATION_MODELS = {"xgb_class", "nn_class", "nn_corn", "logreg", "rf_class
 
 TASK_METRICS = {
     "regression": ("rmse_val", "min"),
-    "classification": ("accuracy_val", "max"),
+    "classification": ("roc_auc_macro_ovr_val", "max"),
 }
 
 DEFAULT_SCHEDULER_GRACE_PERIOD = 10
