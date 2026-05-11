@@ -1411,6 +1411,74 @@ class TestKfoldTrainables(unittest.TestCase):
 
             self._assert_kfold_report(mock_report, "rmse_val", n_splits=3)
 
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_xgb`` runs the real fold loop and emits one
+        aggregated ``tune.report`` call with mean/std/SE per metric.
+
+        We do NOT mock xgb internals or ``process_train_kfold`` -- the real
+        fold loop must run, and the bare metric keys / ``n_folds`` /
+        ``nb_features`` must be present in the aggregated dict.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_xgb"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            self.assertEqual(mock_report.call_count, 1)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            for key in ("rmse_val", "rmse_train", "r2_val", "r2_train"):
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
     @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
     @patch("ritme.model_space.static_trainables.process_train_kfold")
     @patch("ritme.model_space.static_trainables.tune.report")

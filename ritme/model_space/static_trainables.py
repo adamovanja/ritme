@@ -1987,6 +1987,171 @@ def custom_xgb_metric(
     return [("r2", r2_score(y, predt)), ("rmse", np.sqrt(np.mean((predt - y) ** 2)))]
 
 
+# --- K-fold path for train_xgb ---------------------------------------------
+#
+# These helpers implement the sequential K-fold + full-data refit branch of
+# ``train_xgb``. In K-fold mode all ``cpus_per_trial`` are routed into each
+# fold's ``xgb.train`` call (via ``nthread``), so folds are run serially in
+# the trainable's own process -- no Ray-remote fan-out, unlike the sklearn
+# K-fold path. The trainable still emits exactly one ``tune.report`` at the
+# end, with mean/std/SE aggregated across the folds, and a single refit
+# booster persisted as the deployable checkpoint.
+
+
+def _xgb_params_from_config(
+    config: Dict[str, Any],
+    cpus_per_trial: int,
+    gpus_per_trial: int,
+    task_type: str,
+) -> Dict[str, Any]:
+    """Build the xgb-native params dict from a ritme trainable config.
+
+    Mirrors the single-split branch of ``train_xgb`` so the K-fold path
+    consumes the same hyperparameters: it mutates the caller's ``config``
+    in place (``nthread`` and optionally ``device``) and returns it.
+    Currently only the regression objective is set implicitly by xgb's
+    defaults; the classification path will overlay ``objective`` /
+    ``num_class`` separately in Task 3+4.
+    """
+    config["nthread"] = cpus_per_trial
+    if gpus_per_trial > 0:
+        config["device"] = "cuda"
+    return config
+
+
+def _xgb_fold_metrics(
+    booster: xgb.Booster,
+    dtrain: xgb.DMatrix,
+    dvalid: xgb.DMatrix,
+    y_tr: np.ndarray,
+    y_va: np.ndarray,
+    task_type: str,
+) -> Dict[str, float]:
+    """Per-fold metric dict for the regression K-fold path.
+
+    Produces the same metric KEYS that the single-split path reports
+    (``rmse_train``, ``rmse_val``, ``r2_train``, ``r2_val``) so the
+    aggregated dict and downstream 1-SE selection see a consistent
+    schema across the two paths.
+    """
+    y_pred_tr = booster.predict(dtrain)
+    y_pred_va = booster.predict(dvalid)
+    return {
+        "rmse_train": float(root_mean_squared_error(y_tr, y_pred_tr)),
+        "rmse_val": float(root_mean_squared_error(y_va, y_pred_va)),
+        "r2_train": float(r2_score(y_tr, y_pred_tr)),
+        "r2_val": float(r2_score(y_va, y_pred_va)),
+    }
+
+
+def _xgb_refit_rounds(
+    per_fold_best_iter: List[Optional[int]], n_estimators_config: int
+) -> int:
+    """Refit num_boost_round from the K-fold signal.
+
+    Median of per-fold best_iteration; falls back to ``n_estimators_config``
+    if any fold's early-stop did not trigger (``best_iteration`` is None or
+    unset on the Booster).
+    """
+    if any(b is None for b in per_fold_best_iter):
+        return int(n_estimators_config)
+    return int(np.median(per_fold_best_iter))
+
+
+def _save_xgb_checkpoint(refit_booster: xgb.Booster) -> None:
+    """Persist the refit booster as the trial's deployable checkpoint.
+
+    ``load_xgb_model`` (in :mod:`ritme.evaluate_models`) loads the booster
+    from ``result.checkpoint.to_directory() / "checkpoint"``. The K-fold
+    path needs to surface its refit booster through the same Ray Tune
+    checkpoint API. Plan Task 5 wires the actual ``tune.report(metrics,
+    checkpoint=...)`` plumbing; for now we save the booster file under the
+    trial dir at the expected filename so a follow-up task can pick it up.
+    """
+    ckpt_path = os.path.join(ray.tune.get_context().get_trial_dir(), "checkpoint")
+    refit_booster.save_model(ckpt_path)
+
+
+def _run_kfold_xgb(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame,
+    n_splits: int,
+    cpus_per_trial: int,
+    gpus_per_trial: int,
+    task_type: str,
+) -> None:
+    """Sequential K-fold + full-data refit for ``train_xgb``.
+
+    One ``tune.report`` at the end with aggregated per-fold metrics, plus a
+    refit on the full design matrix that produces the deployable
+    checkpoint. The K-fold loop is intentionally sequential: in K-fold mode
+    all ``cpus_per_trial`` go to each fold's ``xgb.train`` call via the
+    ``nthread`` slot in ``xgb_params``, so per-fold parallelism inside xgb
+    itself absorbs the trial's CPU budget without an outer Ray-remote
+    fan-out.
+    """
+    xgb_params = _xgb_params_from_config(
+        config, cpus_per_trial, gpus_per_trial, task_type
+    )
+    np.random.seed(seed_model)
+    random.seed(seed_model)
+
+    engineered = process_train_kfold(
+        config,
+        train_val,
+        target,
+        host_id,
+        tax,
+        seed_data,
+        n_splits,
+        stratify_by=stratify_by,
+    )
+
+    n_estimators = int(config["n_estimators"])
+    early_stop = max(10, int(0.1 * n_estimators))
+
+    per_fold_metrics: List[Dict[str, float]] = []
+    per_fold_best_iter: List[Optional[int]] = []
+    for tr_idx, va_idx in engineered.fold_indices:
+        X_tr, y_tr = engineered.X_full[tr_idx], engineered.y_full[tr_idx]
+        X_va, y_va = engineered.X_full[va_idx], engineered.y_full[va_idx]
+        dtrain = xgb.DMatrix(X_tr, label=y_tr)
+        dvalid = xgb.DMatrix(X_va, label=y_va)
+        booster = xgb.train(
+            xgb_params,
+            dtrain,
+            num_boost_round=n_estimators,
+            evals=[(dvalid, "val")],
+            early_stopping_rounds=early_stop,
+            verbose_eval=False,
+        )
+        per_fold_metrics.append(
+            _xgb_fold_metrics(booster, dtrain, dvalid, y_tr, y_va, task_type)
+        )
+        per_fold_best_iter.append(getattr(booster, "best_iteration", None))
+
+    aggregated = _aggregate_fold_metrics(per_fold_metrics)
+    aggregated["nb_features"] = int(engineered.X_full.shape[1])
+
+    refit_rounds = _xgb_refit_rounds(per_fold_best_iter, n_estimators)
+    dfull = xgb.DMatrix(engineered.X_full, label=engineered.y_full)
+    refit = xgb.train(
+        xgb_params, dfull, num_boost_round=refit_rounds, verbose_eval=False
+    )
+
+    _save_taxonomy(tax)
+    if task_type == "classification":
+        _save_label_encoder(config)
+    _save_xgb_checkpoint(refit)
+    tune.report(metrics=aggregated)
+
+
 def train_xgb(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -2002,8 +2167,6 @@ def train_xgb(
     task_type: str = "regression",
     k_folds: int = 1,
 ) -> None:
-    # k_folds accepted for signature parity; iterative trainable still uses
-    # single-split inside ritme. K-fold support for xgb is Phase 2 work.
     """
     Train an XGBoost model and report the results to Ray Tune.
 
@@ -2018,10 +2181,28 @@ def train_xgb(
     tree_phylo (skbio.TreeNode): Phylogenetic tree.
     cpus_per_trial (int): Number of CPUs allocated by Ray Tune for this trial.
     gpus_per_trial (int): Number of GPUs allocated by Ray Tune for this trial.
+    k_folds (int): Number of K-fold splits; values >1 take the K-fold path
+        (see :func:`_run_kfold_xgb`), 1 keeps the single-split callback path.
 
     Returns:
     None
     """
+    n_splits = int(k_folds or 1)
+    if n_splits > 1:
+        return _run_kfold_xgb(
+            config,
+            train_val,
+            target,
+            host_id,
+            stratify_by,
+            seed_data,
+            seed_model,
+            tax,
+            n_splits,
+            cpus_per_trial,
+            gpus_per_trial,
+            task_type,
+        )
     # Limit XGBoost threads to Ray-allocated CPUs to avoid oversubscription
     config["nthread"] = cpus_per_trial
     # Use GPU when allocated by Ray Tune
