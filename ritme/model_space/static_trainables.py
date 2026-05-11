@@ -2033,9 +2033,22 @@ def _xgb_fold_metrics(
     (``rmse_train``, ``rmse_val``, ``r2_train``, ``r2_val``) so the
     aggregated dict and downstream 1-SE selection see a consistent
     schema across the two paths.
+
+    When early stopping triggered, ``booster.best_iteration`` is set
+    (0-indexed). xgb's default ``predict`` uses **all** trees in the
+    booster -- including the ``early_stopping_rounds`` overshoot past the
+    best iteration -- so the raw metrics would reflect the post-early-stop
+    overfit state, not the best state the single-split path's checkpoint
+    callback captures. Restricting to ``iteration_range=(0, best+1)``
+    keeps the two paths' metric semantics aligned. xgb treats ``(0, 0)``
+    as "use all trees" (the default), so the no-early-stop fallback path
+    is unchanged.
     """
-    y_pred_tr = booster.predict(dtrain)
-    y_pred_va = booster.predict(dvalid)
+    best_iter = getattr(booster, "best_iteration", None)
+    end = (best_iter + 1) if best_iter is not None else 0
+    iteration_range = (0, end)
+    y_pred_tr = booster.predict(dtrain, iteration_range=iteration_range)
+    y_pred_va = booster.predict(dvalid, iteration_range=iteration_range)
     return {
         "rmse_train": float(root_mean_squared_error(y_tr, y_pred_tr)),
         "rmse_val": float(root_mean_squared_error(y_va, y_pred_va)),
@@ -2049,13 +2062,18 @@ def _xgb_refit_rounds(
 ) -> int:
     """Refit num_boost_round from the K-fold signal.
 
-    Median of per-fold best_iteration; falls back to ``n_estimators_config``
-    if any fold's early-stop did not trigger (``best_iteration`` is None or
-    unset on the Booster).
+    Median of per-fold ``best_iteration + 1``; falls back to
+    ``n_estimators_config`` if any fold's early-stop did not trigger
+    (``best_iteration`` is None or unset on the Booster).
+
+    ``best_iteration`` is 0-indexed: to rebuild a booster containing all
+    trees up to and including the best iteration, ``num_boost_round`` must
+    be ``best_iteration + 1`` (xgb's own internal CV-result truncation uses
+    ``[: best_iteration + 1]`` for this reason).
     """
     if any(b is None for b in per_fold_best_iter):
         return int(n_estimators_config)
-    return int(np.median(per_fold_best_iter))
+    return int(np.median(per_fold_best_iter)) + 1
 
 
 def _save_xgb_checkpoint(refit_booster: xgb.Booster) -> None:
