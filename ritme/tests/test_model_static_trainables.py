@@ -977,9 +977,12 @@ class TestKfoldHelpers(unittest.TestCase):
         self.assertEqual(out["n_folds"], 3)
 
     def test_aggregate_fold_metrics_handles_single_fold(self):
+        # Single-fold input cannot support a meaningful SE; emit NaN so the
+        # downstream 1-SE rule recognises the trial as unreliable.
         out = st._aggregate_fold_metrics([{"rmse_val": 0.45}])
-        self.assertEqual(out["rmse_val_std"], 0.0)
-        self.assertEqual(out["rmse_val_se"], 0.0)
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.45, places=6)
+        self.assertTrue(np.isnan(out["rmse_val_std"]))
+        self.assertTrue(np.isnan(out["rmse_val_se"]))
         self.assertEqual(out["n_folds"], 1)
 
     def test_aggregate_fold_metrics_skips_nan_only_keys(self):
@@ -1005,11 +1008,136 @@ class TestKfoldHelpers(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertEqual(c, 1)
 
-    def test_aggregate_fold_metrics_one_valid_value_yields_zero_se(self):
-        """Locks in the NaN-safety fix: a single valid observation (the other
-        K-1 folds returning NaN, e.g. due to a SIGSEGV-killed trial actor)
-        must still produce a real, finite SE (== 0.0) so the downstream
-        one-standard-error rule doesn't silently collapse the tolerance band.
+    def test_fit_one_fold_sklearn_regression_uses_correct_train_val_slices(self):
+        """``_fit_one_fold_sklearn_regression`` slices ``X_full`` / ``y_full``
+        with ``train_idx`` for training and ``val_idx`` for validation. A
+        regression that accidentally swapped the two would compute "val"
+        metrics on the train set (or vice versa) -- this test pins the
+        slicing identity by recomputing metrics independently from the
+        produced slices.
+        """
+        rng = np.random.default_rng(0)
+        n_rows, n_features = 20, 4
+        X_full = rng.normal(size=(n_rows, n_features))
+        y_full = X_full.sum(axis=1) + rng.normal(size=n_rows) * 0.05
+        train_idx = np.arange(0, 15)
+        val_idx = np.arange(15, 20)
+
+        out = st._fit_one_fold_sklearn_regression(
+            X_full,
+            y_full,
+            train_idx,
+            val_idx,
+            estimator_builder=st._build_linreg,
+            builder_kwargs={"alpha": 0.01, "l1_ratio": 0.5},
+            seed_model=0,
+            cpus_per_fold=1,
+        )
+
+        # Independently recompute the metrics from the fitted slice
+        # definition: train metrics on X_full[train_idx], val on X_full[val_idx].
+        fit_model = st._build_linreg(alpha=0.01, l1_ratio=0.5)
+        fit_model.fit(X_full[train_idx], y_full[train_idx])
+        rmse_tr_exp, r2_tr_exp = st._predict_rmse_r2(
+            fit_model, X_full[train_idx], y_full[train_idx]
+        )
+        rmse_va_exp, r2_va_exp = st._predict_rmse_r2(
+            fit_model, X_full[val_idx], y_full[val_idx]
+        )
+        self.assertAlmostEqual(out["rmse_train"], rmse_tr_exp, places=8)
+        self.assertAlmostEqual(out["r2_train"], r2_tr_exp, places=8)
+        self.assertAlmostEqual(out["rmse_val"], rmse_va_exp, places=8)
+        self.assertAlmostEqual(out["r2_val"], r2_va_exp, places=8)
+
+        # And a sanity contrast: swapping train/val indices must change the
+        # numbers (i.e. they are not symmetric / mistakenly computed on the
+        # wrong slice in some way).
+        swapped = st._fit_one_fold_sklearn_regression(
+            X_full,
+            y_full,
+            val_idx,
+            train_idx,
+            estimator_builder=st._build_linreg,
+            builder_kwargs={"alpha": 0.01, "l1_ratio": 0.5},
+            seed_model=0,
+            cpus_per_fold=1,
+        )
+        self.assertNotAlmostEqual(out["rmse_val"], swapped["rmse_val"], places=6)
+
+    @patch("ritme.model_space.static_trainables.ray")
+    def test_throttled_fold_dispatch_bounds_in_flight_and_runs_refit_after(
+        self, mock_ray
+    ):
+        """The shared dispatcher submits at most ``n_workers`` fold tasks
+        concurrently and submits the refit task only after all folds have
+        completed. Earlier the dispatcher fired K+1 tasks at once with
+        ``num_cpus=0``, allowing peak threads to roughly double the trial's
+        CPU reservation.
+        """
+        n_folds = 5
+        n_workers = 2
+
+        in_flight_history = []  # snapshots of len(in_flight) over time
+        submit_order = []
+        refit_called_at_step = [None]
+        step = [0]
+
+        def fake_submit_fold(i):
+            submit_order.append(("fold", i, step[0]))
+            step[0] += 1
+            return ("fold_ref", i)
+
+        def fake_submit_refit():
+            refit_called_at_step[0] = step[0]
+            submit_order.append(("refit", None, step[0]))
+            step[0] += 1
+            return ("refit_ref",)
+
+        # ray.wait returns one ready ref at a time (FIFO order of the
+        # in-flight refs we hand it), simulating a worker freeing up.
+        def fake_ray_wait(refs, num_returns):
+            in_flight_history.append(len(refs))
+            return ([refs[0]], refs[1:])
+
+        # ray.get returns a numbered fake metric dict keyed by fold index.
+        def fake_ray_get(ref):
+            if isinstance(ref, tuple) and ref[0] == "fold_ref":
+                return {"rmse_val": 0.1 * ref[1]}
+            return {"full": True}
+
+        mock_ray.wait.side_effect = fake_ray_wait
+        mock_ray.get.side_effect = fake_ray_get
+
+        fold_results, refit_result = st._dispatch_folds_then_refit(
+            submit_fold=fake_submit_fold,
+            n_folds=n_folds,
+            submit_refit=fake_submit_refit,
+            n_workers=n_workers,
+        )
+
+        # Folds appear in submission order (one slot per index).
+        self.assertEqual(len(fold_results), n_folds)
+        for i, r in enumerate(fold_results):
+            self.assertAlmostEqual(r["rmse_val"], 0.1 * i, places=6)
+        # Refit happens after all folds.
+        self.assertEqual(refit_result, {"full": True})
+        fold_submit_steps = [s for kind, _, s in submit_order if kind == "fold"]
+        self.assertTrue(
+            refit_called_at_step[0] > max(fold_submit_steps),
+            "refit must be submitted after every fold has been submitted",
+        )
+        # In-flight count never exceeds n_workers at the moment of any
+        # ``ray.wait`` call.
+        self.assertTrue(in_flight_history, "ray.wait should be invoked")
+        self.assertLessEqual(max(in_flight_history), n_workers)
+
+    def test_aggregate_fold_metrics_one_valid_value_yields_nan_se(self):
+        """A single valid observation cannot support a meaningful SE: K-1
+        folds returned NaN (degenerate val split, SIGSEGV worker, etc.), so
+        the trial's mean is a single-fold point estimate masquerading as a
+        K-fold result. Emit ``_se = NaN`` so the downstream 1-SE rule can
+        recognise the trial as unreliable and exclude it from selection,
+        rather than silently treating it as a zero-noise winner.
         """
         per_fold = [
             {"rmse_val": np.nan},
@@ -1018,9 +1146,8 @@ class TestKfoldHelpers(unittest.TestCase):
         ]
         out = st._aggregate_fold_metrics(per_fold)
         self.assertAlmostEqual(out["rmse_val_mean"], 0.42, places=6)
-        self.assertEqual(out["rmse_val_std"], 0.0)
-        self.assertEqual(out["rmse_val_se"], 0.0)
-        self.assertFalse(np.isnan(out["rmse_val_se"]))
+        self.assertTrue(np.isnan(out["rmse_val_std"]))
+        self.assertTrue(np.isnan(out["rmse_val_se"]))
         self.assertEqual(out["n_folds"], 3)
 
     def test_aggregate_fold_metrics_partial_nan_uses_only_valid_for_se(self):
@@ -1389,11 +1516,7 @@ class TestKfoldTrainables(unittest.TestCase):
 
             self._assert_kfold_report(mock_report, "roc_auc_macro_ovr_val", n_splits=3)
 
-    @patch("ritme.model_space.static_trainables.NodeAffinitySchedulingStrategy")
-    @patch("ritme.model_space.static_trainables.ray.get")
-    @patch("ritme.model_space.static_trainables.ray.remote")
-    @patch("ritme.model_space.static_trainables.ray.get_runtime_context")
-    @patch("ritme.model_space.static_trainables.ray.put")
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_trac")
     @patch("ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
     @patch("ritme.model_space.static_trainables.create_matrix_from_tree")
     @patch("ritme.model_space.static_trainables.process_train_kfold")
@@ -1406,19 +1529,12 @@ class TestKfoldTrainables(unittest.TestCase):
         mock_process_train_kfold,
         mock_create_matrix,
         mock_preprocess,
-        mock_ray_put,
-        mock_runtime_ctx,
-        mock_ray_remote,
-        mock_ray_get,
-        mock_node_strategy,
+        mock_dispatch_trac,
     ):
         # Engineered features & fold indices look the same as for sklearn.
         mock_process_train_kfold.return_value = self._make_kfold_engineered(
             n_splits=3, classification=False
         )
-        # ``create_matrix_from_tree`` and the log-geom preprocessor are
-        # mocked to return small consistent shapes; the inner Classo / refit
-        # work is fully encapsulated by the mocked ray.remote tasks.
         a_df = pd.DataFrame(
             np.eye(self.X_full.shape[1]),
             index=self.feature_cols,
@@ -1429,33 +1545,19 @@ class TestKfoldTrainables(unittest.TestCase):
             self.X_full.copy(),
             np.ones(self.X_full.shape[1]),
         )
-        # ray.put returns its input as an ObjectRef-like sentinel.
-        mock_ray_put.side_effect = lambda x: x
-        # Pin to "node_0".
-        mock_runtime_ctx.return_value = MagicMock(
-            get_node_id=MagicMock(return_value="node_0")
-        )
-        # ray.remote(...) returns a decorator whose .options(...).remote(...)
-        # produces a task handle; we just produce a sentinel per call.
-        remote_task = MagicMock()
-        remote_task.options.return_value.remote.return_value = "task_handle"
-        mock_ray_remote.return_value = lambda fn: remote_task
-        # ray.get is called with [fold_task_1, fold_task_2, fold_task_3, refit_task].
-        # Per-fold metrics for three folds + one full-data refit at the end.
+        # Per-fold metrics for three folds + one full-data refit.
         per_fold = [
             {"rmse_val": 0.40, "rmse_train": 0.30, "r2_val": 0.7, "r2_train": 0.8},
             {"rmse_val": 0.50, "rmse_train": 0.32, "r2_val": 0.6, "r2_train": 0.78},
             {"rmse_val": 0.60, "rmse_train": 0.34, "r2_val": 0.5, "r2_train": 0.76},
         ]
-        # Match the trac single-split shape: model = {"model": <alpha DF>}; a
-        # subset of alpha rows are non-zero so nb_features comes out as the
-        # count of non-zero coefficients.
+        # Match the trac single-split shape: model = {"model": <alpha DF>}.
         alpha_df = pd.DataFrame(
             {"alpha": [0.5, 0.0, 0.3, 0.0, 0.7, 0.2]},
             index=["intercept"] + self.feature_cols,
         )
         full_model = {"model": alpha_df, "matrix_a": a_df}
-        mock_ray_get.return_value = per_fold + [full_model]
+        mock_dispatch_trac.return_value = (per_fold, full_model)
 
         config = {"lambda": 0.1}
         with tempfile.TemporaryDirectory() as tmpdir:

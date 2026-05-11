@@ -820,3 +820,27 @@ class TestAdaptiveKFolds(unittest.TestCase):
         # WITH stratify_by ["state"], the group-level stratum cap activates:
         # rare class "B" has only 2 unique hosts -> K capped to 2.
         self.assertEqual(adaptive_k_folds(df, "host_id", ["state"]), 2)
+
+    def test_singleton_stratum_falls_back_to_single_split(self):
+        # A stratum of size 1 cannot support K-fold (StratifiedKFold needs
+        # >=K samples per class). Earlier the cap-then-floor logic clipped K
+        # to 1 and then ratcheted back up to 2, producing an unbuildable
+        # config that sklearn rejected with a cryptic message at trial time.
+        # The helper should instead return 1 (single-split escape hatch).
+        df = pd.DataFrame(
+            {
+                "F1": range(20),
+                "state": ["A"] * 19 + ["B"] * 1,
+            }
+        )
+        self.assertEqual(
+            adaptive_k_folds(
+                df, None, None, target="state", task_type="classification"
+            ),
+            1,
+        )
+
+    def test_singleton_group_falls_back_to_single_split(self):
+        # n_groups == 1 also drives K below 2; same fallback applies.
+        df = pd.DataFrame({"host_id": [1] * 10, "F1": range(10)})
+        self.assertEqual(adaptive_k_folds(df, "host_id", None), 1)

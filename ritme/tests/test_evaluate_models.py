@@ -10,6 +10,7 @@ from pandas.testing import assert_frame_equal
 from ray.air.result import Result
 
 from ritme.evaluate_models import (
+    _MODEL_SIMPLICITY_KNOBS,
     TunedModel,
     _get_checkpoint_path,
     _select_best_with_one_se,
@@ -25,6 +26,8 @@ from ritme.evaluate_models import (
     retrieve_n_init_best_models,
     save_best_models,
 )
+from ritme.model_space import static_searchspace as ss
+from ritme.tune_models import _RecordingTrial
 
 
 class TestEvaluateModels(unittest.TestCase):
@@ -795,6 +798,116 @@ class TestOneStandardErrorRule(unittest.TestCase):
         self.assertLess(k_strong, k_weak)
         # And the primary axis ties:
         self.assertEqual(k_strong[0], k_weak[0])
+
+    def test_trial_with_nan_se_is_excluded_from_selection(self):
+        """A K-fold trial whose primary metric had K-1 NaN folds produces
+        ``_se = NaN`` (see ``_aggregate_fold_metrics``). Such a trial's mean
+        is a single-fold point estimate dressed up as a K-fold result -- it
+        must not be selectable as 'best' even when its mean is numerically
+        the smallest. The selector picks among the trials with a finite SE.
+        """
+        # Mean=0.30 looks best, but SE=NaN means K-1 folds failed: unreliable.
+        unreliable = _make_mock_result(
+            {"rmse_val_mean": 0.30, "rmse_val_se": float("nan"), "nb_features": 100},
+            {"alpha": 0.001, "l1_ratio": 0.5},
+        )
+        # Reliable K-fold winner with a real, finite SE.
+        reliable_best = _make_mock_result(
+            {"rmse_val_mean": 0.42, "rmse_val_se": 0.02, "nb_features": 80},
+            {"alpha": 1.0, "l1_ratio": 0.5},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([unreliable, reliable_best])
+        rg.get_best_result.side_effect = AssertionError(
+            "must not fall through when reliable K-fold trials exist"
+        )
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIs(chosen, reliable_best)
+
+    def test_falls_back_when_every_trial_has_nan_se(self):
+        """If no trial has a finite SE (all K-fold trials had K-1 NaN folds,
+        or the grid has only single-split trials), defer to Ray Tune's
+        single-best lookup -- there is no reliable basis for the 1-SE rule.
+        """
+        a = _make_mock_result(
+            {"rmse_val_mean": 0.30, "rmse_val_se": float("nan"), "nb_features": 100},
+            {"alpha": 0.001},
+        )
+        b = _make_mock_result(
+            {"rmse_val_mean": 0.40, "rmse_val_se": float("nan"), "nb_features": 80},
+            {"alpha": 1.0},
+        )
+        rg = MagicMock()
+        sentinel = MagicMock()
+        rg.get_best_result.return_value = sentinel
+        rg.__iter__ = lambda self: iter([a, b])
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        rg.get_best_result.assert_called_once_with(scope="all")
+        self.assertIs(chosen, sentinel)
+
+    def test_simplicity_knobs_match_actual_search_space(self):
+        """Every entry in ``_MODEL_SIMPLICITY_KNOBS`` names a hyperparameter
+        that the corresponding search space actually suggests. Without this
+        check, a rename in ``static_searchspace.py`` (e.g. ``alpha`` to
+        ``alpha_l2``) would silently disable the simplicity-tiebreak for the
+        affected knob -- ``_trial_simplicity_key`` would return ``inf`` for
+        the renamed knob and the 1-SE rule would degenerate to "best mean
+        only" with no warning.
+        """
+        # Tiny dummy train_val with a couple of F-features so search-space
+        # builders that probe column counts don't choke.
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, 8),
+                "F1": np.linspace(0.0, 1.0, 8),
+                "target": np.linspace(0.0, 1.0, 8),
+                "host_id": list(range(8)),
+            }
+        )
+        tax = pd.DataFrame([])
+        for model_type, knobs in _MODEL_SIMPLICITY_KNOBS.items():
+            recorder = _RecordingTrial()
+            ss.get_search_space(
+                recorder,
+                model_type=model_type,
+                train_val=train_val,
+                tax=tax,
+                model_hyperparameters={},
+            )
+            recorded = set(recorder.params.keys())
+            for knob_name, _sign in knobs:
+                self.assertIn(
+                    knob_name,
+                    recorded,
+                    msg=(
+                        f"_MODEL_SIMPLICITY_KNOBS[{model_type!r}] references "
+                        f"unknown hyperparameter {knob_name!r}; update the "
+                        f"table or the {model_type} search space."
+                    ),
+                )
+
+    def test_trial_simplicity_key_missing_knob_sorts_last_for_negative_sign(self):
+        """Missing/non-numeric knob values must sort LAST regardless of the
+        knob's sign convention. For knobs with ``sign=-1`` (most entries in
+        ``_MODEL_SIMPLICITY_KNOBS``: linreg.alpha, trac.lambda, rf.min_samples_leaf,
+        xgb.gamma/reg_alpha/reg_lambda, nn.dropout_rate/weight_decay), the
+        earlier ``sign * inf`` formulation produced ``-inf`` which sorted FIRST,
+        silently rewarding malformed configs in the 1-SE band.
+        """
+        # Knob present vs knob missing for a negative-sign knob (linreg.alpha):
+        k_present = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": 1.0, "l1_ratio": 0.5}
+        )
+        k_missing_alpha = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"l1_ratio": 0.5}
+        )
+        self.assertLess(k_present, k_missing_alpha)
+
+        # Same property for a non-castable value (e.g. accidental string):
+        k_garbage = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": "n/a", "l1_ratio": 0.5}
+        )
+        self.assertLess(k_present, k_garbage)
 
 
 if __name__ == "__main__":

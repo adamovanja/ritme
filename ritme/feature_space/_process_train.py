@@ -161,6 +161,11 @@ def process_train(
 ) -> tuple:
     """Process training data per snapshot (aggregate/select/transform/enrich) and
     perform a grouped (and optionally stratified) split.
+
+    Side effect: when the target column is non-numeric, fits a ``LabelEncoder``
+    and stashes it on ``config['_label_encoder']`` so the val slice (and
+    downstream model persistence) share the same label-to-int map. The
+    trainable's ``_save_label_encoder`` consumes and removes this entry.
     """
     train_val_accum, ft_ls_used = _engineer_features(config, train_val, tax)
 
@@ -200,6 +205,13 @@ def process_train_kfold(
     honoring all the constraints of :func:`_split_data_grouped`). Callers
     slice ``X_full`` / ``y_full`` themselves (typically inside Ray-remote
     fold tasks) to avoid pickling K pre-sliced numpy arrays.
+
+    Side effect: for non-numeric targets, fits a ``LabelEncoder`` and stashes
+    it on ``config['_label_encoder']`` (consumed by the trainable's
+    ``_save_label_encoder``).
+
+    Note: feature engineering currently runs on the full ``train_val`` -- it
+    is not refit per fold. See ``issue_val_leakage.md`` for the follow-up.
 
     Returns
     -------

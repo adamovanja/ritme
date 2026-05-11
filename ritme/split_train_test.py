@@ -714,7 +714,12 @@ def adaptive_k_folds(
     k = min(k, n_groups)
     if smallest_stratum is not None:
         k = min(k, smallest_stratum)
-    return max(2, k)
+    # If structural constraints (groups or strata) force K below 2, fall back
+    # to the single-split path. Earlier the floor of 2 was applied here, which
+    # produced an unbuildable K=2 that sklearn rejected at trial time.
+    if k < 2:
+        return 1
+    return k
 
 
 @helper_function

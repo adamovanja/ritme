@@ -503,11 +503,13 @@ def _trial_simplicity_key(
     secondary: list[float] = []
     for knob, sign in _MODEL_SIMPLICITY_KNOBS.get(model_type, []):
         v = trial_config.get(knob)
+        if v is None:
+            secondary.append(float("inf"))
+            continue
         try:
-            v_f = float(v) if v is not None else float("inf")
+            secondary.append(sign * float(v))
         except (TypeError, ValueError):
-            v_f = float("inf")
-        secondary.append(sign * v_f)
+            secondary.append(float("inf"))
     return (primary, *secondary)
 
 
@@ -520,30 +522,32 @@ def _select_best_with_one_se(
     """Apply the one-standard-error rule to a Ray Tune ``ResultGrid``.
 
     Picks the simplest configuration whose mean cross-validation score is
-    within one standard error of the best mean. Reference: Hastie, Tibshirani,
-    Friedman, "The Elements of Statistical Learning" (2nd ed., 2009),
-    pp. 219-260; widely used in glmnet's ``lambda.1se`` and scikit-learn
-    examples (``plot_grid_search_refit_callable``).
+    within one standard error of the best mean. (Same idea as glmnet's
+    ``lambda.1se``: trade a small loss in cross-validation score for a
+    simpler model that is likelier to generalise.)
 
-    Falls back to ``ResultGrid.get_best_result(scope='all')`` when no trial
-    reports a ``<metric>_se`` field (single-split runs without K-fold).
+    Trials without a finite ``<metric>_se`` (single-split runs, or K-fold
+    runs that had K-1 NaN folds) are excluded from selection. If no trial
+    has a finite SE, defers to ``ResultGrid.get_best_result(scope='all')``.
     """
     sign = 1 if mode == "min" else -1
     candidates = []
-    has_any_se = False
     for result in result_grid:
         m = result.metrics or {}
         mean = m.get(f"{metric}_mean", m.get(metric))
         se = m.get(f"{metric}_se")
         if mean is None or (isinstance(mean, float) and np.isnan(mean)):
             continue
-        if se is not None and not (isinstance(se, float) and np.isnan(se)):
-            has_any_se = True
-        candidates.append((result, float(mean), float(se) if se is not None else 0.0))
+        # Only trials with a finite SE participate. Single-split trials (no
+        # ``_se`` key) and K-fold trials whose K-1 folds returned NaN (``_se``
+        # is NaN) have unreliable means and cannot anchor the 1-SE band.
+        if se is None or (isinstance(se, float) and np.isnan(se)):
+            continue
+        candidates.append((result, float(mean), float(se)))
 
-    if not candidates or not has_any_se:
-        # No K-fold metrics present (or no usable trials) -> defer to Ray Tune's
-        # single-best selection, preserving the pre-K-fold behavior.
+    if not candidates:
+        # No reliable K-fold trials -> defer to Ray Tune's single-best lookup,
+        # preserving the pre-K-fold behavior.
         return result_grid.get_best_result(scope="all")
 
     # Best by sign-adjusted mean (lower-is-better -> sign=+1, etc.).

@@ -60,31 +60,22 @@ def _aggregate_fold_metrics(per_fold_dicts: List[Dict[str, float]]) -> Dict[str,
     """Aggregate per-fold metric dicts into mean/std/standard-error fields.
 
     For each metric key found in any fold dict, emits ``<key>``, ``<key>_mean``,
-    ``<key>_std`` (sample std, ddof=1), and ``<key>_se`` (std / sqrt(K)). The
-    bare ``<key>`` is set to the mean so existing single-split callers (and
-    Ray Tune metric configuration) keep working without rename. Adds
-    ``n_folds`` for downstream auditing.
+    ``<key>_std`` (sample std, ddof=1, NaN folds excluded), and
+    ``<key>_se`` (``std / sqrt(n_valid)``). The bare ``<key>`` is set to the
+    mean so existing single-split callers (and Ray Tune metric configuration)
+    keep working without rename. Adds ``n_folds`` for downstream auditing.
 
-    Note:
-        ``<key>_se = <key>_std / sqrt(K)`` assumes the K fold scores are
-        independent estimates of the same quantity. K-fold folds are not
-        independent: their training sets overlap by ``(K-2)/K * N`` samples,
-        so the reported SE is optimistic (too narrow). See Bengio & Grandvalet
-        (2004), "No Unbiased Estimator of the Variance of K-Fold
-        Cross-Validation", JMLR vol. 5. The formula is nonetheless retained
-        as it matches standard practice (glmnet's ``lambda.1se``, scikit-learn
-        examples) and is what the one-standard-error rule in
-        ``evaluate_models.py`` consumes.
+    Notes:
+        The K fold scores are not independent: their training sets overlap by
+        ``(K-2)/K * N`` samples, so ``std / sqrt(n_valid)`` is an optimistic
+        (too narrow) estimate of the true SE. The formula is retained because
+        it is what the downstream 1-SE rule in :mod:`ritme.evaluate_models`
+        consumes.
 
-        K-fold trainables can occasionally report NaN for a given metric (e.g.
-        when a single fold fails inside the joblib/ray dispatch and returns a
-        sentinel NaN). The std/se calculation therefore counts only the
-        non-NaN entries: if fewer than two valid observations remain, both
-        ``<key>_std`` and ``<key>_se`` are set to ``0.0`` explicitly so the
-        SE field stays a finite real. This matches how scikit-learn handles
-        the same situation in ``cross_val_score`` aggregation and prevents a
-        NaN SE from silently collapsing the tolerance band in the downstream
-        one-standard-error model-selection rule.
+        When a metric has fewer than two non-NaN folds, ``<key>_std`` and
+        ``<key>_se`` are set to NaN. The downstream 1-SE rule treats trials
+        with NaN SE as unreliable (the mean is a single-fold point estimate
+        masquerading as a K-fold result) and excludes them from selection.
     """
     metrics: Dict[str, float] = {}
     keys = sorted({k for d in per_fold_dicts for k in d.keys()})
@@ -98,8 +89,11 @@ def _aggregate_fold_metrics(per_fold_dicts: List[Dict[str, float]]) -> Dict[str,
         mean = float(np.nanmean(arr))
         n_valid = int(np.sum(~np.isnan(arr)))
         if n_valid <= 1:
-            std = 0.0
-            se = 0.0
+            # A single surviving fold cannot support a meaningful SE; emit NaN
+            # so the downstream 1-SE rule can mark the trial unreliable and
+            # exclude it, rather than treating it as a zero-noise winner.
+            std = float("nan")
+            se = float("nan")
         else:
             std = float(np.nanstd(arr, ddof=1))
             se = std / math.sqrt(n_valid)
@@ -513,6 +507,45 @@ def _fit_full_data_sklearn(
     return model
 
 
+def _dispatch_folds_then_refit(
+    submit_fold: Callable[[int], Any],
+    n_folds: int,
+    submit_refit: Callable[[], Any],
+    n_workers: int,
+) -> Tuple[List[Any], Any]:
+    """Dispatch K fold tasks (throttled) and then the refit task.
+
+    ``submit_fold(i)`` and ``submit_refit()`` submit a Ray task and return
+    its ObjectRef; this helper drives the scheduling: it keeps at most
+    ``n_workers`` fold tasks in flight at any time, collects their results
+    in submission order, and only after every fold has returned does it
+    submit the refit task. This bounds the peak per-node thread count to
+    roughly ``n_workers * cpus_per_fold`` during the fold phase and to
+    ``cpus_per_trial`` during the refit -- assuming the caller built the
+    submit callables with those per-task CPU budgets.
+
+    Earlier the K folds and the refit fanned out simultaneously with
+    ``num_cpus=0`` on every task, which let the actual thread count on the
+    parent's node climb to ~``K * cpus_per_fold + cpus_per_trial`` (~2x the
+    trial's reservation) and silently oversubscribed the CPU budget.
+    """
+    fold_results: List[Any] = [None] * n_folds
+    in_flight: Dict[Any, int] = {}
+    next_idx = 0
+    while next_idx < n_folds or in_flight:
+        while next_idx < n_folds and len(in_flight) < n_workers:
+            ref = submit_fold(next_idx)
+            in_flight[ref] = next_idx
+            next_idx += 1
+        if in_flight:
+            done, _ = ray.wait(list(in_flight.keys()), num_returns=1)
+            ref = done[0]
+            idx = in_flight.pop(ref)
+            fold_results[idx] = ray.get(ref)
+    refit_result = ray.get(submit_refit())
+    return fold_results, refit_result
+
+
 def _dispatch_kfold_and_refit_sklearn(
     folds_idx: List[Tuple[np.ndarray, np.ndarray]],
     X_full: np.ndarray,
@@ -523,18 +556,24 @@ def _dispatch_kfold_and_refit_sklearn(
     cpus_per_fold: int,
     cpus_per_trial: int,
     classification: bool,
+    n_workers: int,
 ) -> Tuple[List[Dict[str, float]], BaseEstimator]:
-    """Dispatch K-fold fits and the full-data refit as parallel Ray tasks.
+    """Dispatch K-fold fits and the full-data refit as Ray tasks.
 
     Places the full design matrix in Ray's object store once via ``ray.put``
     and reuses the resulting ObjectRefs across all K+1 tasks. Selects the
-    regression/classification fold runner, then dispatches K per-fold tasks
-    plus a single ``_fit_full_data_sklearn`` refit task. All tasks are
-    pinned to the parent trial's node via ``NodeAffinitySchedulingStrategy``
-    with ``soft=False``, so they share the trial actor's existing CPU
-    reservation on that node rather than floating onto other nodes (which
-    would bypass the per-trial CPU cap). ``num_cpus=0`` keeps the scheduler
-    from asking for additional CPUs on top of the parent reservation.
+    regression/classification fold runner, then submits up to ``n_workers``
+    per-fold tasks at a time via :func:`_dispatch_folds_then_refit`. The
+    refit task is submitted only after every fold has returned, so peak
+    per-node thread count stays within the parent trial's CPU reservation.
+
+    Tasks are pinned to the parent trial's node via
+    ``NodeAffinitySchedulingStrategy`` with ``soft=False``, so they share
+    the trial actor's CPU reservation on that node rather than floating to
+    other nodes (which would bypass the per-trial CPU cap). ``num_cpus=0``
+    keeps the scheduler from asking for additional CPUs on top of the
+    parent reservation -- throttling instead happens explicitly via
+    ``n_workers`` in :func:`_dispatch_folds_then_refit`.
 
     Returns
     -------
@@ -545,10 +584,6 @@ def _dispatch_kfold_and_refit_sklearn(
     """
     X_ref = ray.put(X_full)
     y_ref = ray.put(y_full)
-
-    # Pin every task to the parent trial's node. ``soft=False`` makes the
-    # placement a hard constraint: Ray fails the task rather than letting
-    # it float onto another node and bypass the parent's cpus_per_trial cap.
     node_id = ray.get_runtime_context().get_node_id()
     strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
 
@@ -560,8 +595,9 @@ def _dispatch_kfold_and_refit_sklearn(
     remote_fold_fn = ray.remote(num_cpus=0)(fold_fn)
     remote_refit_fn = ray.remote(num_cpus=0)(_fit_full_data_sklearn)
 
-    fold_tasks = [
-        remote_fold_fn.options(scheduling_strategy=strategy).remote(
+    def submit_fold(i: int) -> Any:
+        tr_idx, va_idx = folds_idx[i]
+        return remote_fold_fn.options(scheduling_strategy=strategy).remote(
             X_ref,
             y_ref,
             tr_idx,
@@ -571,22 +607,21 @@ def _dispatch_kfold_and_refit_sklearn(
             seed_model,
             cpus_per_fold,
         )
-        for tr_idx, va_idx in folds_idx
-    ]
-    refit_task = remote_refit_fn.options(scheduling_strategy=strategy).remote(
-        X_ref,
-        y_ref,
-        estimator_builder,
-        builder_kwargs,
-        seed_model,
-        cpus_per_trial,
-        classification,
-    )
 
-    results = ray.get(fold_tasks + [refit_task])
-    fold_metrics = results[:-1]
-    full_model = results[-1]
-    return fold_metrics, full_model
+    def submit_refit() -> Any:
+        return remote_refit_fn.options(scheduling_strategy=strategy).remote(
+            X_ref,
+            y_ref,
+            estimator_builder,
+            builder_kwargs,
+            seed_model,
+            cpus_per_trial,
+            classification,
+        )
+
+    return _dispatch_folds_then_refit(
+        submit_fold, len(folds_idx), submit_refit, n_workers
+    )
 
 
 def _finalize_and_report_sklearn(
@@ -666,7 +701,7 @@ def _run_kfold_sklearn(
         stratify_by=stratify_by,
     )
 
-    _, cpus_per_fold = _allocate_fold_resources(n_splits, cpus_per_trial)
+    n_workers, cpus_per_fold = _allocate_fold_resources(n_splits, cpus_per_trial)
 
     fold_metrics, full_model = _dispatch_kfold_and_refit_sklearn(
         engineered.fold_indices,
@@ -678,6 +713,7 @@ def _run_kfold_sklearn(
         cpus_per_fold,
         cpus_per_trial,
         classification,
+        n_workers,
     )
 
     _finalize_and_report_sklearn(
@@ -886,6 +922,60 @@ def _fit_full_data_trac(
     return _fit_trac_single(log_geom_full, nleaves, y_full, a_df, lam, seed)
 
 
+def _dispatch_kfold_and_refit_trac(
+    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
+    log_geom_full: np.ndarray,
+    y_full: np.ndarray,
+    nleaves: np.ndarray,
+    a_df: pd.DataFrame,
+    lam: float,
+    seed_model: int,
+    n_workers: int,
+) -> Tuple[List[Dict[str, float]], Dict[str, Any]]:
+    """TRAC counterpart of :func:`_dispatch_kfold_and_refit_sklearn`.
+
+    Shares the same throttle-then-refit dispatch shape via
+    :func:`_dispatch_folds_then_refit`; differs only in the per-task args
+    (log-geom design matrix, nleaves, A) and the refit return type
+    (TRAC model bundle dict).
+    """
+    lg_ref = ray.put(log_geom_full)
+    y_ref = ray.put(y_full)
+    a_df_ref = ray.put(a_df)
+    node_id = ray.get_runtime_context().get_node_id()
+    strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
+
+    remote_fold_fn = ray.remote(num_cpus=0)(_fit_one_fold_trac)
+    remote_refit_fn = ray.remote(num_cpus=0)(_fit_full_data_trac)
+
+    def submit_fold(i: int) -> Any:
+        tr_idx, va_idx = folds_idx[i]
+        return remote_fold_fn.options(scheduling_strategy=strategy).remote(
+            lg_ref,
+            y_ref,
+            tr_idx,
+            va_idx,
+            nleaves,
+            a_df_ref,
+            lam,
+            seed_model,
+        )
+
+    def submit_refit() -> Any:
+        return remote_refit_fn.options(scheduling_strategy=strategy).remote(
+            lg_ref,
+            nleaves,
+            y_ref,
+            a_df_ref,
+            lam,
+            seed_model,
+        )
+
+    return _dispatch_folds_then_refit(
+        submit_fold, len(folds_idx), submit_refit, n_workers
+    )
+
+
 def train_trac(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -931,55 +1021,23 @@ def train_trac(
             n_splits,
             stratify_by=stratify_by,
         )
-        X_full = engineered.X_full
-        y_full = engineered.y_full
-        fold_indices = engineered.fold_indices
-
         # Precompute log-geom transform on the full design matrix once; each
         # fold task slices its train/val views from this shared array.
-        log_geom_full, nleaves = _preprocess_taxonomy_aggregation(X_full, a_df)
-
-        # Share log_geom_full, y_full and a_df across fold tasks AND the
-        # parallel full-data refit via Ray's object store; the same
-        # ObjectRefs are reused across all K+1 tasks. ``num_cpus=0`` lets
-        # the tasks reuse the trial actor's existing CPU reservation rather
-        # than asking the scheduler for more. Tasks are pinned to the
-        # parent's node with ``soft=False`` so they cannot float onto other
-        # nodes and bypass the parent's cpus_per_trial cap.
-        lg_ref = ray.put(log_geom_full)
-        y_ref = ray.put(y_full)
-        a_df_ref = ray.put(a_df)
-
-        node_id = ray.get_runtime_context().get_node_id()
-        strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
-
-        remote_fold_fn = ray.remote(num_cpus=0)(_fit_one_fold_trac)
-        remote_refit_fn = ray.remote(num_cpus=0)(_fit_full_data_trac)
-        fold_tasks = [
-            remote_fold_fn.options(scheduling_strategy=strategy).remote(
-                lg_ref,
-                y_ref,
-                tr_idx,
-                va_idx,
-                nleaves,
-                a_df_ref,
-                config["lambda"],
-                seed_model,
-            )
-            for tr_idx, va_idx in fold_indices
-        ]
-        refit_task = remote_refit_fn.options(scheduling_strategy=strategy).remote(
-            lg_ref,
-            nleaves,
-            y_ref,
-            a_df_ref,
-            config["lambda"],
-            seed_model,
+        log_geom_full, nleaves = _preprocess_taxonomy_aggregation(
+            engineered.X_full, a_df
         )
 
-        results = ray.get(fold_tasks + [refit_task])
-        fold_metrics = results[:-1]
-        full_model = results[-1]
+        n_workers, _ = _allocate_fold_resources(n_splits, cpus_per_trial)
+        fold_metrics, full_model = _dispatch_kfold_and_refit_trac(
+            engineered.fold_indices,
+            log_geom_full,
+            engineered.y_full,
+            nleaves,
+            a_df,
+            config["lambda"],
+            seed_model,
+            n_workers,
+        )
 
         df_alpha_with_labels = full_model["model"]
         path_to_save = ray.tune.get_context().get_trial_dir()

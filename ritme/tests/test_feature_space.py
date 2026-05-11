@@ -20,7 +20,12 @@ from ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
     create_matrix_from_tree,
 )
-from ritme.feature_space._process_train import process_train
+from ritme.feature_space._process_train import (
+    KFoldEngineered,
+    _encode_target,
+    process_train,
+    process_train_kfold,
+)
 from ritme.feature_space.aggregate_features import (
     agg_microbial_fts_taxonomy,
     aggregate_ft_by_taxonomy,
@@ -1016,6 +1021,145 @@ class TestProcessTrain(unittest.TestCase):
         self.assertTrue(np.isnan(all_X).any())
         # Non-NaN values (CLR-transformed) should be finite
         self.assertTrue(np.isfinite(all_X[~np.isnan(all_X)]).all())
+
+
+class TestProcessTrainKFold(unittest.TestCase):
+    """Direct unit tests for :func:`process_train_kfold` (the K-fold variant
+    of :func:`process_train`). End-to-end K-fold trainable tests mock this
+    function out, so without these tests the partition / shape contract is
+    only exercised via the full Ray Tune integration path.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # No engineering -> the produced ``X_full`` should equal the input
+        # F-columns (modulo dtype and engineering side-effects).
+        self.config = {
+            "data_transform": None,
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_i": None,
+            "data_selection_q": None,
+            "data_selection_t": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+        rng = np.random.default_rng(0)
+        n_rows = 30
+        # 10 hosts x 3 rows: groups are large enough for n_splits=3.
+        host_ids = np.repeat(np.arange(10), 3)
+        self.train_val = pd.DataFrame(
+            {
+                "host_id": host_ids,
+                "target": rng.uniform(size=n_rows),
+                "F0": rng.uniform(size=n_rows),
+                "F1": rng.uniform(size=n_rows),
+                "F2": rng.uniform(size=n_rows),
+            },
+            index=[f"SR{i}" for i in range(n_rows)],
+        )
+        self.tax = pd.DataFrame([])
+
+    def test_returns_kfold_engineered_namedtuple(self):
+        out = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=0,
+            n_splits=3,
+        )
+        self.assertIsInstance(out, KFoldEngineered)
+        # Row counts match across X_full, y_full, and the input.
+        self.assertEqual(out.X_full.shape[0], len(self.train_val))
+        self.assertEqual(out.y_full.shape, (len(self.train_val),))
+        # Column count matches the recorded feature list.
+        self.assertEqual(out.X_full.shape[1], len(out.ft_ls_used))
+
+    def test_fold_indices_partition_input_rows(self):
+        out = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=0,
+            n_splits=3,
+        )
+        n = len(self.train_val)
+        self.assertEqual(len(out.fold_indices), 3)
+        all_val = []
+        for tr_idx, va_idx in out.fold_indices:
+            # Train and val of the same fold are disjoint and cover all rows.
+            self.assertEqual(set(tr_idx).intersection(va_idx), set())
+            self.assertEqual(set(tr_idx).union(va_idx), set(range(n)))
+            all_val.extend(va_idx.tolist())
+        # Across the K folds, every row appears in exactly one val set.
+        self.assertEqual(sorted(all_val), list(range(n)))
+
+    def test_seed_determinism(self):
+        a = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=42,
+            n_splits=3,
+        )
+        b = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=42,
+            n_splits=3,
+        )
+        # Same seed -> identical fold partition.
+        for (tr_a, va_a), (tr_b, va_b) in zip(a.fold_indices, b.fold_indices):
+            np.testing.assert_array_equal(tr_a, tr_b)
+            np.testing.assert_array_equal(va_a, va_b)
+        # And identical engineered design matrix / target.
+        np.testing.assert_array_equal(a.X_full, b.X_full)
+        np.testing.assert_array_equal(a.y_full, b.y_full)
+
+
+class TestEncodeTargetReuse(unittest.TestCase):
+    """``_encode_target`` is called once per slice during K-fold dispatch (via
+    ``process_train_kfold`` -> ``_encode_target``) and twice during single-split
+    dispatch (train slice + val slice). The second call must reuse the encoder
+    fit on the first call so train and val share a single label-to-int map.
+    """
+
+    def test_numeric_target_returns_floats_without_encoder(self):
+        config: dict = {}
+        train_val = pd.DataFrame({"target": [1.0, 2.0, 3.0, 4.0]})
+        out = _encode_target(config, train_val, "target", train_val["target"])
+        np.testing.assert_array_equal(out, np.array([1.0, 2.0, 3.0, 4.0]))
+        # Numeric path does NOT install an encoder.
+        self.assertNotIn("_label_encoder", config)
+
+    def test_non_numeric_target_fits_encoder_and_reuses(self):
+        config: dict = {}
+        train_val = pd.DataFrame({"target": ["cat", "dog", "cat", "bird"]})
+        first = _encode_target(config, train_val, "target", train_val["target"])
+        # An encoder is now stashed in ``config`` for downstream reuse.
+        self.assertIn("_label_encoder", config)
+        le_first = config["_label_encoder"]
+        # Second call (e.g. on a val slice) must reuse the same encoder
+        # instance -- never refit -- so train and val share a label map.
+        val_slice = pd.Series(["dog", "bird"])
+        second = _encode_target(config, train_val, "target", val_slice)
+        self.assertIs(config["_label_encoder"], le_first)
+        # Encoded values round-trip through the shared encoder.
+        np.testing.assert_array_equal(
+            first.astype(int), le_first.transform(train_val["target"].to_numpy())
+        )
+        np.testing.assert_array_equal(
+            second.astype(int), le_first.transform(val_slice.to_numpy())
+        )
 
 
 class TestProcessTracSpecific(unittest.TestCase):
