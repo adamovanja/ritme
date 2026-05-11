@@ -1998,24 +1998,64 @@ def custom_xgb_metric(
 # booster persisted as the deployable checkpoint.
 
 
+def _prepare_xgb_classification_labels(
+    config: Dict[str, Any], y_full: np.ndarray
+) -> Tuple[np.ndarray, int]:
+    """Encode K-fold targets to contiguous 0..K-1 ints for ``multi:softprob``.
+
+    Mirrors the label-encoding branch of single-split ``train_xgb_class``:
+    if ``process_train_kfold`` already stashed a LabelEncoder on
+    ``config["_label_encoder"]`` (non-numeric target), reuse it -- the y
+    values are already 0-indexed floats, so we only round + cast. For
+    numeric targets the encoder is absent; we fit one here on the rounded
+    ints and stash it on ``config`` so the trailing
+    ``_save_label_encoder(config)`` persists it for prediction time.
+
+    Returns the integer-encoded labels and the class count for
+    ``num_class`` in xgb params.
+    """
+    le = config.get("_label_encoder")
+    if le is not None:
+        y_int = np.round(y_full).astype(int)
+    else:
+        le = LabelEncoder()
+        le.fit(np.round(y_full).astype(int))
+        config["_label_encoder"] = le
+        y_int = le.transform(np.round(y_full).astype(int))
+    return y_int, len(le.classes_)
+
+
 def _xgb_params_from_config(
     config: Dict[str, Any],
     cpus_per_trial: int,
     gpus_per_trial: int,
     task_type: str,
+    num_classes: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build the xgb-native params dict from a ritme trainable config.
 
-    Mirrors the single-split branch of ``train_xgb`` so the K-fold path
-    consumes the same hyperparameters: it mutates the caller's ``config``
-    in place (``nthread`` and optionally ``device``) and returns it.
-    Currently only the regression objective is set implicitly by xgb's
-    defaults; the classification path will overlay ``objective`` /
-    ``num_class`` separately in Task 3+4.
+    Mirrors the single-split branches of ``train_xgb`` and
+    ``train_xgb_class`` so the K-fold path consumes the same
+    hyperparameters: mutates the caller's ``config`` in place (``nthread``,
+    ``device``, and for classification ``objective`` + ``num_class``) and
+    returns it.
+
+    For ``task_type == "classification"`` we set ``objective`` to
+    ``multi:softprob`` and ``num_class`` from ``num_classes`` (the K-fold
+    orchestrator counts classes from the encoded label set once
+    ``process_train_kfold`` has populated / fitted the label encoder).
+    Regression leaves the objective at xgb's default (squared error).
     """
     config["nthread"] = cpus_per_trial
     if gpus_per_trial > 0:
         config["device"] = "cuda"
+    if task_type == "classification":
+        if num_classes is None:
+            raise ValueError(
+                "num_classes must be provided when task_type='classification'"
+            )
+        config["objective"] = "multi:softprob"
+        config["num_class"] = int(num_classes)
     return config
 
 
@@ -2027,12 +2067,14 @@ def _xgb_fold_metrics(
     y_va: np.ndarray,
     task_type: str,
 ) -> Dict[str, float]:
-    """Per-fold metric dict for the regression K-fold path.
+    """Per-fold metric dict for the regression and classification K-fold paths.
 
     Produces the same metric KEYS that the single-split path reports
-    (``rmse_train``, ``rmse_val``, ``r2_train``, ``r2_val``) so the
-    aggregated dict and downstream 1-SE selection see a consistent
-    schema across the two paths.
+    (regression: ``rmse_train`` / ``rmse_val`` / ``r2_train`` / ``r2_val``;
+    classification: ``roc_auc_macro_ovr`` / ``f1_macro`` /
+    ``balanced_accuracy`` / ``mcc`` / ``log_loss`` each with ``_train`` and
+    ``_val`` suffix) so the aggregated dict and downstream 1-SE selection
+    see a consistent schema across the two paths.
 
     When early stopping triggered, ``booster.best_iteration`` is set
     (0-indexed). xgb's default ``predict`` uses **all** trees in the
@@ -2042,13 +2084,32 @@ def _xgb_fold_metrics(
     callback captures. Restricting to ``iteration_range=(0, best+1)``
     keeps the two paths' metric semantics aligned. xgb treats ``(0, 0)``
     as "use all trees" (the default), so the no-early-stop fallback path
-    is unchanged.
+    is unchanged. Both regression and classification branches apply the
+    same ``iteration_range`` discipline.
     """
     best_iter = getattr(booster, "best_iteration", None)
     end = (best_iter + 1) if best_iter is not None else 0
     iteration_range = (0, end)
     y_pred_tr = booster.predict(dtrain, iteration_range=iteration_range)
     y_pred_va = booster.predict(dvalid, iteration_range=iteration_range)
+    if task_type == "classification":
+        # ``multi:softprob`` returns an (n_samples, n_classes) probability
+        # matrix; argmax gives the class label and the matrix is the
+        # threshold-free input for roc_auc / log_loss in
+        # _classification_metrics_dict.
+        classes = list(range(y_pred_tr.shape[1]))
+        y_tr_int = y_tr.astype(int)
+        y_va_int = y_va.astype(int)
+        train_metrics = _classification_metrics_dict(
+            y_tr_int, y_pred_tr.argmax(axis=1), y_pred_tr, classes
+        )
+        val_metrics = _classification_metrics_dict(
+            y_va_int, y_pred_va.argmax(axis=1), y_pred_va, classes
+        )
+        return {
+            **{f"{k}_train": v for k, v in train_metrics.items()},
+            **{f"{k}_val": v for k, v in val_metrics.items()},
+        }
     return {
         "rmse_train": float(root_mean_squared_error(y_tr, y_pred_tr)),
         "rmse_val": float(root_mean_squared_error(y_va, y_pred_va)),
@@ -2104,7 +2165,8 @@ def _run_kfold_xgb(
     gpus_per_trial: int,
     task_type: str,
 ) -> None:
-    """Sequential K-fold + full-data refit for ``train_xgb``.
+    """Sequential K-fold + full-data refit for ``train_xgb`` /
+    ``train_xgb_class``.
 
     One ``tune.report`` at the end with aggregated per-fold metrics, plus a
     refit on the full design matrix that produces the deployable
@@ -2113,10 +2175,18 @@ def _run_kfold_xgb(
     ``nthread`` slot in ``xgb_params``, so per-fold parallelism inside xgb
     itself absorbs the trial's CPU budget without an outer Ray-remote
     fan-out.
+
+    For ``task_type == "classification"`` the y returned by
+    ``process_train_kfold`` is encoded by ``_encode_target`` (already
+    0-indexed for string targets via the LabelEncoder it stashes in
+    ``config["_label_encoder"]``; numeric targets pass through as floats).
+    We mirror the single-split branch of ``train_xgb_class``: if no encoder
+    was stashed (numeric target) we fit one here on the rounded ints, then
+    transform y_full so xgb sees contiguous 0..K-1 integer labels for
+    ``multi:softprob``. The encoder stays on ``config`` so the trailing
+    ``_save_label_encoder(config)`` persists it for prediction-time
+    inverse transform.
     """
-    xgb_params = _xgb_params_from_config(
-        config, cpus_per_trial, gpus_per_trial, task_type
-    )
     np.random.seed(seed_model)
     random.seed(seed_model)
 
@@ -2131,14 +2201,23 @@ def _run_kfold_xgb(
         stratify_by=stratify_by,
     )
 
+    y_full = engineered.y_full
+    num_classes: Optional[int] = None
+    if task_type == "classification":
+        y_full, num_classes = _prepare_xgb_classification_labels(config, y_full)
+
+    xgb_params = _xgb_params_from_config(
+        config, cpus_per_trial, gpus_per_trial, task_type, num_classes=num_classes
+    )
+
     n_estimators = int(config["n_estimators"])
     early_stop = max(10, int(0.1 * n_estimators))
 
     per_fold_metrics: List[Dict[str, float]] = []
     per_fold_best_iter: List[Optional[int]] = []
     for tr_idx, va_idx in engineered.fold_indices:
-        X_tr, y_tr = engineered.X_full[tr_idx], engineered.y_full[tr_idx]
-        X_va, y_va = engineered.X_full[va_idx], engineered.y_full[va_idx]
+        X_tr, y_tr = engineered.X_full[tr_idx], y_full[tr_idx]
+        X_va, y_va = engineered.X_full[va_idx], y_full[va_idx]
         dtrain = xgb.DMatrix(X_tr, label=y_tr)
         dvalid = xgb.DMatrix(X_va, label=y_va)
         booster = xgb.train(
@@ -2158,7 +2237,7 @@ def _run_kfold_xgb(
     aggregated["nb_features"] = int(engineered.X_full.shape[1])
 
     refit_rounds = _xgb_refit_rounds(per_fold_best_iter, n_estimators)
-    dfull = xgb.DMatrix(engineered.X_full, label=engineered.y_full)
+    dfull = xgb.DMatrix(engineered.X_full, label=y_full)
     refit = xgb.train(
         xgb_params, dfull, num_boost_round=refit_rounds, verbose_eval=False
     )
@@ -2299,6 +2378,22 @@ def train_xgb_class(
     task_type: str = "classification",
     k_folds: int = 1,
 ) -> None:
+    n_splits = int(k_folds or 1)
+    if n_splits > 1:
+        return _run_kfold_xgb(
+            config,
+            train_val,
+            target,
+            host_id,
+            stratify_by,
+            seed_data,
+            seed_model,
+            tax,
+            n_splits,
+            cpus_per_trial,
+            gpus_per_trial,
+            task_type="classification",
+        )
     config["nthread"] = cpus_per_trial
     if gpus_per_trial > 0:
         config["device"] = "cuda"

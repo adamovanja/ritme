@@ -1479,6 +1479,96 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
 
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_class_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_xgb_class`` runs the real fold loop and
+        emits one aggregated ``tune.report`` call with mean/std/SE per
+        classification metric.
+
+        Mirrors ``test_train_xgb_kfold_reports_aggregated_metrics`` but with
+        a 3-class numeric target so ``multi:softprob`` is exercised end-to-end:
+        feature engineering, K-fold splitting, per-fold xgb fit + best-iter
+        metric eval, aggregation, and the full-data refit all run for real.
+        """
+        # Overwrite the regression target with a 3-class numeric target so
+        # process_train_kfold treats it as numeric (returns floats), and
+        # the trainable rounds + LabelEncodes inside the xgb-class path.
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_xgb_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=3,
+            )
+
+            self.assertEqual(mock_report.call_count, 1)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            # Mirror the metric KEYS that single-split train_xgb_class emits
+            # (see its _RitmeXGBCheckpointCallback metrics dict).
+            metric_keys = (
+                "roc_auc_macro_ovr_train",
+                "roc_auc_macro_ovr_val",
+                "log_loss_train",
+                "log_loss_val",
+                "f1_macro_train",
+                "f1_macro_val",
+                "balanced_accuracy_train",
+                "balanced_accuracy_val",
+                "mcc_train",
+                "mcc_val",
+            )
+            for key in metric_keys:
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
     @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
     @patch("ritme.model_space.static_trainables.process_train_kfold")
     @patch("ritme.model_space.static_trainables.tune.report")
