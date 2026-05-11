@@ -6,7 +6,8 @@ import pickle
 import random
 import shutil
 import tempfile
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Tuple, Union
 
 import joblib
 import numpy as np
@@ -2137,18 +2138,30 @@ def _xgb_refit_rounds(
     return int(np.median(per_fold_best_iter)) + 1
 
 
-def _save_xgb_checkpoint(refit_booster: xgb.Booster) -> None:
-    """Persist the refit booster as the trial's deployable checkpoint.
+@contextmanager
+def _save_xgb_checkpoint(
+    refit_booster: xgb.Booster,
+) -> Iterator["ray.train.Checkpoint"]:
+    """Yield a Ray Tune :class:`Checkpoint` containing the refit booster.
 
-    ``load_xgb_model`` (in :mod:`ritme.evaluate_models`) loads the booster
-    from ``result.checkpoint.to_directory() / "checkpoint"``. The K-fold
-    path needs to surface its refit booster through the same Ray Tune
-    checkpoint API. Plan Task 5 wires the actual ``tune.report(metrics,
-    checkpoint=...)`` plumbing; for now we save the booster file under the
-    trial dir at the expected filename so a follow-up task can pick it up.
+    Mirrors the single-split path's checkpoint plumbing
+    (:meth:`_RitmeXGBCheckpointCallback._save_and_report_checkpoint` ->
+    parent class's ``_get_checkpoint``): write the booster to a temp dir
+    under the filename ``"checkpoint"`` so it lands at the exact path
+    :func:`ritme.evaluate_models._get_checkpoint_path` reads
+    (``result.checkpoint.to_directory() / "checkpoint"``), wrap that
+    directory in a :class:`ray.train.Checkpoint`, and yield it for the
+    caller to hand to ``tune.report(metrics=..., checkpoint=...)``.
+
+    The temp dir lives for the duration of the ``with`` block. Ray Tune
+    persists the checkpoint contents to durable storage during the
+    ``tune.report`` call, so it is safe to let the temp dir vanish at
+    exit; the persisted copy is what ``result.checkpoint.to_directory()``
+    materialises at load time.
     """
-    ckpt_path = os.path.join(ray.tune.get_context().get_trial_dir(), "checkpoint")
-    refit_booster.save_model(ckpt_path)
+    with tempfile.TemporaryDirectory(prefix="ritme_xgb_refit_") as tmpdir:
+        refit_booster.save_model(os.path.join(tmpdir, "checkpoint"))
+        yield ray.train.Checkpoint.from_directory(tmpdir)
 
 
 def _run_kfold_xgb(
@@ -2245,8 +2258,8 @@ def _run_kfold_xgb(
     _save_taxonomy(tax)
     if task_type == "classification":
         _save_label_encoder(config)
-    _save_xgb_checkpoint(refit)
-    tune.report(metrics=aggregated)
+    with _save_xgb_checkpoint(refit) as checkpoint:
+        tune.report(metrics=aggregated, checkpoint=checkpoint)
 
 
 def train_xgb(

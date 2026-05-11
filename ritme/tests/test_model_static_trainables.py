@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, call, patch
 import joblib
 import numpy as np
 import pandas as pd
+import ray
 import skbio
 from parameterized import parameterized
 from ray import tune
@@ -25,6 +26,7 @@ from ritme.evaluate_models import (
     get_model,
     get_predictions,
     get_taxonomy,
+    load_xgb_model,
 )
 from ritme.feature_space._process_train import KFoldEngineered
 from ritme.model_space import static_trainables as st
@@ -1568,6 +1570,136 @@ class TestKfoldTrainables(unittest.TestCase):
                 )
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_saves_loadable_checkpoint(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold refit booster is surfaced as a Ray Tune ``Checkpoint`` and
+        is loadable end-to-end through ``load_xgb_model`` / ``TunedModel``.
+
+        Verifies that the K-fold branch wires the deployable checkpoint
+        through the *same* ``tune.report(metrics=..., checkpoint=...)`` API
+        the single-split path uses (see
+        :class:`_RitmeXGBCheckpointCallback`), so a downstream consumer
+        consuming a ``Result`` object can reconstruct the trained booster
+        via :func:`load_xgb_model` and predict on a fresh holdout.
+
+        ``_save_xgb_checkpoint`` is a context manager whose temp dir is
+        torn down at the close of the ``with`` block in
+        ``_run_kfold_xgb``; the real Ray Tune ``tune.report`` persists the
+        checkpoint contents to durable storage during the call, so the
+        temp dir going away after the report is fine. Under a mocked
+        ``tune.report`` that durable-copy never happens, so we use
+        ``side_effect`` to materialise the checkpoint to a stable directory
+        WHILE the trainable's ``with`` block is still open, then validate
+        the load + predict after the trainable returns.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_xgb_ckpt"
+            mock_get_context.return_value = mock_ctx
+
+            # Persist the checkpoint contents to a stable directory during
+            # the patched ``tune.report`` call. Ray's ``Checkpoint`` wraps a
+            # temp dir whose lifetime ends with the context manager in
+            # ``_save_xgb_checkpoint``, so we must read it now -- not after
+            # the trainable returns. Mirrors what real Ray Tune does during
+            # ``tune.report``: stage the checkpoint to durable storage.
+            persisted = {}
+            stable_ckpt_dir = os.path.join(tmpdir, "persisted_checkpoint")
+
+            def _persist(*args, **kwargs):
+                checkpoint = kwargs.get("checkpoint")
+                if checkpoint is None and len(args) >= 2:
+                    checkpoint = args[1]
+                self.assertIsNotNone(
+                    checkpoint,
+                    "K-fold refit must surface a Checkpoint via tune.report",
+                )
+                # Copy the checkpoint files to a path that outlives the
+                # trainable's temp dir.
+                src = checkpoint.to_directory()
+                shutil.copytree(src, stable_ckpt_dir)
+                persisted["metrics"] = kwargs.get("metrics") or (
+                    args[0] if args else None
+                )
+
+            mock_report.side_effect = _persist
+
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            mock_report.assert_called_once()
+            self.assertTrue(
+                os.path.isfile(os.path.join(stable_ckpt_dir, "checkpoint")),
+                "K-fold refit checkpoint must land at the 'checkpoint' "
+                "filename load_xgb_model reads via _get_checkpoint_path.",
+            )
+
+            # Exercise the public reload surface. ``load_xgb_model`` reads
+            # ``result.checkpoint.to_directory() / 'checkpoint'``; we wrap
+            # the stable directory in a fresh Checkpoint so the stub
+            # ``Result`` mirrors what Ray Tune would hand back.
+            stable_checkpoint = ray.train.Checkpoint.from_directory(stable_ckpt_dir)
+            fake_result = MagicMock()
+            fake_result.checkpoint = stable_checkpoint
+            loaded_booster = load_xgb_model(fake_result)
+            self.assertIsInstance(loaded_booster, st.xgb.Booster)
+
+            # Wrap in TunedModel so the public reload surface (the way the
+            # orchestrator instantiates it from a Result) is exercised.
+            tuned = TunedModel(
+                model=loaded_booster,
+                data_config={k: v for k, v in config.items() if k.startswith("data_")},
+                tax=self.tax,
+                path=tmpdir,
+                model_type="xgb",
+            )
+            self.assertIs(tuned.model, loaded_booster)
+
+            # Smoke-predict on a 5-row holdout using the same feature
+            # schema the refit booster was trained on. ``_run_kfold_xgb``
+            # builds the design matrix via ``process_train_kfold`` from
+            # ``self.train_val`` (5 F-columns under this fixture), so a
+            # 5-row slice of the synthetic feature matrix is the closest
+            # analogue to fresh test data with the same column count.
+            holdout = st.xgb.DMatrix(self.X_full[:5])
+            preds = loaded_booster.predict(holdout)
+            self.assertEqual(preds.shape, (5,))
+            self.assertTrue(np.all(np.isfinite(preds)))
 
     @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
     @patch("ritme.model_space.static_trainables.process_train_kfold")
