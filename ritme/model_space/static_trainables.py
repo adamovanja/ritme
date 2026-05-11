@@ -6,7 +6,7 @@ import pickle
 import random
 import shutil
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import joblib
 import numpy as np
@@ -29,6 +29,7 @@ from lightning.pytorch.callbacks import EarlyStopping
 from ray import tune
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.xgboost import TuneReportCheckpointCallback as xgb_cc
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import ElasticNet, LogisticRegression
@@ -51,8 +52,198 @@ from ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
     create_matrix_from_tree,
 )
-from ritme.feature_space._process_train import process_train
+from ritme.feature_space._process_train import process_train, process_train_kfold
 from ritme.model_space._model_trac_calc import min_least_squares_solution
+
+
+def _aggregate_fold_metrics(per_fold_dicts: List[Dict[str, float]]) -> Dict[str, float]:
+    """Aggregate per-fold metric dicts into mean/std/standard-error fields.
+
+    For each metric key found in any fold dict, emits ``<key>``, ``<key>_mean``,
+    ``<key>_std`` (sample std, ddof=1), and ``<key>_se`` (std / sqrt(K)). The
+    bare ``<key>`` is set to the mean so existing single-split callers (and
+    Ray Tune metric configuration) keep working without rename. Adds
+    ``n_folds`` for downstream auditing.
+
+    Note:
+        ``<key>_se = <key>_std / sqrt(K)`` assumes the K fold scores are
+        independent estimates of the same quantity. K-fold folds are not
+        independent: their training sets overlap by ``(K-2)/K * N`` samples,
+        so the reported SE is optimistic (too narrow). See Bengio & Grandvalet
+        (2004), "No Unbiased Estimator of the Variance of K-Fold
+        Cross-Validation", JMLR vol. 5. The formula is nonetheless retained
+        as it matches standard practice (glmnet's ``lambda.1se``, scikit-learn
+        examples) and is what the one-standard-error rule in
+        ``evaluate_models.py`` consumes.
+
+        K-fold trainables can occasionally report NaN for a given metric (e.g.
+        when a single fold fails inside the joblib/ray dispatch and returns a
+        sentinel NaN). The std/se calculation therefore counts only the
+        non-NaN entries: if fewer than two valid observations remain, both
+        ``<key>_std`` and ``<key>_se`` are set to ``0.0`` explicitly so the
+        SE field stays a finite real. This matches how scikit-learn handles
+        the same situation in ``cross_val_score`` aggregation and prevents a
+        NaN SE from silently collapsing the tolerance band in the downstream
+        one-standard-error model-selection rule.
+    """
+    metrics: Dict[str, float] = {}
+    keys = sorted({k for d in per_fold_dicts for k in d.keys()})
+    for k in keys:
+        vals = [d[k] for d in per_fold_dicts if k in d and d[k] is not None]
+        if not vals:
+            continue
+        arr = np.asarray(vals, dtype=float)
+        if np.isnan(arr).all():
+            continue
+        mean = float(np.nanmean(arr))
+        n_valid = int(np.sum(~np.isnan(arr)))
+        if n_valid <= 1:
+            std = 0.0
+            se = 0.0
+        else:
+            std = float(np.nanstd(arr, ddof=1))
+            se = std / math.sqrt(n_valid)
+        metrics[k] = mean
+        metrics[f"{k}_mean"] = mean
+        metrics[f"{k}_std"] = std
+        metrics[f"{k}_se"] = se
+    metrics["n_folds"] = len(per_fold_dicts)
+    return metrics
+
+
+def _allocate_fold_resources(n_splits: int, cpus_per_trial: int) -> tuple[int, int]:
+    """Split a trial's CPU budget between parallel folds and the inner model.
+
+    Picks ``n_workers = min(n_splits, cpus_per_trial)`` parallel folds and
+    ``cpus_per_fold = floor(cpus_per_trial / n_workers)`` for each fold's
+    inner fit (e.g. RandomForest n_jobs). When folds outnumber CPUs, joblib
+    queues them across workers automatically.
+    """
+    cpus_avail = max(1, int(cpus_per_trial))
+    n_workers = max(1, min(int(n_splits), cpus_avail))
+    cpus_per_fold = max(1, cpus_avail // n_workers)
+    return n_workers, cpus_per_fold
+
+
+# --------------------------------------------------------------------------
+# Module-level estimator builders
+# --------------------------------------------------------------------------
+# Each ``_build_<model>`` is a top-level factory that returns a fresh,
+# unfitted estimator from explicit hyperparameter arguments. They replace the
+# previous nested ``_make`` closures (which captured ``config`` from the
+# trainable scope) so that Ray dispatches estimator construction by function
+# reference plus a small explicit kwargs dict — not by cloudpickling an
+# enclosing closure together with the full ``config``. Each builder accepts
+# ``seed_model`` and ``n_jobs`` for uniform invocation by the fold workers;
+# models that don't consume them absorb them via the keyword signature.
+
+
+def _build_linreg(
+    alpha: float,
+    l1_ratio: float,
+    seed_model: Optional[int] = None,
+    n_jobs: Optional[int] = None,
+) -> Pipeline:
+    """Build a fresh linear regression pipeline (StandardScaler + ElasticNet).
+
+    ``seed_model`` and ``n_jobs`` are accepted for factory-signature parity
+    with the other ``_build_*`` helpers but are unused: ElasticNet's default
+    cyclic coordinate descent is deterministic without a seed, and the
+    Pipeline wrapper does not expose n_jobs.
+    """
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "linreg",
+                ElasticNet(alpha=alpha, l1_ratio=l1_ratio, fit_intercept=True),
+            ),
+        ]
+    )
+
+
+def _build_logreg(
+    C: float,
+    penalty: Literal["l1", "l2", "elasticnet"],
+    l1_ratio: Optional[float],
+    seed_model: int,
+    n_jobs: Optional[int] = None,
+) -> Pipeline:
+    """Build a fresh logistic regression pipeline.
+
+    ``n_jobs`` is accepted for factory-signature parity but not exposed at the
+    pipeline level for the saga solver used here.
+    """
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "logreg",
+                LogisticRegression(
+                    C=C,
+                    penalty=penalty,
+                    l1_ratio=l1_ratio,
+                    solver="saga",
+                    max_iter=2000,
+                    random_state=seed_model,
+                ),
+            ),
+        ]
+    )
+
+
+def _build_rf(
+    n_estimators: int,
+    max_depth: Optional[int],
+    min_samples_split: float,
+    min_weight_fraction_leaf: float,
+    min_samples_leaf: float,
+    max_features,
+    min_impurity_decrease: float,
+    bootstrap: bool,
+    seed_model: int,
+    n_jobs: int,
+) -> RandomForestRegressor:
+    """Build a fresh RandomForestRegressor from explicit hyperparameters."""
+    return RandomForestRegressor(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_split=min_samples_split,
+        min_weight_fraction_leaf=min_weight_fraction_leaf,
+        min_samples_leaf=min_samples_leaf,
+        max_features=max_features,
+        min_impurity_decrease=min_impurity_decrease,
+        bootstrap=bootstrap,
+        n_jobs=n_jobs,
+        random_state=seed_model,
+    )
+
+
+def _build_rf_class(
+    n_estimators: int,
+    max_depth: Optional[int],
+    min_samples_split: float,
+    min_weight_fraction_leaf: float,
+    min_samples_leaf: float,
+    max_features,
+    min_impurity_decrease: float,
+    bootstrap: bool,
+    seed_model: int,
+    n_jobs: int,
+) -> RandomForestClassifier:
+    """Build a fresh RandomForestClassifier from explicit hyperparameters."""
+    return RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_split=min_samples_split,
+        min_weight_fraction_leaf=min_weight_fraction_leaf,
+        min_samples_leaf=min_samples_leaf,
+        max_features=max_features,
+        min_impurity_decrease=min_impurity_decrease,
+        bootstrap=bootstrap,
+        n_jobs=n_jobs,
+        random_state=seed_model,
+    )
 
 
 def _predict_rmse_r2(model: BaseEstimator, X: np.ndarray, y: np.ndarray) -> tuple:
@@ -213,6 +404,292 @@ def _report_classification_results_manually(
     return None
 
 
+def _fit_one_fold_sklearn_regression(
+    X_full: np.ndarray,
+    y_full: np.ndarray,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    estimator_builder: Callable[..., Any],
+    builder_kwargs: Dict[str, Any],
+    seed_model: int,
+    cpus_per_fold: int,
+) -> Dict[str, float]:
+    """Fit one sklearn regression fold and return per-fold metrics.
+
+    Runs inside a ``ray.remote`` task. ``X_full`` / ``y_full`` arrive as
+    materialized numpy arrays (zero-copy view of the Ray plasma object), and
+    the train/val slices are taken inside the task so the parent trainable
+    never K-way pickles the design matrix. The estimator is built inside the
+    worker from a top-level builder function plus an explicit hyperparameter
+    dict — Ray pickles the builder by reference and the kwargs dict is plain
+    data, so the worker does not carry an implicit closure over the parent's
+    ``config``. Seeds are reset at function entry to preserve deterministic
+    per-fold initialization.
+    """
+    np.random.seed(seed_model)
+    random.seed(seed_model)
+    X_tr = X_full[train_idx]
+    y_tr = y_full[train_idx]
+    X_va = X_full[val_idx]
+    y_va = y_full[val_idx]
+    model = estimator_builder(
+        **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_fold
+    )
+    model.fit(X_tr, y_tr)
+    rmse_train, r2_train = _predict_rmse_r2(model, X_tr, y_tr)
+    rmse_val, r2_val = _predict_rmse_r2(model, X_va, y_va)
+    return {
+        "rmse_val": rmse_val,
+        "rmse_train": rmse_train,
+        "r2_val": r2_val,
+        "r2_train": r2_train,
+    }
+
+
+def _fit_one_fold_sklearn_classification(
+    X_full: np.ndarray,
+    y_full: np.ndarray,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    estimator_builder: Callable[..., Any],
+    builder_kwargs: Dict[str, Any],
+    seed_model: int,
+    cpus_per_fold: int,
+) -> Dict[str, float]:
+    """Fit one sklearn classification fold and return per-fold metrics.
+
+    Counterpart of :func:`_fit_one_fold_sklearn_regression` for classifiers.
+    The targets are rounded to integers (matching the single-split path) and
+    the standard ritme classification metric set is computed on both train
+    and val slices.
+    """
+    np.random.seed(seed_model)
+    random.seed(seed_model)
+    X_tr = X_full[train_idx]
+    y_tr = np.round(y_full[train_idx]).astype(int)
+    X_va = X_full[val_idx]
+    y_va = np.round(y_full[val_idx]).astype(int)
+    model = estimator_builder(
+        **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_fold
+    )
+    model.fit(X_tr, y_tr)
+    train_metrics = _predict_classification_metrics(model, X_tr, y_tr)
+    val_metrics = _predict_classification_metrics(model, X_va, y_va)
+    out = {f"{k}_train": v for k, v in train_metrics.items()}
+    out.update({f"{k}_val": v for k, v in val_metrics.items()})
+    return out
+
+
+def _fit_full_data_sklearn(
+    X_full: np.ndarray,
+    y_full: np.ndarray,
+    estimator_builder: Callable[..., Any],
+    builder_kwargs: Dict[str, Any],
+    seed_model: int,
+    cpus_per_trial: int,
+    classification: bool,
+) -> BaseEstimator:
+    """Refit an sklearn estimator on the entire design matrix.
+
+    Runs inside a ``ray.remote`` task so that the refit happens in parallel
+    with the K fold fits rather than sequentially after them. ``X_full`` /
+    ``y_full`` arrive as materialized numpy arrays (zero-copy view of the
+    Ray plasma object). The estimator is built from the same module-level
+    builder + kwargs pair used by the fold tasks. Seeds are reset at function
+    entry so the refit is deterministic and mirrors the previous in-process
+    refit. For ``classification=True`` the targets are rounded to integers
+    (matching the per-fold classification path). Returns the fitted
+    estimator, which the caller pickles to disk as the deployable checkpoint.
+    """
+    np.random.seed(seed_model)
+    random.seed(seed_model)
+    model = estimator_builder(
+        **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_trial
+    )
+    if classification:
+        model.fit(X_full, np.round(y_full).astype(int))
+    else:
+        model.fit(X_full, y_full)
+    return model
+
+
+def _dispatch_kfold_and_refit_sklearn(
+    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
+    X_full: np.ndarray,
+    y_full: np.ndarray,
+    estimator_builder: Callable[..., Any],
+    builder_kwargs: Dict[str, Any],
+    seed_model: int,
+    cpus_per_fold: int,
+    cpus_per_trial: int,
+    classification: bool,
+) -> Tuple[List[Dict[str, float]], BaseEstimator]:
+    """Dispatch K-fold fits and the full-data refit as parallel Ray tasks.
+
+    Places the full design matrix in Ray's object store once via ``ray.put``
+    and reuses the resulting ObjectRefs across all K+1 tasks. Selects the
+    regression/classification fold runner, then dispatches K per-fold tasks
+    plus a single ``_fit_full_data_sklearn`` refit task. All tasks are
+    pinned to the parent trial's node via ``NodeAffinitySchedulingStrategy``
+    with ``soft=False``, so they share the trial actor's existing CPU
+    reservation on that node rather than floating onto other nodes (which
+    would bypass the per-trial CPU cap). ``num_cpus=0`` keeps the scheduler
+    from asking for additional CPUs on top of the parent reservation.
+
+    Returns
+    -------
+    (fold_metrics, full_model)
+        ``fold_metrics`` is the list of K per-fold metric dicts in fold
+        order; ``full_model`` is the estimator refit on the full design
+        matrix.
+    """
+    X_ref = ray.put(X_full)
+    y_ref = ray.put(y_full)
+
+    # Pin every task to the parent trial's node. ``soft=False`` makes the
+    # placement a hard constraint: Ray fails the task rather than letting
+    # it float onto another node and bypass the parent's cpus_per_trial cap.
+    node_id = ray.get_runtime_context().get_node_id()
+    strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
+
+    fold_fn = (
+        _fit_one_fold_sklearn_classification
+        if classification
+        else _fit_one_fold_sklearn_regression
+    )
+    remote_fold_fn = ray.remote(num_cpus=0)(fold_fn)
+    remote_refit_fn = ray.remote(num_cpus=0)(_fit_full_data_sklearn)
+
+    fold_tasks = [
+        remote_fold_fn.options(scheduling_strategy=strategy).remote(
+            X_ref,
+            y_ref,
+            tr_idx,
+            va_idx,
+            estimator_builder,
+            builder_kwargs,
+            seed_model,
+            cpus_per_fold,
+        )
+        for tr_idx, va_idx in folds_idx
+    ]
+    refit_task = remote_refit_fn.options(scheduling_strategy=strategy).remote(
+        X_ref,
+        y_ref,
+        estimator_builder,
+        builder_kwargs,
+        seed_model,
+        cpus_per_trial,
+        classification,
+    )
+
+    results = ray.get(fold_tasks + [refit_task])
+    fold_metrics = results[:-1]
+    full_model = results[-1]
+    return fold_metrics, full_model
+
+
+def _finalize_and_report_sklearn(
+    X_full: np.ndarray,
+    full_model: BaseEstimator,
+    fold_metrics: List[Dict[str, float]],
+    classification: bool,
+    tax: pd.DataFrame,
+    config: Dict[str, Any],
+) -> None:
+    """Persist artifacts and report a K-fold trainable's metrics to Tune.
+
+    Accepts the already-refit ``full_model`` (produced in parallel with the
+    fold fits by :func:`_dispatch_kfold_and_refit_sklearn`); the refit is
+    therefore no longer on the critical path of this function. For
+    classification trainables saves the label encoder first so the trial
+    directory holds it alongside the model — this must happen after all
+    parallel tasks have returned because the encoder is stashed in
+    ``config`` by the feature-engineering step. Then persists the model
+    pickle and taxonomy, aggregates the per-fold metrics into
+    mean/std/standard-error fields, augments with ``model_path`` /
+    ``nb_features``, and finally calls ``tune.report``.
+    """
+    if classification:
+        _save_label_encoder(config)
+
+    metrics = _aggregate_fold_metrics(fold_metrics)
+    metrics["model_path"] = _save_sklearn_model(full_model)
+    metrics["nb_features"] = X_full.shape[1]
+    _save_taxonomy(tax)
+    tune.report(metrics=metrics)
+
+
+def _run_kfold_sklearn(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: List[str] | None,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame,
+    n_splits: int,
+    cpus_per_trial: int,
+    estimator_builder: Callable[..., Any],
+    builder_kwargs: Dict[str, Any],
+    classification: bool,
+) -> None:
+    """Run K-fold cross-validation for an sklearn-style trainable.
+
+    ``estimator_builder`` is a module-level factory function (e.g.
+    :func:`_build_linreg`) and ``builder_kwargs`` is the explicit
+    hyperparameter dict it consumes. The worker calls
+    ``estimator_builder(**builder_kwargs, seed_model=..., n_jobs=...)`` inside
+    each fold task. This replaces an earlier nested-closure factory pattern
+    that implicitly captured ``config`` and therefore cloudpickled the full
+    config dict to every Ray worker.
+
+    Orchestrates four steps:
+      1. Engineer features once on full ``train_val`` (same pipeline as
+         single-split path) and yield K group-/stratify-aware fold pairs.
+      2. Allocate the trial's CPU budget between parallel fold workers and
+         each fold's inner fit.
+      3. Dispatch the K per-fold fits plus the full-data refit in parallel
+         via ``_dispatch_kfold_and_refit_sklearn``.
+      4. Persist artifacts and report aggregated metrics to Ray Tune via
+         ``_finalize_and_report_sklearn``.
+    """
+    engineered = process_train_kfold(
+        config,
+        train_val,
+        target,
+        host_id,
+        tax,
+        seed_data,
+        n_splits,
+        stratify_by=stratify_by,
+    )
+
+    _, cpus_per_fold = _allocate_fold_resources(n_splits, cpus_per_trial)
+
+    fold_metrics, full_model = _dispatch_kfold_and_refit_sklearn(
+        engineered.fold_indices,
+        engineered.X_full,
+        engineered.y_full,
+        estimator_builder,
+        builder_kwargs,
+        seed_model,
+        cpus_per_fold,
+        cpus_per_trial,
+        classification,
+    )
+
+    _finalize_and_report_sklearn(
+        engineered.X_full,
+        full_model,
+        fold_metrics,
+        classification,
+        tax,
+        config,
+    )
+
+
 def train_linreg(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -226,6 +703,7 @@ def train_linreg(
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
     task_type: str = "regression",
+    k_folds: int = 1,
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -241,6 +719,30 @@ def train_linreg(
     Returns:
     None
     """
+    n_splits = int(k_folds or 1)
+    builder_kwargs: Dict[str, Any] = {
+        "alpha": config["alpha"],
+        "l1_ratio": config["l1_ratio"],
+    }
+
+    if n_splits > 1:
+        _run_kfold_sklearn(
+            config,
+            train_val,
+            target,
+            host_id,
+            stratify_by,
+            seed_data,
+            seed_model,
+            tax,
+            n_splits,
+            cpus_per_trial,
+            estimator_builder=_build_linreg,
+            builder_kwargs=builder_kwargs,
+            classification=False,
+        )
+        return
+
     # ! process dataset: X with features & y with host_id
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
@@ -248,18 +750,8 @@ def train_linreg(
 
     # ! model
     np.random.seed(seed_model)
-    linreg = Pipeline(
-        [
-            ("scaler", StandardScaler()),
-            (
-                "linreg",
-                ElasticNet(
-                    alpha=config["alpha"],
-                    l1_ratio=config["l1_ratio"],
-                    fit_intercept=True,
-                ),
-            ),
-        ]
+    linreg = _build_linreg(
+        **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_trial
     )
     linreg.fit(X_train, y_train)
 
@@ -312,6 +804,88 @@ def _report_results_manually_trac(
     return None
 
 
+def _fit_trac_single(
+    log_geom_train: np.ndarray,
+    nleaves: np.ndarray,
+    y_train: np.ndarray,
+    a_df: pd.DataFrame,
+    lam: float,
+    seed: int,
+):
+    """Fit one TRAC model from a log-geom training matrix and return its bundle."""
+    np.random.seed(seed)
+    matrices_train = (log_geom_train, np.ones((1, len(log_geom_train[0]))), y_train)
+    intercept = True
+    alpha_norefit = Classo(
+        matrix=matrices_train,
+        lam=lam,
+        typ="R1",
+        meth="Path-Alg",
+        w=1 / nleaves,
+        intercept=intercept,
+    )
+    selected_param = abs(alpha_norefit) > 1e-5
+    alpha = min_least_squares_solution(
+        matrices_train, selected_param, intercept=intercept
+    )
+    return _bundle_trac_model(alpha, a_df)
+
+
+def _fit_one_fold_trac(
+    log_geom_full: np.ndarray,
+    y_full: np.ndarray,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    nleaves: np.ndarray,
+    a_df: pd.DataFrame,
+    lam: float,
+    seed_model: int,
+) -> Dict[str, float]:
+    """Fit one TRAC fold and return per-fold RMSE / R2 on train and val.
+
+    Runs inside a ``ray.remote`` task. The log-geom design matrix is sliced
+    inside the task from the put-once ``log_geom_full`` array, so the parent
+    trainable does not K-way pickle the (potentially large) design matrix.
+    Seeds are reset at function entry to preserve deterministic per-fold
+    behavior (mirrors the previous joblib closure).
+    """
+    lg_tr = log_geom_full[train_idx]
+    y_tr = y_full[train_idx]
+    lg_va = log_geom_full[val_idx]
+    y_va = y_full[val_idx]
+    model = _fit_trac_single(lg_tr, nleaves, y_tr, a_df, lam, seed_model)
+    alpha = model["model"]["alpha"].values
+    rmse_tr, r2_tr = _predict_rmse_r2_trac(alpha, lg_tr, y_tr)
+    rmse_va, r2_va = _predict_rmse_r2_trac(alpha, lg_va, y_va)
+    return {
+        "rmse_val": rmse_va,
+        "rmse_train": rmse_tr,
+        "r2_val": r2_va,
+        "r2_train": r2_tr,
+    }
+
+
+def _fit_full_data_trac(
+    log_geom_full: np.ndarray,
+    nleaves: np.ndarray,
+    y_full: np.ndarray,
+    a_df: pd.DataFrame,
+    lam: float,
+    seed: int,
+) -> Dict[str, Any]:
+    """Refit a TRAC model on the entire log-geom design matrix.
+
+    Runs inside a ``ray.remote`` task so the refit happens in parallel with
+    the K fold fits rather than sequentially after them. The arguments
+    mirror ``_fit_trac_single`` (``log_geom_full`` arrives as a zero-copy
+    view of the Ray plasma object); returns the same model-bundle dict
+    shape ({"model": <alpha DataFrame>, "matrix_a": <A>}) that
+    ``_fit_trac_single`` already returns, which the caller pickles to disk
+    as the deployable checkpoint.
+    """
+    return _fit_trac_single(log_geom_full, nleaves, y_full, a_df, lam, seed)
+
+
 def train_trac(
     config: Dict[str, Any],
     train_val: pd.DataFrame,
@@ -325,6 +899,7 @@ def train_trac(
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
     task_type: str = "regression",
+    k_folds: int = 1,
 ) -> None:
     """
     Train a trac model and report the results to Ray Tune.
@@ -340,13 +915,91 @@ def train_trac(
     Returns:
     None
     """
-    # ! process dataset: X with features & y with host_id
+    # ! derive matrix A (same for every fold; depends only on the phylogeny)
+    a_df = create_matrix_from_tree(tree_phylo, tax)
+
+    n_splits = int(k_folds or 1)
+
+    if n_splits > 1:
+        engineered = process_train_kfold(
+            config,
+            train_val,
+            target,
+            host_id,
+            tax,
+            seed_data,
+            n_splits,
+            stratify_by=stratify_by,
+        )
+        X_full = engineered.X_full
+        y_full = engineered.y_full
+        fold_indices = engineered.fold_indices
+
+        # Precompute log-geom transform on the full design matrix once; each
+        # fold task slices its train/val views from this shared array.
+        log_geom_full, nleaves = _preprocess_taxonomy_aggregation(X_full, a_df)
+
+        # Share log_geom_full, y_full and a_df across fold tasks AND the
+        # parallel full-data refit via Ray's object store; the same
+        # ObjectRefs are reused across all K+1 tasks. ``num_cpus=0`` lets
+        # the tasks reuse the trial actor's existing CPU reservation rather
+        # than asking the scheduler for more. Tasks are pinned to the
+        # parent's node with ``soft=False`` so they cannot float onto other
+        # nodes and bypass the parent's cpus_per_trial cap.
+        lg_ref = ray.put(log_geom_full)
+        y_ref = ray.put(y_full)
+        a_df_ref = ray.put(a_df)
+
+        node_id = ray.get_runtime_context().get_node_id()
+        strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
+
+        remote_fold_fn = ray.remote(num_cpus=0)(_fit_one_fold_trac)
+        remote_refit_fn = ray.remote(num_cpus=0)(_fit_full_data_trac)
+        fold_tasks = [
+            remote_fold_fn.options(scheduling_strategy=strategy).remote(
+                lg_ref,
+                y_ref,
+                tr_idx,
+                va_idx,
+                nleaves,
+                a_df_ref,
+                config["lambda"],
+                seed_model,
+            )
+            for tr_idx, va_idx in fold_indices
+        ]
+        refit_task = remote_refit_fn.options(scheduling_strategy=strategy).remote(
+            lg_ref,
+            nleaves,
+            y_ref,
+            a_df_ref,
+            config["lambda"],
+            seed_model,
+        )
+
+        results = ray.get(fold_tasks + [refit_task])
+        fold_metrics = results[:-1]
+        full_model = results[-1]
+
+        df_alpha_with_labels = full_model["model"]
+        path_to_save = ray.tune.get_context().get_trial_dir()
+        model_path = os.path.join(path_to_save, "model.pkl")
+        with open(model_path, "wb") as file:
+            pickle.dump(full_model, file)
+        _save_taxonomy(tax)
+
+        metrics = _aggregate_fold_metrics(fold_metrics)
+        metrics["model_path"] = model_path
+        metrics["nb_features"] = df_alpha_with_labels[
+            df_alpha_with_labels["alpha"] != 0.0
+        ].shape[0]
+        tune.report(metrics=metrics)
+        return
+
+    # Single-split path (preserved for backwards compatibility and tests)
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
-    # ! derive matrix A
-    # todo: adjust A_df here already
-    a_df = create_matrix_from_tree(tree_phylo, tax)
 
     # ! get log_geom
     # pass a_df directly so the sparse representation is not densified.
@@ -354,23 +1007,9 @@ def train_trac(
     log_geom_val, _ = _preprocess_taxonomy_aggregation(X_val, a_df)
 
     # ! model
-    np.random.seed(seed_model)
-    matrices_train = (log_geom_train, np.ones((1, len(log_geom_train[0]))), y_train)
-    intercept = True
-    alpha_norefit = Classo(
-        matrix=matrices_train,
-        lam=config["lambda"],
-        typ="R1",
-        meth="Path-Alg",
-        w=1 / nleaves,
-        intercept=intercept,
+    model = _fit_trac_single(
+        log_geom_train, nleaves, y_train, a_df, config["lambda"], seed_model
     )
-    selected_param = abs(alpha_norefit) > 1e-5
-    alpha = min_least_squares_solution(
-        matrices_train, selected_param, intercept=intercept
-    )
-
-    model = _bundle_trac_model(alpha, a_df)
 
     _report_results_manually_trac(
         model, log_geom_train, y_train, log_geom_val, y_val, tax
@@ -390,6 +1029,7 @@ def train_rf(
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
     task_type: str = "regression",
+    k_folds: int = 1,
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -406,6 +1046,36 @@ def train_rf(
     Returns:
     None
     """
+    n_splits = int(k_folds or 1)
+    builder_kwargs: Dict[str, Any] = {
+        "n_estimators": config["n_estimators"],
+        "max_depth": config["max_depth"],
+        "min_samples_split": config["min_samples_split"],
+        "min_weight_fraction_leaf": config["min_weight_fraction_leaf"],
+        "min_samples_leaf": config["min_samples_leaf"],
+        "max_features": config["max_features"],
+        "min_impurity_decrease": config["min_impurity_decrease"],
+        "bootstrap": config["bootstrap"],
+    }
+
+    if n_splits > 1:
+        _run_kfold_sklearn(
+            config,
+            train_val,
+            target,
+            host_id,
+            stratify_by,
+            seed_data,
+            seed_model,
+            tax,
+            n_splits,
+            cpus_per_trial,
+            estimator_builder=_build_rf,
+            builder_kwargs=builder_kwargs,
+            classification=False,
+        )
+        return
+
     # ! process dataset
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
@@ -414,19 +1084,7 @@ def train_rf(
     # ! model
     # setting seed for scikit library
     np.random.seed(seed_model)
-    rf = RandomForestRegressor(
-        n_estimators=config["n_estimators"],
-        max_depth=config["max_depth"],
-        min_samples_split=config["min_samples_split"],
-        min_weight_fraction_leaf=config["min_weight_fraction_leaf"],
-        min_samples_leaf=config["min_samples_leaf"],
-        max_features=config["max_features"],
-        min_impurity_decrease=config["min_impurity_decrease"],
-        bootstrap=config["bootstrap"],
-        n_jobs=cpus_per_trial,
-        # set randomness
-        random_state=seed_model,
-    )
+    rf = _build_rf(**builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_trial)
     rf.fit(X_train, y_train)
 
     _report_results_manually(rf, X_train, y_train, X_val, y_val, tax)
@@ -445,7 +1103,34 @@ def train_logreg(
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
     task_type: str = "classification",
+    k_folds: int = 1,
 ) -> None:
+    n_splits = int(k_folds or 1)
+
+    builder_kwargs: Dict[str, Any] = {
+        "C": config["C"],
+        "penalty": config["penalty"],
+        "l1_ratio": config.get("l1_ratio"),
+    }
+
+    if n_splits > 1:
+        _run_kfold_sklearn(
+            config,
+            train_val,
+            target,
+            host_id,
+            stratify_by,
+            seed_data,
+            seed_model,
+            tax,
+            n_splits,
+            cpus_per_trial,
+            estimator_builder=_build_logreg,
+            builder_kwargs=builder_kwargs,
+            classification=True,
+        )
+        return
+
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
@@ -454,21 +1139,8 @@ def train_logreg(
     y_val = np.round(y_val).astype(int)
 
     np.random.seed(seed_model)
-    logreg = Pipeline(
-        [
-            ("scaler", StandardScaler()),
-            (
-                "logreg",
-                LogisticRegression(
-                    C=config["C"],
-                    penalty=config["penalty"],
-                    l1_ratio=config.get("l1_ratio"),
-                    solver="saga",
-                    max_iter=2000,
-                    random_state=seed_model,
-                ),
-            ),
-        ]
+    logreg = _build_logreg(
+        **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_trial
     )
     logreg.fit(X_train, y_train)
 
@@ -488,7 +1160,38 @@ def train_rf_class(
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
     task_type: str = "classification",
+    k_folds: int = 1,
 ) -> None:
+    n_splits = int(k_folds or 1)
+    builder_kwargs: Dict[str, Any] = {
+        "n_estimators": config["n_estimators"],
+        "max_depth": config["max_depth"],
+        "min_samples_split": config["min_samples_split"],
+        "min_weight_fraction_leaf": config["min_weight_fraction_leaf"],
+        "min_samples_leaf": config["min_samples_leaf"],
+        "max_features": config["max_features"],
+        "min_impurity_decrease": config["min_impurity_decrease"],
+        "bootstrap": config["bootstrap"],
+    }
+
+    if n_splits > 1:
+        _run_kfold_sklearn(
+            config,
+            train_val,
+            target,
+            host_id,
+            stratify_by,
+            seed_data,
+            seed_model,
+            tax,
+            n_splits,
+            cpus_per_trial,
+            estimator_builder=_build_rf_class,
+            builder_kwargs=builder_kwargs,
+            classification=True,
+        )
+        return
+
     X_train, y_train, X_val, y_val = process_train(
         config, train_val, target, host_id, tax, seed_data, stratify_by=stratify_by
     )
@@ -497,17 +1200,8 @@ def train_rf_class(
     y_val = np.round(y_val).astype(int)
 
     np.random.seed(seed_model)
-    rf_cls = RandomForestClassifier(
-        n_estimators=config["n_estimators"],
-        max_depth=config["max_depth"],
-        min_samples_split=config["min_samples_split"],
-        min_weight_fraction_leaf=config["min_weight_fraction_leaf"],
-        min_samples_leaf=config["min_samples_leaf"],
-        max_features=config["max_features"],
-        min_impurity_decrease=config["min_impurity_decrease"],
-        bootstrap=config["bootstrap"],
-        n_jobs=cpus_per_trial,
-        random_state=seed_model,
+    rf_cls = _build_rf_class(
+        **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_trial
     )
     rf_cls.fit(X_train, y_train)
 
@@ -1024,7 +1718,10 @@ def train_nn_reg(
     cpus_per_trial=1,
     gpus_per_trial=0,
     task_type="regression",
+    k_folds: int = 1,
 ):
+    # k_folds accepted for signature parity; iterative trainable still uses
+    # single-split inside ritme. K-fold support for nn is Phase 2 work.
     train_nn(
         config,
         train_val,
@@ -1054,7 +1751,10 @@ def train_nn_class(
     cpus_per_trial=1,
     gpus_per_trial=0,
     task_type="classification",
+    k_folds: int = 1,
 ):
+    # k_folds accepted for signature parity; iterative trainable still uses
+    # single-split inside ritme. K-fold support for nn is Phase 2 work.
     train_nn(
         config,
         train_val,
@@ -1084,7 +1784,10 @@ def train_nn_corn(
     cpus_per_trial=1,
     gpus_per_trial=0,
     task_type="classification",
+    k_folds: int = 1,
 ):
+    # k_folds accepted for signature parity; iterative trainable still uses
+    # single-split inside ritme. K-fold support for nn is Phase 2 work.
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
         config,
@@ -1239,7 +1942,10 @@ def train_xgb(
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
     task_type: str = "regression",
+    k_folds: int = 1,
 ) -> None:
+    # k_folds accepted for signature parity; iterative trainable still uses
+    # single-split inside ritme. K-fold support for xgb is Phase 2 work.
     """
     Train an XGBoost model and report the results to Ray Tune.
 
@@ -1334,6 +2040,7 @@ def train_xgb_class(
     cpus_per_trial: int = 1,
     gpus_per_trial: int = 0,
     task_type: str = "classification",
+    k_folds: int = 1,
 ) -> None:
     config["nthread"] = cpus_per_trial
     if gpus_per_trial > 0:

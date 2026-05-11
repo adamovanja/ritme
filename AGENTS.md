@@ -64,7 +64,17 @@ Internal/private functions are decorated with `@helper_function`. Both decorator
 When modifying a main function's signature, update both the Python API and the CLI wrapper, including any CLI-specific parsing (e.g. `stratify_by` is a comma-separated string in the CLI but a list in the Python API).
 
 ## Important best practices
-When performing and changes or additions to this repos make sure to follow best practices in software development. making sure all added code is clearly structured, only contains comments when really needed. Any added functionality (= the difference to main branch) should be properly tested with unit tests.
+
+When making changes or additions to this repo, follow best practices in software development. This rule is **load-bearing**, not aspirational — every change is reviewed against it:
+
+- **Clearly structured code.** Single-purpose functions, sensible module boundaries, explicit data flow. If a function does multiple things, split it.
+- **Comments only when really needed.** Document *why*, not *what*; well-named identifiers already say what.
+- **Tests are not optional.** Every piece of added functionality (the diff vs `main`) must have unit tests in `ritme/tests/`. Integration-only coverage via a smoke test does not count as tested for CI purposes.
+- **No nested closures used as a default factory pattern.** If a helper function captures state from its enclosing scope purely as a convenience, lift it to module scope and pass the state as explicit arguments. Closures used inside Ray / joblib / multiprocessing dispatch are especially dangerous: cloudpickle ships the entire captured scope to workers. Use closures only when their semantics are genuinely load-bearing (decorators, callbacks, partial application, one-shot tightly-scoped helpers).
+- **No imports inside function bodies.** All imports go at the top of the module.
+- **Module-level functions over closures when crossing IPC boundaries.** Module-level functions pickle by reference (cheap); closures over arbitrary scope require cloudpickle and ship more than intended.
+- **When a helper pattern repeats across sibling functions, lift the helper to module scope and parameterise.** Duplication of the same shape is a signal of a missed abstraction.
+
 When testing new functionality always do it in an activated conda environment called `ritme` - if it does not exist yet, make sure to create with with `make create-env`. Never install packages in the base environment!
 
 ## Design constraints
@@ -74,6 +84,7 @@ When testing new functionality always do it in an activated conda environment ca
 - **TRAC incompatibility**: TRAC requires a single compositional snapshot + phylogenetic tree. It is automatically excluded when dynamic snapshots are detected.
 - **NaN handling**: `missing_mode="nan"` requires `ls_model_types` to contain only XGBoost; requesting any other model raises a `ValueError`. NaN rows are separated before compositional transforms and reintroduced afterward.
 - **Column naming**: Past snapshots are suffixed (`F0__t-1`, `age__t-2`); current (t0) columns remain unsuffixed. This ensures backward compatibility with the static workflow.
+- **K-fold cross-validation**: Trainables default to 5-fold cross-validation (adaptively capped by group count and smallest stratum; `k_folds: 1` opts out) and `find_best_model_config` selects the best configuration using a one-standard-error rule on the per-fold metric.
 
 ## Commands
 

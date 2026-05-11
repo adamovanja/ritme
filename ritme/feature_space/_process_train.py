@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, NamedTuple, Tuple
 
 import numpy as np
 import pandas as pd
@@ -12,20 +12,30 @@ from ritme.feature_space.transform_features import (
     transform_microbial_features,
 )
 from ritme.feature_space.utils import _add_suffix, _extract_time_labels, _slice_snapshot
-from ritme.split_train_test import _split_data_grouped
+from ritme.split_train_test import _make_kfold_splitter, _split_data_grouped
 
 
-def process_train(
+# Bundle of artifacts returned by ``process_train_kfold``. ``fold_indices``
+# holds (train_idx, val_idx) integer-array pairs; downstream Ray-remote fold
+# dispatch slices ``X_full`` / ``y_full`` inside each task to avoid pickling
+# pre-sliced numpy arrays across actors.
+class KFoldEngineered(NamedTuple):
+    X_full: np.ndarray
+    y_full: np.ndarray
+    ft_ls_used: List[str]
+    fold_indices: List[Tuple[np.ndarray, np.ndarray]]
+
+
+def _engineer_features(
     config,
     train_val: pd.DataFrame,
-    target: str,
-    host_id: str,
     tax: pd.DataFrame,
-    seed_data: int,
-    stratify_by: list[str] | None = None,
-) -> tuple:
-    """Process training data per snapshot (aggregate/select/transform/enrich) and
-    perform a grouped (and optionally stratified) split.
+) -> tuple[pd.DataFrame, List[str]]:
+    """Run the per-snapshot aggregate/select/transform/enrich pipeline.
+
+    Returns the engineered design matrix (indexed like ``train_val``) and the
+    list of feature columns used. Mutates ``config`` to record the ALR denominator
+    map when applicable.
     """
     feat_prefix = "F"
     microbial_ft_ls = [x for x in train_val if x.startswith(feat_prefix)]
@@ -122,6 +132,38 @@ def process_train(
     # Final features used
     ft_ls_used = microbial_ft_ls_transf_all + other_ft_ls_all
 
+    return train_val_accum, ft_ls_used
+
+
+def _encode_target(
+    config, train_val: pd.DataFrame, target: str, target_subset: pd.Series
+) -> np.ndarray:
+    """Encode target column to a float numpy array, fitting a LabelEncoder for
+    non-numeric targets (and stashing it in ``config['_label_encoder']``)."""
+    if pd.api.types.is_numeric_dtype(train_val[target]):
+        return target_subset.fillna(np.nan).astype(float).values
+    le = config.get("_label_encoder")
+    if le is None:
+        le = LabelEncoder()
+        le.fit(train_val[target].dropna())
+        config["_label_encoder"] = le
+    return le.transform(target_subset).astype(float)
+
+
+def process_train(
+    config,
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    tax: pd.DataFrame,
+    seed_data: int,
+    stratify_by: list[str] | None = None,
+) -> tuple:
+    """Process training data per snapshot (aggregate/select/transform/enrich) and
+    perform a grouped (and optionally stratified) split.
+    """
+    train_val_accum, ft_ls_used = _engineer_features(config, train_val, tax)
+
     # SPLIT
     train, val = _split_data_grouped(
         train_val_accum,
@@ -134,14 +176,64 @@ def process_train(
     X_train = train[ft_ls_used].fillna(np.nan).astype(float)
     X_val = val[ft_ls_used].fillna(np.nan).astype(float)
 
-    if pd.api.types.is_numeric_dtype(train_val[target]):
-        y_train = train[target].fillna(np.nan).astype(float).values
-        y_val = val[target].fillna(np.nan).astype(float).values
-    else:
-        le = LabelEncoder()
-        le.fit(train_val[target].dropna())
-        config["_label_encoder"] = le
-        y_train = le.transform(train[target]).astype(float)
-        y_val = le.transform(val[target]).astype(float)
+    y_train = _encode_target(config, train_val, target, train[target])
+    y_val = _encode_target(config, train_val, target, val[target])
 
     return (X_train.values, y_train, X_val.values, y_val)
+
+
+def process_train_kfold(
+    config,
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    tax: pd.DataFrame,
+    seed_data: int,
+    n_splits: int,
+    stratify_by: list[str] | None = None,
+) -> KFoldEngineered:
+    """K-fold variant of :func:`process_train`.
+
+    Engineers features once on the full ``train_val`` (same pipeline as
+    ``process_train``) and produces the integer-index fold pairs for the
+    appropriate scikit-learn K-fold splitter (group / stratified / both,
+    honoring all the constraints of :func:`_split_data_grouped`). Callers
+    slice ``X_full`` / ``y_full`` themselves (typically inside Ray-remote
+    fold tasks) to avoid pickling K pre-sliced numpy arrays.
+
+    Returns
+    -------
+    KFoldEngineered
+        A NamedTuple with fields:
+
+        - ``X_full`` (np.ndarray): Engineered design matrix for the full
+          ``train_val`` (also used to refit the chosen configuration on all
+          data for the saved checkpoint).
+        - ``y_full`` (np.ndarray): Encoded target for the full ``train_val``.
+        - ``ft_ls_used`` (list[str]): Names of the feature columns used
+          (for downstream serialization).
+        - ``fold_indices`` (list[tuple[np.ndarray, np.ndarray]]): Each entry
+          is the ``(train_idx, val_idx)`` pair of integer index arrays used
+          to slice ``X_full`` / ``y_full`` for the corresponding fold.
+    """
+    train_val_accum, ft_ls_used = _engineer_features(config, train_val, tax)
+
+    X_full = train_val_accum[ft_ls_used].fillna(np.nan).astype(float).values
+    y_full = _encode_target(config, train_val, target, train_val[target])
+
+    fold_indices = list(
+        _make_kfold_splitter(
+            train_val,
+            group_by_column=host_id,
+            stratify_by=stratify_by,
+            n_splits=n_splits,
+            seed=seed_data,
+        )
+    )
+
+    return KFoldEngineered(
+        X_full=X_full,
+        y_full=y_full,
+        ft_ls_used=ft_ls_used,
+        fold_indices=fold_indices,
+    )

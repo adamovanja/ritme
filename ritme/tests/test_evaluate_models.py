@@ -12,6 +12,8 @@ from ray.air.result import Result
 from ritme.evaluate_models import (
     TunedModel,
     _get_checkpoint_path,
+    _select_best_with_one_se,
+    _trial_simplicity_key,
     get_data_processing,
     get_predictions,
     load_best_model,
@@ -624,6 +626,175 @@ class TestBuildDesignMatrix(unittest.TestCase):
         preds = tmodel.predict(self.data, split="train")
         expected = np.max(X.values, axis=1).flatten()
         assert_allclose(preds, expected, rtol=1e-6)
+
+
+def _make_mock_result(metrics: dict, config: dict):
+    """Build a MagicMock standing in for a Ray Tune ``Result`` row."""
+    r = MagicMock(spec=Result)
+    r.metrics = metrics
+    r.config = config
+    return r
+
+
+class TestOneStandardErrorRule(unittest.TestCase):
+    """Picking the simplest configuration whose K-fold mean is within one
+    standard error of the best mean (Hastie/Tibshirani/Friedman 2009 §7.10;
+    glmnet's ``lambda.1se``)."""
+
+    def test_falls_back_to_get_best_when_no_se_present(self):
+        # Single-split runs do not report _se fields. The selector must
+        # defer to Ray Tune's normal best-result lookup.
+        rg = MagicMock()
+        sentinel = MagicMock()
+        rg.get_best_result.return_value = sentinel
+        rg.__iter__ = lambda self: iter(
+            [
+                _make_mock_result({"rmse_val": 0.5, "nb_features": 10}, {"alpha": 1.0}),
+                _make_mock_result(
+                    {"rmse_val": 0.4, "nb_features": 50}, {"alpha": 0.01}
+                ),
+            ]
+        )
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        rg.get_best_result.assert_called_once_with(scope="all")
+        self.assertIs(chosen, sentinel)
+
+    def test_picks_simplest_within_band_for_min_metric(self):
+        # Three configs: A best mean but high SE; B and C both inside the band.
+        # Within the band, the simplest (highest alpha for linreg) should win.
+        a = _make_mock_result(
+            {"rmse_val_mean": 0.45, "rmse_val_se": 0.05, "nb_features": 200},
+            {"alpha": 0.001, "l1_ratio": 0.5},
+        )
+        b = _make_mock_result(
+            {"rmse_val_mean": 0.47, "rmse_val_se": 0.02, "nb_features": 180},
+            {"alpha": 0.01, "l1_ratio": 0.5},
+        )
+        c = _make_mock_result(
+            {"rmse_val_mean": 0.49, "rmse_val_se": 0.01, "nb_features": 60},
+            {"alpha": 1.0, "l1_ratio": 0.5},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([a, b, c])
+        rg.get_best_result.side_effect = AssertionError("must not fall through")
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIs(chosen, c)  # highest alpha + fewest features
+
+    def test_picks_best_when_band_is_just_the_winner(self):
+        # B is far worse than A (gap >> SE). Selector must keep A.
+        a = _make_mock_result(
+            {"rmse_val_mean": 0.40, "rmse_val_se": 0.001, "nb_features": 100},
+            {"alpha": 0.01},
+        )
+        b = _make_mock_result(
+            {"rmse_val_mean": 0.50, "rmse_val_se": 0.001, "nb_features": 50},
+            {"alpha": 1.0},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([a, b])
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIs(chosen, a)
+
+    def test_max_metric_uses_correct_band_direction(self):
+        # roc_auc maximised: best_mean - se to best_mean is the band.
+        a = _make_mock_result(
+            {
+                "roc_auc_macro_ovr_val_mean": 0.85,
+                "roc_auc_macro_ovr_val_se": 0.04,
+                "nb_features": 200,
+            },
+            {"C": 100.0},
+        )
+        b = _make_mock_result(
+            {
+                "roc_auc_macro_ovr_val_mean": 0.82,
+                "roc_auc_macro_ovr_val_se": 0.02,
+                "nb_features": 50,
+            },
+            {"C": 0.01},  # smaller C = more regularised = simpler for logreg
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([a, b])
+        chosen = _select_best_with_one_se(rg, "roc_auc_macro_ovr_val", "max", "logreg")
+        self.assertIs(chosen, b)
+
+    def test_simplicity_key_orders_by_nb_features_first(self):
+        k_low = _trial_simplicity_key("linreg", {"nb_features": 10}, {"alpha": 0.001})
+        k_high = _trial_simplicity_key("linreg", {"nb_features": 100}, {"alpha": 1.0})
+        # nb_features 10 should beat nb_features 100 even when alpha is smaller.
+        self.assertLess(k_low, k_high)
+
+    def test_one_se_rule_uses_only_kfold_trial_when_band_overlaps_single_split_one(
+        self,
+    ):
+        """Mixed result grids -- some trials reported K-fold metrics (with
+        ``_se``), others single-split (no ``_se``) -- must still enter the
+        1-SE band path. The selector must NOT silently fall through to
+        ``get_best_result`` just because some trials are missing ``_se``.
+        """
+        # K-fold trial: has _mean and _se; this is the global best by mean.
+        kfold_best = _make_mock_result(
+            {
+                "rmse_val": 0.42,
+                "rmse_val_mean": 0.42,
+                "rmse_val_se": 0.10,  # wide band: 0.42 + 0.10 covers 0.50 below
+                "nb_features": 200,
+            },
+            {"alpha": 0.001, "l1_ratio": 0.5},
+        )
+        # K-fold trial inside the band: simpler config (fewer features, higher
+        # alpha) should win the simplicity tiebreak within the 1-SE band.
+        kfold_simpler = _make_mock_result(
+            {
+                "rmse_val": 0.50,
+                "rmse_val_mean": 0.50,
+                "rmse_val_se": 0.02,
+                "nb_features": 60,
+            },
+            {"alpha": 1.0, "l1_ratio": 0.5},
+        )
+        # Single-split trial in the same grid -- no _se reported. Its bare
+        # ``rmse_val`` (0.55) is OUTSIDE the band (0.42 + 0.10 = 0.52), so it
+        # is excluded from the band; the selector still treats it as a
+        # candidate with se=0.0 but it isn't selected on simplicity grounds.
+        single_split = _make_mock_result(
+            {"rmse_val": 0.55, "nb_features": 150},
+            {"alpha": 0.01, "l1_ratio": 0.5},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([kfold_best, kfold_simpler, single_split])
+        # If the selector silently fell through to get_best_result, this would
+        # be called -- assert that does NOT happen when any trial has _se.
+        rg.get_best_result.side_effect = AssertionError(
+            "must not fall through to get_best_result when any trial has _se"
+        )
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        # Best mean is kfold_best (0.42); band = best_se = 0.10.
+        # kfold_simpler (0.50) is within the band (0.50 - 0.42 = 0.08 <= 0.10).
+        # single_split (0.55) is outside (0.55 - 0.42 = 0.13 > 0.10).
+        # Within the band {kfold_best, kfold_simpler}, the simpler config
+        # (fewer features, higher alpha) wins.
+        self.assertIs(chosen, kfold_simpler)
+
+    def test_trial_simplicity_key_secondary_axis_breaks_tie_on_equal_nb_features(
+        self,
+    ):
+        """When two configs have identical ``nb_features``, the secondary axis
+        of ``_trial_simplicity_key`` (model-internal regularisation knobs)
+        breaks the tie. For linreg, higher alpha -> stronger regularisation
+        -> simpler -> sorts first.
+        """
+        k_strong = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": 1.0, "l1_ratio": 0.5}
+        )
+        k_weak = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": 0.001, "l1_ratio": 0.5}
+        )
+        # Higher alpha (stronger regularisation) sorts first under
+        # "smaller-is-simpler" ordering.
+        self.assertLess(k_strong, k_weak)
+        # And the primary axis ties:
+        self.assertEqual(k_strong[0], k_weak[0])
 
 
 if __name__ == "__main__":

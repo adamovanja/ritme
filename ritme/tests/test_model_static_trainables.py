@@ -6,13 +6,18 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
 
+import joblib
 import numpy as np
 import pandas as pd
 import skbio
 from parameterized import parameterized
 from ray import tune
-from sklearn.linear_model import LinearRegression
+from sklearn.base import BaseEstimator
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import ElasticNet, LinearRegression, LogisticRegression
 from sklearn.metrics import mean_squared_error, r2_score, root_mean_squared_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from ritme.evaluate_models import (
     TunedModel,
@@ -21,6 +26,7 @@ from ritme.evaluate_models import (
     get_predictions,
     get_taxonomy,
 )
+from ritme.feature_space._process_train import KFoldEngineered
 from ritme.model_space import static_trainables as st
 from ritme.split_train_test import _split_data_grouped
 from ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
@@ -949,3 +955,554 @@ class TestNNTuneReportCheckpointCallback(unittest.TestCase):
         self.assertEqual(
             mock_report.call_args.kwargs.get("checkpoint"), "fallback_checkpoint"
         )
+
+
+class TestKfoldHelpers(unittest.TestCase):
+    """Helpers used by the K-fold path of every sklearn-style trainable."""
+
+    def test_aggregate_fold_metrics_emits_mean_std_se(self):
+        per_fold = [
+            {"rmse_val": 0.40, "r2_val": 0.5},
+            {"rmse_val": 0.50, "r2_val": 0.4},
+            {"rmse_val": 0.60, "r2_val": 0.3},
+        ]
+        out = st._aggregate_fold_metrics(per_fold)
+        # Bare key tracks the mean (so existing single-split metric names
+        # keep working as Ray Tune's optimisation target).
+        self.assertAlmostEqual(out["rmse_val"], 0.50, places=6)
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.50, places=6)
+        # Sample std (ddof=1) of [0.4, 0.5, 0.6] is 0.1; SE = 0.1 / sqrt(3).
+        self.assertAlmostEqual(out["rmse_val_std"], 0.1, places=6)
+        self.assertAlmostEqual(out["rmse_val_se"], 0.1 / np.sqrt(3), places=6)
+        self.assertEqual(out["n_folds"], 3)
+
+    def test_aggregate_fold_metrics_handles_single_fold(self):
+        out = st._aggregate_fold_metrics([{"rmse_val": 0.45}])
+        self.assertEqual(out["rmse_val_std"], 0.0)
+        self.assertEqual(out["rmse_val_se"], 0.0)
+        self.assertEqual(out["n_folds"], 1)
+
+    def test_aggregate_fold_metrics_skips_nan_only_keys(self):
+        per_fold = [{"rmse_val": np.nan}, {"rmse_val": np.nan}]
+        out = st._aggregate_fold_metrics(per_fold)
+        self.assertNotIn("rmse_val", out)
+        self.assertEqual(out["n_folds"], 2)
+
+    def test_allocate_fold_resources_splits_cpus(self):
+        # 14 CPUs, 5 folds -> 5 fold workers, 2 cpus per inner fit.
+        n, c = st._allocate_fold_resources(n_splits=5, cpus_per_trial=14)
+        self.assertEqual(n, 5)
+        self.assertEqual(c, 2)
+
+    def test_allocate_fold_resources_caps_workers_at_cpu_count(self):
+        # 4 CPUs, 10 folds -> 4 workers in parallel, 1 cpu each.
+        n, c = st._allocate_fold_resources(n_splits=10, cpus_per_trial=4)
+        self.assertEqual(n, 4)
+        self.assertEqual(c, 1)
+
+    def test_allocate_fold_resources_handles_single_cpu(self):
+        n, c = st._allocate_fold_resources(n_splits=5, cpus_per_trial=1)
+        self.assertEqual(n, 1)
+        self.assertEqual(c, 1)
+
+    def test_aggregate_fold_metrics_one_valid_value_yields_zero_se(self):
+        """Locks in the NaN-safety fix: a single valid observation (the other
+        K-1 folds returning NaN, e.g. due to a SIGSEGV-killed trial actor)
+        must still produce a real, finite SE (== 0.0) so the downstream
+        one-standard-error rule doesn't silently collapse the tolerance band.
+        """
+        per_fold = [
+            {"rmse_val": np.nan},
+            {"rmse_val": np.nan},
+            {"rmse_val": 0.42},
+        ]
+        out = st._aggregate_fold_metrics(per_fold)
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.42, places=6)
+        self.assertEqual(out["rmse_val_std"], 0.0)
+        self.assertEqual(out["rmse_val_se"], 0.0)
+        self.assertFalse(np.isnan(out["rmse_val_se"]))
+        self.assertEqual(out["n_folds"], 3)
+
+    def test_aggregate_fold_metrics_partial_nan_uses_only_valid_for_se(self):
+        """SE divisor uses the count of *valid* observations, not the total
+        fold count. With 3 real values and 2 NaNs, ``se == std / sqrt(3)``
+        (not ``std / sqrt(5)``).
+        """
+        per_fold = [
+            {"rmse_val": 0.40},
+            {"rmse_val": np.nan},
+            {"rmse_val": 0.50},
+            {"rmse_val": np.nan},
+            {"rmse_val": 0.60},
+        ]
+        out = st._aggregate_fold_metrics(per_fold)
+        # std (ddof=1) of [0.4, 0.5, 0.6] is 0.1; SE = 0.1 / sqrt(3).
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.50, places=6)
+        self.assertAlmostEqual(out["rmse_val_std"], 0.1, places=6)
+        self.assertAlmostEqual(out["rmse_val_se"], 0.1 / np.sqrt(3), places=6)
+        # NOT divided by 5 (the total fold count).
+        self.assertNotAlmostEqual(out["rmse_val_se"], 0.1 / np.sqrt(5), places=6)
+        self.assertEqual(out["n_folds"], 5)
+
+
+class TestKfoldTrainables(unittest.TestCase):
+    """End-to-end mocked tests for the K-fold path of each sklearn-style
+    trainable. Each trainable's K-fold path goes through
+    ``process_train_kfold`` -> ``_dispatch_kfold_and_refit_sklearn`` ->
+    ``_finalize_and_report_sklearn``. We mock ``process_train_kfold`` and
+    ``_dispatch_kfold_and_refit_sklearn`` so the test stays in-process (no
+    Ray cluster spin-up), and patch ``ray.tune.get_context`` / ``tune.report``
+    to capture what was reported.
+    """
+
+    def setUp(self):
+        super().setUp()
+        np.random.seed(0)
+        n_rows = 30
+        n_features = 5
+        # 30 rows × 5 F-features + host_id grouping column. Targets are a
+        # noisy sum so any real model fit produces finite metrics.
+        X = np.random.randn(n_rows, n_features)
+        feature_cols = [f"F{i}" for i in range(n_features)]
+        df = pd.DataFrame(X, columns=feature_cols)
+        df["target"] = X.sum(axis=1) + np.random.randn(n_rows) * 0.1
+        df["host_id"] = np.repeat(np.arange(10), 3)  # 10 hosts, 3 rows each
+        self.train_val = df
+        self.feature_cols = feature_cols
+        self.X_full = X
+        self.y_reg = df["target"].values
+        # Classification targets in {0, 1, 2} so log_loss/roc_auc work.
+        self.y_class = np.tile([0, 1, 2], n_rows // 3)[:n_rows].astype(float)
+        self.target = "target"
+        self.host_id = "host_id"
+        self.seed_data = 0
+        self.seed_model = 0
+        self.tax = pd.DataFrame([])
+        self.tree_phylo = skbio.TreeNode()
+        # Per-fold metric dicts the mocked dispatcher will return.
+        self.reg_fold_metrics = [
+            {"rmse_val": 0.40, "rmse_train": 0.30, "r2_val": 0.7, "r2_train": 0.8},
+            {"rmse_val": 0.50, "rmse_train": 0.32, "r2_val": 0.6, "r2_train": 0.78},
+            {"rmse_val": 0.60, "rmse_train": 0.34, "r2_val": 0.5, "r2_train": 0.76},
+        ]
+        self.class_fold_metrics = [
+            {
+                "roc_auc_macro_ovr_val": 0.80,
+                "roc_auc_macro_ovr_train": 0.90,
+                "f1_macro_val": 0.70,
+                "f1_macro_train": 0.85,
+                "balanced_accuracy_val": 0.72,
+                "balanced_accuracy_train": 0.86,
+                "mcc_val": 0.55,
+                "mcc_train": 0.75,
+                "log_loss_val": 0.65,
+                "log_loss_train": 0.40,
+            },
+            {
+                "roc_auc_macro_ovr_val": 0.78,
+                "roc_auc_macro_ovr_train": 0.91,
+                "f1_macro_val": 0.68,
+                "f1_macro_train": 0.86,
+                "balanced_accuracy_val": 0.71,
+                "balanced_accuracy_train": 0.87,
+                "mcc_val": 0.53,
+                "mcc_train": 0.76,
+                "log_loss_val": 0.66,
+                "log_loss_train": 0.41,
+            },
+            {
+                "roc_auc_macro_ovr_val": 0.82,
+                "roc_auc_macro_ovr_train": 0.89,
+                "f1_macro_val": 0.72,
+                "f1_macro_train": 0.84,
+                "balanced_accuracy_val": 0.74,
+                "balanced_accuracy_train": 0.85,
+                "mcc_val": 0.57,
+                "mcc_train": 0.74,
+                "log_loss_val": 0.64,
+                "log_loss_train": 0.39,
+            },
+        ]
+
+    def _make_kfold_engineered(self, n_splits=3, classification=False):
+        """Build a KFoldEngineered NamedTuple with the synthetic fixture data."""
+        y = self.y_class if classification else self.y_reg
+        # Trivial fold indices; the dispatcher is mocked so these are only used
+        # for length / shape sanity by the trainable.
+        rows = self.X_full.shape[0]
+        per_fold_size = rows // n_splits
+        fold_indices = []
+        for k in range(n_splits):
+            val_start = k * per_fold_size
+            val_end = (k + 1) * per_fold_size if k < n_splits - 1 else rows
+            val_idx = np.arange(val_start, val_end)
+            train_idx = np.setdiff1d(np.arange(rows), val_idx)
+            fold_indices.append((train_idx, val_idx))
+        return KFoldEngineered(
+            X_full=self.X_full,
+            y_full=y,
+            ft_ls_used=self.feature_cols,
+            fold_indices=fold_indices,
+        )
+
+    def _assert_kfold_report(self, mock_report, metric_name, n_splits=3):
+        """Common assertions for any K-fold sklearn-style trainable."""
+        mock_report.assert_called_once()
+        # tune.report(metrics=...) keyword-only call from
+        # _finalize_and_report_sklearn.
+        reported = mock_report.call_args.kwargs.get("metrics")
+        if reported is None:
+            # Fallback for positional call.
+            reported = mock_report.call_args.args[0]
+        self.assertIsInstance(reported, dict)
+        # Required keys.
+        for key in (
+            metric_name,
+            f"{metric_name}_mean",
+            f"{metric_name}_std",
+            f"{metric_name}_se",
+            "n_folds",
+            "model_path",
+            "nb_features",
+        ):
+            self.assertIn(key, reported)
+        # Bare key tracks the mean.
+        self.assertAlmostEqual(
+            reported[metric_name], reported[f"{metric_name}_mean"], places=12
+        )
+        # SE is a finite real, not NaN.
+        se = reported[f"{metric_name}_se"]
+        self.assertFalse(np.isnan(se))
+        self.assertGreaterEqual(se, 0.0)
+        # n_folds matches the requested splits.
+        self.assertEqual(reported["n_folds"], n_splits)
+        # nb_features matches the design matrix's column count.
+        self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+        # model_path saved file exists and is loadable.
+        model_path = reported["model_path"]
+        self.assertTrue(os.path.exists(model_path))
+        loaded = joblib.load(model_path)
+        self.assertIsInstance(loaded, BaseEstimator)
+        # Loaded estimator is already fitted (calling predict must not raise).
+        loaded.predict(self.X_full[:1])
+        return reported
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_linreg_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        # Real fitted estimator so the saved model is loadable end-to-end.
+        fitted = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("linreg", ElasticNet(alpha=0.1, l1_ratio=0.5)),
+            ]
+        ).fit(self.X_full, self.y_reg)
+        mock_dispatch.return_value = (list(self.reg_fold_metrics), fitted)
+
+        config = {"alpha": 0.1, "l1_ratio": 0.5}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_linreg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_linreg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "rmse_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_rf_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        fitted = RandomForestRegressor(n_estimators=5, random_state=0).fit(
+            self.X_full, self.y_reg
+        )
+        mock_dispatch.return_value = (list(self.reg_fold_metrics), fitted)
+
+        config = {
+            "n_estimators": 5,
+            "max_depth": 3,
+            "min_samples_split": 0.2,
+            "min_weight_fraction_leaf": 0.001,
+            "min_samples_leaf": 0.1,
+            "max_features": "sqrt",
+            "min_impurity_decrease": 0.0,
+            "bootstrap": True,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_rf"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_rf(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "rmse_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_logreg_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=True
+        )
+        fitted = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                (
+                    "logreg",
+                    LogisticRegression(
+                        C=1.0,
+                        penalty="l2",
+                        solver="saga",
+                        max_iter=200,
+                        random_state=0,
+                    ),
+                ),
+            ]
+        ).fit(self.X_full, np.round(self.y_class).astype(int))
+        mock_dispatch.return_value = (list(self.class_fold_metrics), fitted)
+
+        config = {"C": 1.0, "penalty": "l2"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_logreg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_logreg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "roc_auc_macro_ovr_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_rf_class_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=True
+        )
+        fitted = RandomForestClassifier(n_estimators=5, random_state=0).fit(
+            self.X_full, np.round(self.y_class).astype(int)
+        )
+        mock_dispatch.return_value = (list(self.class_fold_metrics), fitted)
+
+        config = {
+            "n_estimators": 5,
+            "max_depth": 3,
+            "min_samples_split": 0.2,
+            "min_weight_fraction_leaf": 0.001,
+            "min_samples_leaf": 0.1,
+            "max_features": "sqrt",
+            "min_impurity_decrease": 0.0,
+            "bootstrap": True,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_rf_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_rf_class(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "roc_auc_macro_ovr_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables.NodeAffinitySchedulingStrategy")
+    @patch("ritme.model_space.static_trainables.ray.get")
+    @patch("ritme.model_space.static_trainables.ray.remote")
+    @patch("ritme.model_space.static_trainables.ray.get_runtime_context")
+    @patch("ritme.model_space.static_trainables.ray.put")
+    @patch("ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
+    @patch("ritme.model_space.static_trainables.create_matrix_from_tree")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_trac_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_create_matrix,
+        mock_preprocess,
+        mock_ray_put,
+        mock_runtime_ctx,
+        mock_ray_remote,
+        mock_ray_get,
+        mock_node_strategy,
+    ):
+        # Engineered features & fold indices look the same as for sklearn.
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        # ``create_matrix_from_tree`` and the log-geom preprocessor are
+        # mocked to return small consistent shapes; the inner Classo / refit
+        # work is fully encapsulated by the mocked ray.remote tasks.
+        a_df = pd.DataFrame(
+            np.eye(self.X_full.shape[1]),
+            index=self.feature_cols,
+            columns=self.feature_cols,
+        )
+        mock_create_matrix.return_value = a_df
+        mock_preprocess.return_value = (
+            self.X_full.copy(),
+            np.ones(self.X_full.shape[1]),
+        )
+        # ray.put returns its input as an ObjectRef-like sentinel.
+        mock_ray_put.side_effect = lambda x: x
+        # Pin to "node_0".
+        mock_runtime_ctx.return_value = MagicMock(
+            get_node_id=MagicMock(return_value="node_0")
+        )
+        # ray.remote(...) returns a decorator whose .options(...).remote(...)
+        # produces a task handle; we just produce a sentinel per call.
+        remote_task = MagicMock()
+        remote_task.options.return_value.remote.return_value = "task_handle"
+        mock_ray_remote.return_value = lambda fn: remote_task
+        # ray.get is called with [fold_task_1, fold_task_2, fold_task_3, refit_task].
+        # Per-fold metrics for three folds + one full-data refit at the end.
+        per_fold = [
+            {"rmse_val": 0.40, "rmse_train": 0.30, "r2_val": 0.7, "r2_train": 0.8},
+            {"rmse_val": 0.50, "rmse_train": 0.32, "r2_val": 0.6, "r2_train": 0.78},
+            {"rmse_val": 0.60, "rmse_train": 0.34, "r2_val": 0.5, "r2_train": 0.76},
+        ]
+        # Match the trac single-split shape: model = {"model": <alpha DF>}; a
+        # subset of alpha rows are non-zero so nb_features comes out as the
+        # count of non-zero coefficients.
+        alpha_df = pd.DataFrame(
+            {"alpha": [0.5, 0.0, 0.3, 0.0, 0.7, 0.2]},
+            index=["intercept"] + self.feature_cols,
+        )
+        full_model = {"model": alpha_df, "matrix_a": a_df}
+        mock_ray_get.return_value = per_fold + [full_model]
+
+        config = {"lambda": 0.1}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_trac"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_trac(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            mock_report.assert_called_once()
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            for key in (
+                "rmse_val",
+                "rmse_val_mean",
+                "rmse_val_std",
+                "rmse_val_se",
+                "n_folds",
+                "model_path",
+                "nb_features",
+            ):
+                self.assertIn(key, reported)
+            # Bare key tracks the mean.
+            self.assertAlmostEqual(
+                reported["rmse_val"], reported["rmse_val_mean"], places=12
+            )
+            self.assertEqual(reported["n_folds"], 3)
+            # nb_features is the count of non-zero alpha coefficients in the
+            # refit model: alpha_df has 4 non-zero values out of 6.
+            n_nonzero = int((alpha_df["alpha"] != 0.0).sum())
+            self.assertEqual(reported["nb_features"], n_nonzero)
+            # SE is finite and non-negative.
+            self.assertFalse(np.isnan(reported["rmse_val_se"]))
+            self.assertGreaterEqual(reported["rmse_val_se"], 0.0)
+            # The model was pickled to disk by the trainable.
+            self.assertTrue(os.path.exists(reported["model_path"]))

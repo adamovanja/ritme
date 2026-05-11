@@ -19,6 +19,7 @@ from ritme.feature_space.select_features import select_microbial_features
 from ritme.feature_space.transform_features import transform_microbial_features
 from ritme.feature_space.utils import _add_suffix, _extract_time_labels, _slice_snapshot
 from ritme.model_space.static_trainables import NeuralNet
+from ritme.tune_models import CLASSIFICATION_MODELS, TASK_METRICS
 
 plt.rcParams.update({"font.family": "DejaVu Sans"})
 plt.style.use("seaborn-v0_8-pastel")
@@ -444,11 +445,135 @@ class TunedModel:
         return proba, classes
 
 
+# Hyperparameters that, within a single model type, indicate "more
+# regularised / simpler" configurations. The sign tells whether smaller
+# (sign=+1) or larger (sign=-1) values are simpler. Used as the secondary
+# tiebreaker by the one-standard-error rule below.
+_MODEL_SIMPLICITY_KNOBS: Dict[str, List[tuple[str, int]]] = {
+    # ElasticNet: higher alpha -> stronger regularisation -> simpler.
+    "linreg": [("alpha", -1), ("l1_ratio", -1)],
+    # Logistic regression: lower C -> stronger regularisation -> simpler.
+    "logreg": [("C", +1)],
+    # TRAC: higher lambda -> sparser solution -> simpler.
+    "trac": [("lambda", -1)],
+    # Random forest: fewer / shallower trees, larger leaves -> simpler.
+    "rf": [
+        ("n_estimators", +1),
+        ("max_depth", +1),
+        ("min_samples_leaf", -1),
+    ],
+    "rf_class": [
+        ("n_estimators", +1),
+        ("max_depth", +1),
+        ("min_samples_leaf", -1),
+    ],
+    # XGBoost: fewer / shallower rounds, more regularisation -> simpler.
+    "xgb": [
+        ("n_estimators", +1),
+        ("max_depth", +1),
+        ("gamma", -1),
+        ("reg_alpha", -1),
+        ("reg_lambda", -1),
+    ],
+    "xgb_class": [
+        ("n_estimators", +1),
+        ("max_depth", +1),
+        ("gamma", -1),
+        ("reg_alpha", -1),
+        ("reg_lambda", -1),
+    ],
+    # NN: fewer / smaller layers, more dropout / weight decay -> simpler.
+    "nn_reg": [("n_hidden_layers", +1), ("dropout_rate", -1), ("weight_decay", -1)],
+    "nn_class": [("n_hidden_layers", +1), ("dropout_rate", -1), ("weight_decay", -1)],
+    "nn_corn": [("n_hidden_layers", +1), ("dropout_rate", -1), ("weight_decay", -1)],
+}
+
+
+def _trial_simplicity_key(
+    model_type: str, trial_metrics: Dict[str, Any], trial_config: Dict[str, Any]
+) -> tuple:
+    """Build a sort key where smaller is simpler.
+
+    Primary axis: ``nb_features`` (data-engineering side, shared across model
+    types). Secondary axes: model-internal regularisation knobs from
+    ``_MODEL_SIMPLICITY_KNOBS``. NaNs / missing values sort last.
+    """
+    nb_features = trial_metrics.get("nb_features")
+    primary = float("inf") if nb_features is None else float(nb_features)
+    secondary: list[float] = []
+    for knob, sign in _MODEL_SIMPLICITY_KNOBS.get(model_type, []):
+        v = trial_config.get(knob)
+        try:
+            v_f = float(v) if v is not None else float("inf")
+        except (TypeError, ValueError):
+            v_f = float("inf")
+        secondary.append(sign * v_f)
+    return (primary, *secondary)
+
+
+def _select_best_with_one_se(
+    result_grid,
+    metric: str,
+    mode: str,
+    model_type: str,
+):
+    """Apply the one-standard-error rule to a Ray Tune ``ResultGrid``.
+
+    Picks the simplest configuration whose mean cross-validation score is
+    within one standard error of the best mean. Reference: Hastie, Tibshirani,
+    Friedman, "The Elements of Statistical Learning" (2nd ed., 2009),
+    pp. 219-260; widely used in glmnet's ``lambda.1se`` and scikit-learn
+    examples (``plot_grid_search_refit_callable``).
+
+    Falls back to ``ResultGrid.get_best_result(scope='all')`` when no trial
+    reports a ``<metric>_se`` field (single-split runs without K-fold).
+    """
+    sign = 1 if mode == "min" else -1
+    candidates = []
+    has_any_se = False
+    for result in result_grid:
+        m = result.metrics or {}
+        mean = m.get(f"{metric}_mean", m.get(metric))
+        se = m.get(f"{metric}_se")
+        if mean is None or (isinstance(mean, float) and np.isnan(mean)):
+            continue
+        if se is not None and not (isinstance(se, float) and np.isnan(se)):
+            has_any_se = True
+        candidates.append((result, float(mean), float(se) if se is not None else 0.0))
+
+    if not candidates or not has_any_se:
+        # No K-fold metrics present (or no usable trials) -> defer to Ray Tune's
+        # single-best selection, preserving the pre-K-fold behavior.
+        return result_grid.get_best_result(scope="all")
+
+    # Best by sign-adjusted mean (lower-is-better -> sign=+1, etc.).
+    best_result, best_mean, best_se = min(candidates, key=lambda x: sign * x[1])
+    # Tolerance band: configs whose mean is within one SE of the best mean
+    # remain candidates (sign-adjusted to handle both min and max metrics).
+    band = [(r, m) for (r, m, _) in candidates if sign * (m - best_mean) <= best_se]
+    if len(band) <= 1:
+        return best_result
+
+    # Within the band, pick the simplest configuration.
+    band_sorted = sorted(
+        band,
+        key=lambda rm: _trial_simplicity_key(
+            model_type, rm[0].metrics or {}, rm[0].config or {}
+        ),
+    )
+    return band_sorted[0][0]
+
+
 def retrieve_n_init_best_models(
     result_dic: Dict[str, Result], train_val: pd.DataFrame
 ) -> Dict[str, TunedModel]:
     """
     Retrieve and initialize the best models from the result dictionary.
+
+    When trials report K-fold metrics (``<metric>_mean`` and ``<metric>_se``),
+    the one-standard-error rule selects the simplest configuration whose mean
+    is within one standard error of the best. Trials without K-fold metrics
+    fall back to Ray Tune's standard best-result lookup.
 
     Args:
         result_dic (Dict[str, Result]): Dictionary with model types as keys and
@@ -462,7 +587,15 @@ def retrieve_n_init_best_models(
     """
     best_model_dic = {}
     for model_type, result_grid in result_dic.items():
-        best_result = result_grid.get_best_result(scope="all")
+        # The same metric is used for ranking as during tuning. We honor
+        # task_type via the regression vs classification model registry.
+        if model_type in CLASSIFICATION_MODELS:
+            metric, mode = TASK_METRICS["classification"]
+        else:
+            metric, mode = TASK_METRICS["regression"]
+        best_result = _select_best_with_one_se(
+            result_grid, metric=metric, mode=mode, model_type=model_type
+        )
 
         best_model = get_model(model_type, best_result)
         best_data_proc = get_data_processing(best_result)

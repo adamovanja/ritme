@@ -14,7 +14,9 @@ from ritme.split_train_test import (
     _ft_rename_microbial_features,
     _generate_host_time_snapshots_from_df,
     _load_data,
+    _make_kfold_splitter,
     _split_data_grouped,
+    adaptive_k_folds,
     cli_split_train_test,
     split_train_test,
 )
@@ -626,3 +628,195 @@ class TestGenerateHostTimeSnapshots(unittest.TestCase):
                 s=2,
                 missing_mode="exclude",
             )
+
+
+class TestMakeKfoldSplitter(unittest.TestCase):
+    """The K-fold splitter must honor every constraint that
+    :func:`_split_data_grouped` enforces for the train/test split: groups
+    never span the train/val boundary, stratification preserves the joint
+    label distribution across folds, the "constant within group" assertion
+    is reused, and the splits are deterministic given the seed."""
+
+    def setUp(self):
+        # 30 hosts × 4 rows each. Stratify label A/B/C is constant per host.
+        self.n_groups = 30
+        self.host_ids = np.repeat(np.arange(self.n_groups), 4)
+        self.strata = np.array([["A", "B", "C"][g % 3] for g in self.host_ids])
+        self.df = pd.DataFrame(
+            {
+                "host_id": self.host_ids,
+                "state": self.strata,
+                "F1": np.arange(len(self.host_ids), dtype=float),
+            }
+        )
+
+    def test_neither_group_nor_stratify(self):
+        folds = _make_kfold_splitter(self.df, None, None, n_splits=5, seed=42)
+        self.assertEqual(len(folds), 5)
+        # All val indices together cover every row exactly once.
+        all_va = np.sort(np.concatenate([va for _, va in folds]))
+        np.testing.assert_array_equal(all_va, np.arange(len(self.df)))
+
+    def test_group_only_no_overlap(self):
+        folds = _make_kfold_splitter(self.df, "host_id", None, n_splits=5, seed=42)
+        for tr, va in folds:
+            tr_groups = set(self.df.iloc[tr]["host_id"])
+            va_groups = set(self.df.iloc[va]["host_id"])
+            self.assertEqual(tr_groups & va_groups, set())
+
+    def test_stratify_only_preserves_distribution(self):
+        folds = _make_kfold_splitter(self.df, None, ["state"], n_splits=5, seed=42)
+        for tr, va in folds:
+            va_dist = self.df.iloc[va]["state"].value_counts(normalize=True)
+            for label, frac in va_dist.items():
+                self.assertAlmostEqual(frac, 1 / 3, delta=0.05)
+
+    def test_group_and_stratify_no_overlap_and_balanced(self):
+        folds = _make_kfold_splitter(self.df, "host_id", ["state"], n_splits=5, seed=42)
+        for tr, va in folds:
+            tr_groups = set(self.df.iloc[tr]["host_id"])
+            va_groups = set(self.df.iloc[va]["host_id"])
+            self.assertEqual(tr_groups & va_groups, set())
+            va_dist = self.df.iloc[va]["state"].value_counts(normalize=True)
+            for label, frac in va_dist.items():
+                self.assertAlmostEqual(frac, 1 / 3, delta=0.1)
+
+    def test_stratify_must_be_constant_within_group(self):
+        bad = self.df.copy()
+        bad.loc[bad["host_id"] == 0, "state"] = ["A", "B", "A", "B"]
+        with self.assertRaisesRegex(ValueError, "constant within each group"):
+            _make_kfold_splitter(bad, "host_id", ["state"], n_splits=5, seed=42)
+
+    def test_too_few_groups_for_k_raises(self):
+        small = self.df.iloc[:8].copy()  # only 2 unique groups
+        with self.assertRaisesRegex(ValueError, "Cannot create 5-fold split"):
+            _make_kfold_splitter(small, "host_id", None, n_splits=5, seed=42)
+
+    def test_seed_determinism(self):
+        a = _make_kfold_splitter(self.df, "host_id", None, n_splits=5, seed=42)
+        b = _make_kfold_splitter(self.df, "host_id", None, n_splits=5, seed=42)
+        for (tr_a, va_a), (tr_b, va_b) in zip(a, b):
+            np.testing.assert_array_equal(np.sort(tr_a), np.sort(tr_b))
+            np.testing.assert_array_equal(np.sort(va_a), np.sort(va_b))
+
+
+class TestAdaptiveKFolds(unittest.TestCase):
+    def test_uses_group_count_when_grouping(self):
+        df = pd.DataFrame({"host_id": [1, 1, 2, 2, 3, 3], "F1": range(6)})
+        # 3 unique groups -> capped to 3 folds.
+        self.assertEqual(adaptive_k_folds(df, "host_id", None), 3)
+
+    def test_caps_at_smallest_stratum(self):
+        df = pd.DataFrame(
+            {
+                "host_id": list(range(20)),
+                "state": ["A"] * 17 + ["B"] * 3,
+                "F1": range(20),
+            }
+        )
+        # Smallest stratum has 3 members -> K capped to 3.
+        self.assertEqual(adaptive_k_folds(df, "host_id", ["state"]), 3)
+
+    def test_honors_user_request(self):
+        df = pd.DataFrame({"host_id": list(range(50)), "F1": range(50)})
+        self.assertEqual(adaptive_k_folds(df, "host_id", None, requested=7), 7)
+        # Requested above available groups gets capped.
+        self.assertEqual(adaptive_k_folds(df, "host_id", None, requested=200), 50)
+
+    def test_missing_group_column_falls_back(self):
+        # When the group column is mocked away (caller passes a name that
+        # is not in `data`), adaptive_k_folds must NOT raise: the splitter
+        # itself will raise with a helpful message at trial-time. With the
+        # missing column the helper falls back to row count, and at row
+        # count >= DEFAULT_K_FOLDS the default applies unchanged.
+        df = pd.DataFrame({"F1": range(10)})
+        self.assertEqual(adaptive_k_folds(df, "missing_col", None), 5)
+
+    def test_classification_target_caps_to_smallest_class(self):
+        df = pd.DataFrame(
+            {
+                "F1": range(30),
+                "label": ["x"] * 26 + ["y"] * 4,
+            }
+        )
+        # No grouping or stratify_by -> the classification target itself caps K.
+        self.assertEqual(
+            adaptive_k_folds(
+                df, None, None, target="label", task_type="classification"
+            ),
+            4,
+        )
+
+    def test_regression_target_does_not_cap_even_when_non_numeric(self):
+        # Regression targets stored as strings (e.g. month="3", "10") must
+        # NOT trigger a per-class stratum cap. Caught by smoke-testing
+        # run_experiment_mlflow.sh on the Moving-Pictures dataset, where
+        # `month` is object-dtype and the heuristic was clipping K to 3.
+        df = pd.DataFrame(
+            {
+                "F1": range(30),
+                "month": ["3"] * 8 + ["10"] * 7 + ["4"] * 6 + ["1"] * 3 + ["2"] * 6,
+            }
+        )
+        self.assertEqual(
+            adaptive_k_folds(df, None, None, target="month", task_type="regression"),
+            5,  # default applies; no stratum cap
+        )
+
+    def test_default_is_five_for_typical_n(self):
+        # 100 rows ungrouped: comfortably above the default and above any
+        # stratum cap -> exactly the documented default applies.
+        df = pd.DataFrame({"F1": range(100)})
+        self.assertEqual(adaptive_k_folds(df, None, None), 5)
+
+    def test_user_override_takes_precedence_over_default(self):
+        df = pd.DataFrame({"F1": range(100)})
+        self.assertEqual(adaptive_k_folds(df, None, None, requested=10), 10)
+        self.assertEqual(adaptive_k_folds(df, None, None, requested=2), 2)
+
+    def test_requested_one_returns_one_for_single_split_fallback(self):
+        # Explicit "k_folds: 1" in the experiment config must reach the
+        # trainable as 1 so the original single-split path activates. Earlier
+        # the floor of 2 was applied unconditionally and silently upgraded to
+        # K=2; this regression guards against that.
+        df = pd.DataFrame(
+            {
+                "host_id": list(range(20)),
+                "state": ["A"] * 17 + ["B"] * 3,  # would otherwise cap to 3
+                "F1": range(20),
+            }
+        )
+        self.assertEqual(adaptive_k_folds(df, "host_id", ["state"], requested=1), 1)
+        # Zero / negative are also treated as "no K-fold" rather than upgraded.
+        self.assertEqual(adaptive_k_folds(df, "host_id", None, requested=0), 1)
+        self.assertEqual(adaptive_k_folds(df, "host_id", None, requested=-3), 1)
+
+    def test_group_aware_stratum_cap_with_rare_class(self):
+        """Group-aware stratum cap: the smallest-stratum cap counts unique
+        groups (hosts) per class, not rows. Earlier the row-count was used,
+        which silently over-allocated K when the rare class had many rows
+        per host. With 8 rows for the rare class but only 2 unique hosts,
+        the group-aware cap is 2 (not 5, the default; not 8, the row count).
+        """
+        # 30 hosts × 4 rows = 120 rows total. The rare stratum class "B"
+        # has only 2 hosts (8 rows). Group-aware cap is 2.
+        host_ids = []
+        states = []
+        f1 = []
+        for h in range(28):
+            host_ids.extend([h, h, h, h])
+            states.extend(["A", "A", "A", "A"])
+            f1.extend([h * 0.1, h * 0.1 + 0.01, h * 0.1 + 0.02, h * 0.1 + 0.03])
+        for h in range(28, 30):
+            host_ids.extend([h, h, h, h])
+            states.extend(["B", "B", "B", "B"])
+            f1.extend([h * 0.1, h * 0.1 + 0.01, h * 0.1 + 0.02, h * 0.1 + 0.03])
+        df = pd.DataFrame({"host_id": host_ids, "state": states, "F1": f1})
+        # Sanity: 30 hosts total, 4 rows per host, rare class has 2 hosts.
+        self.assertEqual(df["host_id"].nunique(), 30)
+        self.assertEqual(len(df), 120)
+        # WITHOUT stratify_by, adaptive_k_folds caps to 30 (groups) -> 5 default.
+        self.assertEqual(adaptive_k_folds(df, "host_id", None), 5)
+        # WITH stratify_by ["state"], the group-level stratum cap activates:
+        # rare class "B" has only 2 unique hosts -> K capped to 2.
+        self.assertEqual(adaptive_k_folds(df, "host_id", ["state"]), 2)

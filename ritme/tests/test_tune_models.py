@@ -15,9 +15,12 @@ from ray.tune import ResultGrid
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from ray.tune.search.optuna import OptunaSearch
 
+from ritme.model_space import static_searchspace as ss
 from ritme.tune_models import (
+    K_FOLD_AWARE_TRAINABLES,
     MODEL_TRAINABLES,
     OPTUNA_SAMPLER_CLASSES,
+    _adaptive_n_startup_trials,
     _check_for_errors_in_trials,
     _define_callbacks,
     _define_scheduler,
@@ -26,6 +29,7 @@ from ritme.tune_models import (
     _get_slurm_resource,
     _load_wandb_api_key,
     _load_wandb_entity,
+    _RecordingTrial,
     _SafeMLflowLoggerCallback,
     run_all_trials,
     run_trials,
@@ -103,9 +107,13 @@ class TestHelpersTuneModels(unittest.TestCase):
     def test_define_search_algo(self, sampler):
         mock_func_to_get_search_space = Mock()
 
-        exp_name = "test_exp"
+        # Use a real model type so the adaptive n_startup_trials path (which
+        # introspects ss.get_search_space) does not raise for samplers that
+        # need it (TPE / CmaEs / GP). The mocked func_to_get_search_space
+        # still controls what OptunaSearch sees as its space.
+        exp_name = "linreg"
         tax = pd.DataFrame()
-        train_val = pd.DataFrame()
+        train_val = pd.DataFrame({"F0": [1.0, 2.0, 3.0], "F1": [0.5, 1.5, 2.5]})
         model_hyperparameters = {}
         seed_model = 42
         metric = "accuracy"
@@ -148,9 +156,9 @@ class TestHelpersTuneModels(unittest.TestCase):
         ):
             _define_search_algo(
                 Mock(),
-                "test_exp",
+                "linreg",
                 pd.DataFrame(),
-                pd.DataFrame(),
+                pd.DataFrame({"F0": [1.0, 2.0, 3.0], "F1": [0.5, 1.5, 2.5]}),
                 {},
                 invalid_sampler,
                 42,
@@ -254,8 +262,10 @@ class TestHelpersTuneModels(unittest.TestCase):
 
 class TestMainTuneModels(unittest.TestCase):
     def setUp(self):
-        # Common variables for all tests
-        self.train_val = pd.DataFrame()
+        # Common variables for all tests. The minimal train_val needs at
+        # least one F-prefixed column so the search-space introspection in
+        # _adaptive_n_startup_trials does not trip on the empty .str accessor.
+        self.train_val = pd.DataFrame({"F0": [1.0, 2.0, 3.0], "F1": [0.5, 1.5, 2.5]})
         self.target = "target_column"
         self.host_id = "host_id_column"
         self.seed_data = 42
@@ -291,7 +301,7 @@ class TestMainTuneModels(unittest.TestCase):
 
         run_trials(
             tracking_uri=self.mlflow_uri,
-            exp_name="test_experiment",
+            exp_name="linreg",
             trainable=MagicMock(),
             train_val=self.train_val,
             target=self.target,
@@ -336,7 +346,7 @@ class TestMainTuneModels(unittest.TestCase):
 
         result = run_trials(
             tracking_uri=self.mlflow_uri,
-            exp_name="test_experiment",
+            exp_name="linreg",
             trainable=trainable,
             train_val=self.train_val,
             target=self.target,
@@ -442,6 +452,7 @@ class TestMainTuneModels(unittest.TestCase):
             model_hyperparameters={"data_enrich_with": None},
             optuna_searchspace_sampler="TPESampler",
             task_type="regression",
+            k_folds=1,
         )
 
     @patch("ritme.tune_models.run_trials")
@@ -573,7 +584,7 @@ class TestMainTuneModels(unittest.TestCase):
 
         result = run_trials(
             tracking_uri=self.mlflow_uri,
-            exp_name="test_experiment",
+            exp_name="logreg",
             trainable=trainable,
             train_val=self.train_val,
             target=self.target,
@@ -791,6 +802,223 @@ class TestMainTuneModels(unittest.TestCase):
         passed_hparams = call_kwargs.kwargs.get("model_hyperparameters", fallback)
         self.assertIn("n_estimators", passed_hparams)
         self.assertEqual(passed_hparams["n_estimators"], {"min": 50, "max": 500})
+
+
+class TestAdaptiveNStartupTrials(unittest.TestCase):
+    """The pre-K-fold default of 1000 startup trials consumed nearly the
+    entire time budget on most ritme runs. The adaptive helper sizes the
+    random-sampling phase from each model's effective search-space dim,
+    counted by introspecting the actual search space along its longest
+    conditional path."""
+
+    def setUp(self):
+        # Minimal but non-empty train_val: the search space's threshold-bounds
+        # path needs at least one F-prefixed feature with non-zero variance
+        # in case the recording trial wanders there. Three rows is enough.
+        self.train_val = pd.DataFrame(
+            {
+                "F0": [1.0, 2.0, 3.0],
+                "F1": [0.1, 0.5, 0.9],
+                "F2": [4.0, 5.0, 6.0],
+                "md0": [0, 1, 0],
+            }
+        )
+        self.tax = None
+
+    def _startup(self, model_type: str, hparams: dict | None = None) -> int:
+        return _adaptive_n_startup_trials(
+            model_type, self.train_val, self.tax, hparams or {}
+        )
+
+    def test_floor_for_low_dim_models(self):
+        # TRAC has only `lambda` -> 1 dim, falls back to the floor.
+        self.assertEqual(self._startup("trac"), 20)
+
+    def test_per_model_defaults_match_search_space_long_path(self):
+        # 5 data-eng dims + alpha + l1_ratio -> 7 -> 5 * 7 = 35
+        self.assertEqual(self._startup("linreg"), 35)
+        # 5 + (C, penalty, l1_ratio) -> 8 -> 40
+        self.assertEqual(self._startup("logreg"), 40)
+        # 5 + 8 RF model dims -> 13 -> 65
+        self.assertEqual(self._startup("rf"), 65)
+        self.assertEqual(self._startup("rf_class"), 65)
+        # 5 + 10 XGB model dims -> 15 -> 75
+        self.assertEqual(self._startup("xgb"), 75)
+        self.assertEqual(self._startup("xgb_class"), 75)
+
+    def test_nn_uses_max_n_hidden_layers(self):
+        # Default range [1, 30]: longest path has 30 hidden layers
+        # -> 5 (data eng) + 8 (fixed nn params) + 30 (per-layer widths) = 43
+        # -> 5 * 43 = 215
+        self.assertEqual(self._startup("nn_reg"), 215)
+        # User-supplied tighter range [1, 5]: longest path has 5 hidden layers
+        # -> 5 + 8 + 5 = 18 -> 5 * 18 = 90
+        self.assertEqual(
+            self._startup("nn_class", {"n_hidden_layers": {"min": 1, "max": 5}}),
+            90,
+        )
+        # min == max collapses to a single layer count: 5 + 8 + 4 = 17 -> 85
+        self.assertEqual(
+            self._startup("nn_corn", {"n_hidden_layers": {"min": 4, "max": 4}}),
+            85,
+        )
+
+    def test_unknown_model_type_raises(self):
+        # The recording-trial path delegates to ss.get_search_space, which
+        # raises ValueError on unknown model types. This is desired: silent
+        # fallbacks would mask configuration mistakes.
+        from ritme.model_space import static_searchspace  # noqa: F401
+
+        with self.assertRaises(ValueError):
+            self._startup("unknown_model")
+
+
+class TestRecordingTrialSteering(unittest.TestCase):
+    """The adaptive ``n_startup_trials`` is sized from the longest conditional
+    path of each model's search space, introspected via ``_RecordingTrial``.
+    The recording trial's correctness rests on two steering invariants:
+    categorical picks that trigger dependent branches (``data_selection`` ->
+    ``"abundance_ith"``, ``penalty`` -> ``"elasticnet"``) and returning
+    ``high`` for ``n_hidden_layers`` so every per-layer width fires. If a
+    search-space parameter is renamed or a conditional branch is restructured,
+    the steering can silently undercount dims. These tests lock in the
+    presence of the specific parameter names that prove the steering worked,
+    so drift fails loudly here rather than silently breaking ``n_startup``.
+    """
+
+    def setUp(self):
+        # Minimal but non-empty train_val: a few F-prefixed feature columns
+        # plus one md column. Matches the fixture used in
+        # TestAdaptiveNStartupTrials so the recording-trial path is exercised
+        # under realistic-shaped data.
+        self.train_val = pd.DataFrame(
+            {
+                "F0": [1.0, 2.0, 3.0],
+                "F1": [0.5, 1.5, 2.5],
+                "F2": [0.1, 0.2, 0.3],
+                "md0": [0, 1, 0],
+            }
+        )
+        self.tax = None
+
+    def test_linreg_records_data_selection_i_dependent_suggestion(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="linreg",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={},
+        )
+        self.assertIn("data_selection_i", trial.params)
+
+    def test_logreg_records_l1_ratio_under_elasticnet_penalty(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="logreg",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={},
+        )
+        self.assertIn("l1_ratio", trial.params)
+
+    def test_rf_records_data_selection_dependent_suggestion(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="rf",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={},
+        )
+        self.assertIn("data_selection_i", trial.params)
+
+    def test_xgb_records_data_selection_dependent_suggestion(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="xgb",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={},
+        )
+        self.assertIn("data_selection_i", trial.params)
+
+    def test_nn_reg_records_all_per_layer_widths_at_default_range(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="nn_reg",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={},
+        )
+        expected = {f"n_units_hl{i}" for i in range(30)}
+        recorded = {k for k in trial.params if k.startswith("n_units_hl")}
+        self.assertEqual(recorded, expected)
+
+    def test_nn_reg_records_widths_for_custom_range(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="nn_reg",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={"n_hidden_layers": {"min": 1, "max": 5}},
+        )
+        expected = {f"n_units_hl{i}" for i in range(5)}
+        recorded = {k for k in trial.params if k.startswith("n_units_hl")}
+        self.assertEqual(recorded, expected)
+
+    def test_nn_reg_records_widths_for_collapsed_range(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="nn_reg",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={"n_hidden_layers": {"min": 4, "max": 4}},
+        )
+        expected = {f"n_units_hl{i}" for i in range(4)}
+        recorded = {k for k in trial.params if k.startswith("n_units_hl")}
+        self.assertEqual(recorded, expected)
+
+    def test_trac_search_space_has_only_lambda(self):
+        trial = _RecordingTrial()
+        ss.get_search_space(
+            trial,
+            model_type="trac",
+            tax=self.tax,
+            train_val=self.train_val,
+            model_hyperparameters={},
+        )
+        self.assertEqual(set(trial.params.keys()), {"lambda"})
+
+
+class TestKFoldAwareTrainables(unittest.TestCase):
+    """The ``K_FOLD_AWARE_TRAINABLES`` registry partitions ``MODEL_TRAINABLES``
+    into trainables that respect ``k_folds`` (report cross-validated metrics
+    with ``<metric>_se``) vs. those that accept ``k_folds`` only for signature
+    parity. Drift between this registry and ``MODEL_TRAINABLES`` causes silent
+    bugs in the one-standard-error rule (single-split trials get treated as
+    K-fold and vice versa). These tests catch any such drift.
+    """
+
+    def test_k_fold_aware_trainables_matches_model_trainables_minus_iterative(self):
+        # Every K-fold-aware trainable must be a registered model trainable.
+        self.assertTrue(K_FOLD_AWARE_TRAINABLES.issubset(set(MODEL_TRAINABLES.keys())))
+        # The complement (trainables in MODEL_TRAINABLES but NOT in
+        # K_FOLD_AWARE_TRAINABLES) is exactly the iterative trainables that
+        # accept k_folds only for signature parity (xgb*, nn_*). If a new
+        # model is added to MODEL_TRAINABLES without being categorised
+        # (either added to K_FOLD_AWARE_TRAINABLES or to this expected
+        # iterative set), this test fires.
+        iterative_only = set(MODEL_TRAINABLES.keys()) - K_FOLD_AWARE_TRAINABLES
+        self.assertEqual(
+            iterative_only,
+            {"xgb", "xgb_class", "nn_reg", "nn_class", "nn_corn"},
+        )
 
 
 if __name__ == "__main__":
