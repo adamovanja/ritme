@@ -1785,9 +1785,10 @@ def _nn_refit_epochs(
     Lightning's ``Trainer`` runs epochs ``0..max_epochs-1``, so the refit
     cap must be ``best_epoch + 1`` to train up to and including the epoch
     flagged as best. Falls back to ``max_epochs_config`` if any fold's
-    early-stop did not trigger (``best_epoch`` is ``None``). A degenerate
-    pre-``+1`` median ``< 1`` is also rejected in favour of the config
-    fallback; after the ``+ 1`` the effective floor is 2 refit epochs.
+    early-stop did not trigger (``best_epoch`` is ``None``). Unlike
+    :func:`_xgb_refit_rounds`, we also fall back to ``max_epochs_config``
+    when the pre-``+1`` median is ``< 1`` because a 1-epoch nn refit is
+    degenerate (a 1-tree booster, in contrast, is a valid xgb model).
     """
     if any(b is None for b in per_fold_best_epoch):
         return int(max_epochs_config)
