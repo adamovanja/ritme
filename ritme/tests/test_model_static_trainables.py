@@ -1026,54 +1026,50 @@ class TestKfoldHelpers(unittest.TestCase):
         self.assertEqual(c, 1)
 
     def test_fit_one_fold_sklearn_regression_uses_correct_train_val_slices(self):
-        """``_fit_one_fold_sklearn_regression`` slices ``X_full`` / ``y_full``
-        with ``train_idx`` for training and ``val_idx`` for validation. A
-        regression that accidentally swapped the two would compute "val"
-        metrics on the train set (or vice versa) -- this test pins the
-        slicing identity by recomputing metrics independently from the
-        produced slices.
+        """``_fit_one_fold_sklearn_regression`` takes pre-engineered
+        ``(X_tr, y_tr, X_va, y_va)`` tuples directly (no more index slicing
+        inside the task -- per-fold engineering happens upstream in
+        ``process_train_kfold``). A regression that accidentally swapped
+        train/val would compute "val" metrics on the train set or vice
+        versa; this test pins the contract by recomputing metrics
+        independently from the produced slices.
         """
         rng = np.random.default_rng(0)
         n_rows, n_features = 20, 4
         X_full = rng.normal(size=(n_rows, n_features))
         y_full = X_full.sum(axis=1) + rng.normal(size=n_rows) * 0.05
-        train_idx = np.arange(0, 15)
-        val_idx = np.arange(15, 20)
+        X_tr, y_tr = X_full[:15], y_full[:15]
+        X_va, y_va = X_full[15:], y_full[15:]
 
         out = st._fit_one_fold_sklearn_regression(
-            X_full,
-            y_full,
-            train_idx,
-            val_idx,
+            X_tr,
+            y_tr,
+            X_va,
+            y_va,
             estimator_builder=st._build_linreg,
             builder_kwargs={"alpha": 0.01, "l1_ratio": 0.5},
             seed_model=0,
             cpus_per_fold=1,
         )
 
-        # Independently recompute the metrics from the fitted slice
-        # definition: train metrics on X_full[train_idx], val on X_full[val_idx].
+        # Independently recompute the expected metrics.
         fit_model = st._build_linreg(alpha=0.01, l1_ratio=0.5)
-        fit_model.fit(X_full[train_idx], y_full[train_idx])
-        rmse_tr_exp, r2_tr_exp = st._predict_rmse_r2(
-            fit_model, X_full[train_idx], y_full[train_idx]
-        )
-        rmse_va_exp, r2_va_exp = st._predict_rmse_r2(
-            fit_model, X_full[val_idx], y_full[val_idx]
-        )
+        fit_model.fit(X_tr, y_tr)
+        rmse_tr_exp, r2_tr_exp = st._predict_rmse_r2(fit_model, X_tr, y_tr)
+        rmse_va_exp, r2_va_exp = st._predict_rmse_r2(fit_model, X_va, y_va)
         self.assertAlmostEqual(out["rmse_train"], rmse_tr_exp, places=8)
         self.assertAlmostEqual(out["r2_train"], r2_tr_exp, places=8)
         self.assertAlmostEqual(out["rmse_val"], rmse_va_exp, places=8)
         self.assertAlmostEqual(out["r2_val"], r2_va_exp, places=8)
 
-        # And a sanity contrast: swapping train/val indices must change the
-        # numbers (i.e. they are not symmetric / mistakenly computed on the
-        # wrong slice in some way).
+        # And a sanity contrast: swapping train/val must change the numbers
+        # (i.e. they are not symmetric / mistakenly computed on the wrong
+        # slice in some way).
         swapped = st._fit_one_fold_sklearn_regression(
-            X_full,
-            y_full,
-            val_idx,
-            train_idx,
+            X_va,
+            y_va,
+            X_tr,
+            y_tr,
             estimator_builder=st._build_linreg,
             builder_kwargs={"alpha": 0.01, "l1_ratio": 0.5},
             seed_model=0,
@@ -1360,24 +1356,36 @@ class TestKfoldTrainables(unittest.TestCase):
         self._lightning_tmp.cleanup()
 
     def _make_kfold_engineered(self, n_splits=3, classification=False):
-        """Build a KFoldEngineered NamedTuple with the synthetic fixture data."""
+        """Build a KFoldEngineered NamedTuple with the synthetic fixture data.
+
+        Each fold's ``(X_tr, y_tr, X_va, y_va)`` is sliced from the full
+        fixture matrix -- the dispatcher is mocked downstream so the per-fold
+        engineering is faithful only in shape, not in true train/val
+        independence. ``X_refit`` / ``y_refit`` are the full fixture matrix
+        (matches the deployable-refit contract).
+        """
         y = self.y_class if classification else self.y_reg
-        # Trivial fold indices; the dispatcher is mocked so these are only used
-        # for length / shape sanity by the trainable.
         rows = self.X_full.shape[0]
         per_fold_size = rows // n_splits
-        fold_indices = []
+        folds = []
         for k in range(n_splits):
             val_start = k * per_fold_size
             val_end = (k + 1) * per_fold_size if k < n_splits - 1 else rows
             val_idx = np.arange(val_start, val_end)
             train_idx = np.setdiff1d(np.arange(rows), val_idx)
-            fold_indices.append((train_idx, val_idx))
+            folds.append(
+                (
+                    self.X_full[train_idx],
+                    y[train_idx],
+                    self.X_full[val_idx],
+                    y[val_idx],
+                )
+            )
         return KFoldEngineered(
-            X_full=self.X_full,
-            y_full=y,
+            folds=folds,
+            X_refit=self.X_full,
+            y_refit=np.asarray(y),
             ft_ls_used=self.feature_cols,
-            fold_indices=fold_indices,
         )
 
     def _assert_kfold_report(self, mock_report, metric_name, n_splits=3):

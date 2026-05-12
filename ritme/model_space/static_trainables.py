@@ -8,7 +8,18 @@ import shutil
 import tempfile
 from contextlib import contextmanager
 from functools import partial
-from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import joblib
 import numpy as np
@@ -421,10 +432,10 @@ def _report_classification_results_manually(
 
 
 def _fit_one_fold_sklearn_regression(
-    X_full: np.ndarray,
-    y_full: np.ndarray,
-    train_idx: np.ndarray,
-    val_idx: np.ndarray,
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    X_va: np.ndarray,
+    y_va: np.ndarray,
     estimator_builder: Callable[..., Any],
     builder_kwargs: Dict[str, Any],
     seed_model: int,
@@ -432,10 +443,9 @@ def _fit_one_fold_sklearn_regression(
 ) -> Dict[str, float]:
     """Fit one sklearn regression fold and return per-fold metrics.
 
-    Runs inside a ``ray.remote`` task. ``X_full`` / ``y_full`` arrive as
-    materialized numpy arrays (zero-copy view of the Ray plasma object), and
-    the train/val slices are taken inside the task so the parent trainable
-    never K-way pickles the design matrix. The estimator is built inside the
+    Runs inside a ``ray.remote`` task. The train and val design matrices are
+    pre-engineered per fold (no train/val leakage) and arrive as materialized
+    numpy arrays via Ray plasma object refs. The estimator is built inside the
     worker from a top-level builder function plus an explicit hyperparameter
     dict — Ray pickles the builder by reference and the kwargs dict is plain
     data, so the worker does not carry an implicit closure over the parent's
@@ -444,10 +454,6 @@ def _fit_one_fold_sklearn_regression(
     """
     np.random.seed(seed_model)
     random.seed(seed_model)
-    X_tr = X_full[train_idx]
-    y_tr = y_full[train_idx]
-    X_va = X_full[val_idx]
-    y_va = y_full[val_idx]
     model = estimator_builder(
         **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_fold
     )
@@ -463,10 +469,10 @@ def _fit_one_fold_sklearn_regression(
 
 
 def _fit_one_fold_sklearn_classification(
-    X_full: np.ndarray,
-    y_full: np.ndarray,
-    train_idx: np.ndarray,
-    val_idx: np.ndarray,
+    X_tr: np.ndarray,
+    y_tr: np.ndarray,
+    X_va: np.ndarray,
+    y_va: np.ndarray,
     estimator_builder: Callable[..., Any],
     builder_kwargs: Dict[str, Any],
     seed_model: int,
@@ -481,10 +487,8 @@ def _fit_one_fold_sklearn_classification(
     """
     np.random.seed(seed_model)
     random.seed(seed_model)
-    X_tr = X_full[train_idx]
-    y_tr = np.round(y_full[train_idx]).astype(int)
-    X_va = X_full[val_idx]
-    y_va = np.round(y_full[val_idx]).astype(int)
+    y_tr = np.round(y_tr).astype(int)
+    y_va = np.round(y_va).astype(int)
     model = estimator_builder(
         **builder_kwargs, seed_model=seed_model, n_jobs=cpus_per_fold
     )
@@ -505,17 +509,19 @@ def _fit_full_data_sklearn(
     cpus_per_trial: int,
     classification: bool,
 ) -> BaseEstimator:
-    """Refit an sklearn estimator on the entire design matrix.
+    """Refit an sklearn estimator on the deployable-refit design matrix.
 
     Runs inside a ``ray.remote`` task so that the refit happens in parallel
     with the K fold fits rather than sequentially after them. ``X_full`` /
-    ``y_full`` arrive as materialized numpy arrays (zero-copy view of the
-    Ray plasma object). The estimator is built from the same module-level
-    builder + kwargs pair used by the fold tasks. Seeds are reset at function
-    entry so the refit is deterministic. For ``classification=True`` the
-    targets are rounded to integers (matching the per-fold classification
-    path). Returns the fitted estimator, which the caller pickles to disk
-    as the deployable checkpoint.
+    ``y_full`` here are the full-``train_val`` matrices produced by
+    ``process_train_kfold`` for the deployable refit -- distinct from the
+    per-fold matrices that the fold tasks consume, and passed via their
+    own ``ray.put`` ObjectRefs. The estimator is built from the same
+    module-level builder + kwargs pair used by the fold tasks. Seeds are
+    reset at function entry so the refit is deterministic. For
+    ``classification=True`` the targets are rounded to integers (matching
+    the per-fold classification path). Returns the fitted estimator, which
+    the caller pickles to disk as the deployable checkpoint.
     """
     np.random.seed(seed_model)
     random.seed(seed_model)
@@ -568,23 +574,26 @@ def _dispatch_folds_then_refit(
 def _submit_sklearn_fold(
     i: int,
     *,
-    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
+    fold_refs: List[Tuple[Any, Any, Any, Any]],
     remote_fold_fn: Any,
     strategy: NodeAffinitySchedulingStrategy,
-    X_ref: Any,
-    y_ref: Any,
     estimator_builder: Callable[..., Any],
     builder_kwargs: Dict[str, Any],
     seed_model: int,
     cpus_per_fold: int,
 ) -> Any:
-    """Submit one sklearn-style K-fold task to Ray."""
-    tr_idx, va_idx = folds_idx[i]
+    """Submit one sklearn-style K-fold task to Ray.
+
+    ``fold_refs[i]`` is the ``(X_tr_ref, y_tr_ref, X_va_ref, y_va_ref)``
+    tuple of Ray ObjectRefs to that fold's per-fold-engineered design and
+    target arrays.
+    """
+    X_tr_ref, y_tr_ref, X_va_ref, y_va_ref = fold_refs[i]
     return remote_fold_fn.options(scheduling_strategy=strategy).remote(
-        X_ref,
-        y_ref,
-        tr_idx,
-        va_idx,
+        X_tr_ref,
+        y_tr_ref,
+        X_va_ref,
+        y_va_ref,
         estimator_builder,
         builder_kwargs,
         seed_model,
@@ -596,8 +605,8 @@ def _submit_sklearn_refit(
     *,
     remote_refit_fn: Any,
     strategy: NodeAffinitySchedulingStrategy,
-    X_ref: Any,
-    y_ref: Any,
+    X_refit_ref: Any,
+    y_refit_ref: Any,
     estimator_builder: Callable[..., Any],
     builder_kwargs: Dict[str, Any],
     seed_model: int,
@@ -606,8 +615,8 @@ def _submit_sklearn_refit(
 ) -> Any:
     """Submit the sklearn-style refit-on-full-data task to Ray."""
     return remote_refit_fn.options(scheduling_strategy=strategy).remote(
-        X_ref,
-        y_ref,
+        X_refit_ref,
+        y_refit_ref,
         estimator_builder,
         builder_kwargs,
         seed_model,
@@ -617,9 +626,9 @@ def _submit_sklearn_refit(
 
 
 def _dispatch_kfold_and_refit_sklearn(
-    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
-    X_full: np.ndarray,
-    y_full: np.ndarray,
+    folds: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    X_refit: np.ndarray,
+    y_refit: np.ndarray,
     estimator_builder: Callable[..., Any],
     builder_kwargs: Dict[str, Any],
     seed_model: int,
@@ -630,12 +639,13 @@ def _dispatch_kfold_and_refit_sklearn(
 ) -> Tuple[List[Dict[str, float]], BaseEstimator]:
     """Dispatch K-fold fits and the full-data refit as Ray tasks.
 
-    Places the full design matrix in Ray's object store once via ``ray.put``
-    and reuses the resulting ObjectRefs across all K+1 tasks. Selects the
-    regression/classification fold runner, then submits up to ``n_workers``
-    per-fold tasks at a time via :func:`_dispatch_folds_then_refit`. The
-    refit task is submitted only after every fold has returned, so peak
-    per-node thread count stays within the parent trial's CPU reservation.
+    Places each fold's pre-engineered ``(X_tr, y_tr, X_va, y_va)`` tuple and
+    the refit matrices in Ray's object store via ``ray.put`` and dispatches
+    the K+1 tasks against those refs. Selects the regression/classification
+    fold runner, then submits up to ``n_workers`` per-fold tasks at a time
+    via :func:`_dispatch_folds_then_refit`. The refit task is submitted only
+    after every fold has returned, so peak per-node thread count stays
+    within the parent trial's CPU reservation.
 
     Tasks are pinned to the parent trial's node via
     ``NodeAffinitySchedulingStrategy`` with ``soft=False``, so they share
@@ -649,11 +659,15 @@ def _dispatch_kfold_and_refit_sklearn(
     -------
     (fold_metrics, full_model)
         ``fold_metrics`` is the list of K per-fold metric dicts in fold
-        order; ``full_model`` is the estimator refit on the full design
-        matrix.
+        order; ``full_model`` is the estimator refit on ``X_refit`` /
+        ``y_refit``.
     """
-    X_ref = ray.put(X_full)
-    y_ref = ray.put(y_full)
+    fold_refs: List[Tuple[Any, Any, Any, Any]] = [
+        (ray.put(X_tr), ray.put(y_tr), ray.put(X_va), ray.put(y_va))
+        for X_tr, y_tr, X_va, y_va in folds
+    ]
+    X_refit_ref = ray.put(X_refit)
+    y_refit_ref = ray.put(y_refit)
     node_id = ray.get_runtime_context().get_node_id()
     strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
 
@@ -667,11 +681,9 @@ def _dispatch_kfold_and_refit_sklearn(
 
     submit_fold = partial(
         _submit_sklearn_fold,
-        folds_idx=folds_idx,
+        fold_refs=fold_refs,
         remote_fold_fn=remote_fold_fn,
         strategy=strategy,
-        X_ref=X_ref,
-        y_ref=y_ref,
         estimator_builder=estimator_builder,
         builder_kwargs=builder_kwargs,
         seed_model=seed_model,
@@ -681,8 +693,8 @@ def _dispatch_kfold_and_refit_sklearn(
         _submit_sklearn_refit,
         remote_refit_fn=remote_refit_fn,
         strategy=strategy,
-        X_ref=X_ref,
-        y_ref=y_ref,
+        X_refit_ref=X_refit_ref,
+        y_refit_ref=y_refit_ref,
         estimator_builder=estimator_builder,
         builder_kwargs=builder_kwargs,
         seed_model=seed_model,
@@ -690,13 +702,11 @@ def _dispatch_kfold_and_refit_sklearn(
         classification=classification,
     )
 
-    return _dispatch_folds_then_refit(
-        submit_fold, len(folds_idx), submit_refit, n_workers
-    )
+    return _dispatch_folds_then_refit(submit_fold, len(folds), submit_refit, n_workers)
 
 
 def _finalize_and_report_sklearn(
-    X_full: np.ndarray,
+    nb_features: int,
     full_model: BaseEstimator,
     fold_metrics: List[Dict[str, float]],
     classification: bool,
@@ -721,7 +731,7 @@ def _finalize_and_report_sklearn(
 
     metrics = _aggregate_fold_metrics(fold_metrics)
     metrics["model_path"] = _save_sklearn_model(full_model)
-    metrics["nb_features"] = X_full.shape[1]
+    metrics["nb_features"] = nb_features
     _save_taxonomy(tax)
     tune.report(metrics=metrics)
 
@@ -752,8 +762,11 @@ def _run_kfold_sklearn(
     config dict to every Ray worker.
 
     Orchestrates four steps:
-      1. Engineer features once on full ``train_val`` (same pipeline as
-         single-split path) and yield K group-/stratify-aware fold pairs.
+      1. Engineer features per fold via ``process_train_kfold`` (each fold
+         fits engineering on its own train slice and applies the captured
+         params on its val slice -- no cross-sample stat crosses any fold's
+         train/val boundary; see ``issue_val_leakage.md``), plus a separate
+         full-data engineering pass for the deployable refit.
       2. Allocate the trial's CPU budget between parallel fold workers and
          each fold's inner fit.
       3. Dispatch the K per-fold fits plus the full-data refit in parallel
@@ -775,9 +788,9 @@ def _run_kfold_sklearn(
     n_workers, cpus_per_fold = _allocate_fold_resources(n_splits, cpus_per_trial)
 
     fold_metrics, full_model = _dispatch_kfold_and_refit_sklearn(
-        engineered.fold_indices,
-        engineered.X_full,
-        engineered.y_full,
+        engineered.folds,
+        engineered.X_refit,
+        engineered.y_refit,
         estimator_builder,
         builder_kwargs,
         seed_model,
@@ -788,7 +801,7 @@ def _run_kfold_sklearn(
     )
 
     _finalize_and_report_sklearn(
-        engineered.X_full,
+        int(engineered.X_refit.shape[1]),
         full_model,
         fold_metrics,
         classification,
@@ -939,10 +952,10 @@ def _fit_trac_single(
 
 
 def _fit_one_fold_trac(
-    log_geom_full: np.ndarray,
-    y_full: np.ndarray,
-    train_idx: np.ndarray,
-    val_idx: np.ndarray,
+    lg_tr: np.ndarray,
+    y_tr: np.ndarray,
+    lg_va: np.ndarray,
+    y_va: np.ndarray,
     nleaves: np.ndarray,
     a_df: pd.DataFrame,
     lam: float,
@@ -950,16 +963,12 @@ def _fit_one_fold_trac(
 ) -> Dict[str, float]:
     """Fit one TRAC fold and return per-fold RMSE / R2 on train and val.
 
-    Runs inside a ``ray.remote`` task. The log-geom design matrix is sliced
-    inside the task from the put-once ``log_geom_full`` array, so the parent
-    trainable does not K-way pickle the (potentially large) design matrix.
-    Seeds are reset at function entry to preserve deterministic per-fold
-    behavior (mirrors the previous joblib closure).
+    Runs inside a ``ray.remote`` task. The train and val log-geom design
+    matrices are pre-computed per fold (no train/val leakage) and arrive as
+    materialized numpy arrays via Ray plasma object refs. Seeds are reset at
+    function entry to preserve deterministic per-fold behavior (mirrors the
+    previous joblib closure).
     """
-    lg_tr = log_geom_full[train_idx]
-    y_tr = y_full[train_idx]
-    lg_va = log_geom_full[val_idx]
-    y_va = y_full[val_idx]
     model = _fit_trac_single(lg_tr, nleaves, y_tr, a_df, lam, seed_model)
     alpha = model["model"]["alpha"].values
     rmse_tr, r2_tr = _predict_rmse_r2_trac(alpha, lg_tr, y_tr)
@@ -996,23 +1005,26 @@ def _fit_full_data_trac(
 def _submit_trac_fold(
     i: int,
     *,
-    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
+    fold_refs: List[Tuple[Any, Any, Any, Any]],
     remote_fold_fn: Any,
     strategy: NodeAffinitySchedulingStrategy,
-    lg_ref: Any,
-    y_ref: Any,
     nleaves: np.ndarray,
     a_df_ref: Any,
     lam: float,
     seed_model: int,
 ) -> Any:
-    """Submit one TRAC K-fold task to Ray."""
-    tr_idx, va_idx = folds_idx[i]
+    """Submit one TRAC K-fold task to Ray.
+
+    ``fold_refs[i]`` is the ``(lg_tr_ref, y_tr_ref, lg_va_ref, y_va_ref)``
+    tuple of Ray ObjectRefs to that fold's per-fold log-geom design and
+    target arrays.
+    """
+    lg_tr_ref, y_tr_ref, lg_va_ref, y_va_ref = fold_refs[i]
     return remote_fold_fn.options(scheduling_strategy=strategy).remote(
-        lg_ref,
-        y_ref,
-        tr_idx,
-        va_idx,
+        lg_tr_ref,
+        y_tr_ref,
+        lg_va_ref,
+        y_va_ref,
         nleaves,
         a_df_ref,
         lam,
@@ -1024,18 +1036,18 @@ def _submit_trac_refit(
     *,
     remote_refit_fn: Any,
     strategy: NodeAffinitySchedulingStrategy,
-    lg_ref: Any,
+    lg_refit_ref: Any,
     nleaves: np.ndarray,
-    y_ref: Any,
+    y_refit_ref: Any,
     a_df_ref: Any,
     lam: float,
     seed_model: int,
 ) -> Any:
     """Submit the TRAC refit-on-full-data task to Ray."""
     return remote_refit_fn.options(scheduling_strategy=strategy).remote(
-        lg_ref,
+        lg_refit_ref,
         nleaves,
-        y_ref,
+        y_refit_ref,
         a_df_ref,
         lam,
         seed_model,
@@ -1043,9 +1055,9 @@ def _submit_trac_refit(
 
 
 def _dispatch_kfold_and_refit_trac(
-    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
-    log_geom_full: np.ndarray,
-    y_full: np.ndarray,
+    fold_log_geoms: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    log_geom_refit: np.ndarray,
+    y_refit: np.ndarray,
     nleaves: np.ndarray,
     a_df: pd.DataFrame,
     lam: float,
@@ -1056,11 +1068,16 @@ def _dispatch_kfold_and_refit_trac(
 
     Shares the same throttle-then-refit dispatch shape via
     :func:`_dispatch_folds_then_refit`; differs only in the per-task args
-    (log-geom design matrix, nleaves, A) and the refit return type
-    (TRAC model bundle dict).
+    (log-geom design matrix, nleaves, A) and the refit return type (TRAC
+    model bundle dict). Each fold's ``(lg_tr, y_tr, lg_va, y_va)`` is
+    pre-computed by the caller from per-fold leak-free engineered matrices.
     """
-    lg_ref = ray.put(log_geom_full)
-    y_ref = ray.put(y_full)
+    fold_refs: List[Tuple[Any, Any, Any, Any]] = [
+        (ray.put(lg_tr), ray.put(y_tr), ray.put(lg_va), ray.put(y_va))
+        for lg_tr, y_tr, lg_va, y_va in fold_log_geoms
+    ]
+    lg_refit_ref = ray.put(log_geom_refit)
+    y_refit_ref = ray.put(y_refit)
     a_df_ref = ray.put(a_df)
     node_id = ray.get_runtime_context().get_node_id()
     strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
@@ -1070,11 +1087,9 @@ def _dispatch_kfold_and_refit_trac(
 
     submit_fold = partial(
         _submit_trac_fold,
-        folds_idx=folds_idx,
+        fold_refs=fold_refs,
         remote_fold_fn=remote_fold_fn,
         strategy=strategy,
-        lg_ref=lg_ref,
-        y_ref=y_ref,
         nleaves=nleaves,
         a_df_ref=a_df_ref,
         lam=lam,
@@ -1084,16 +1099,16 @@ def _dispatch_kfold_and_refit_trac(
         _submit_trac_refit,
         remote_refit_fn=remote_refit_fn,
         strategy=strategy,
-        lg_ref=lg_ref,
+        lg_refit_ref=lg_refit_ref,
         nleaves=nleaves,
-        y_ref=y_ref,
+        y_refit_ref=y_refit_ref,
         a_df_ref=a_df_ref,
         lam=lam,
         seed_model=seed_model,
     )
 
     return _dispatch_folds_then_refit(
-        submit_fold, len(folds_idx), submit_refit, n_workers
+        submit_fold, len(fold_log_geoms), submit_refit, n_workers
     )
 
 
@@ -1142,17 +1157,24 @@ def train_trac(
             n_splits,
             stratify_by=stratify_by,
         )
-        # Precompute log-geom transform on the full design matrix once; each
-        # fold task slices its train/val views from this shared array.
-        log_geom_full, nleaves = _preprocess_taxonomy_aggregation(
-            engineered.X_full, a_df
+        # Log-geom transform each fold's pre-engineered (X_tr, X_va) and the
+        # full-data refit matrix. ``nleaves`` depends only on ``a_df``, so it
+        # is the same across all calls and is captured once from the refit
+        # transform below.
+        fold_log_geoms: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+        for X_tr, y_tr, X_va, y_va in engineered.folds:
+            lg_tr, _ = _preprocess_taxonomy_aggregation(X_tr, a_df)
+            lg_va, _ = _preprocess_taxonomy_aggregation(X_va, a_df)
+            fold_log_geoms.append((lg_tr, y_tr, lg_va, y_va))
+        log_geom_refit, nleaves = _preprocess_taxonomy_aggregation(
+            engineered.X_refit, a_df
         )
 
         n_workers, _ = _allocate_fold_resources(n_splits, cpus_per_trial)
         fold_metrics, full_model = _dispatch_kfold_and_refit_trac(
-            engineered.fold_indices,
-            log_geom_full,
-            engineered.y_full,
+            fold_log_geoms,
+            log_geom_refit,
+            engineered.y_refit,
             nleaves,
             a_df,
             config["lambda"],
@@ -2011,9 +2033,11 @@ def _run_kfold_nn(
     # Class set for classification / ordinal heads -- derived once from the
     # full encoded label vector so per-fold models share the same class
     # universe even when a fold's val split is missing some classes.
-    classes = _nn_classes_from_y(engineered.y_full) if nn_type != "regression" else None
+    classes = (
+        _nn_classes_from_y(engineered.y_refit) if nn_type != "regression" else None
+    )
 
-    n_features = int(engineered.X_full.shape[1])
+    n_features = int(engineered.X_refit.shape[1])
     max_epochs_cfg = int(config["epochs"])
     patience = int(config["early_stopping_patience"])
     min_delta = float(config["early_stopping_min_delta"])
@@ -2022,11 +2046,7 @@ def _run_kfold_nn(
 
     per_fold_metrics: List[Dict[str, float]] = []
     per_fold_best_epoch: List[Optional[int]] = []
-    for fold_idx, (tr_idx, va_idx) in enumerate(engineered.fold_indices):
-        X_tr = engineered.X_full[tr_idx]
-        y_tr = engineered.y_full[tr_idx]
-        X_va = engineered.X_full[va_idx]
-        y_va = engineered.y_full[va_idx]
+    for fold_idx, (X_tr, y_tr, X_va, y_va) in enumerate(engineered.folds):
         train_loader, val_loader = load_data(
             X_tr, y_tr, X_va, y_va, config, seed_model, num_workers=num_workers
         )
@@ -2067,10 +2087,10 @@ def _run_kfold_nn(
     # training loader is sufficient.
     refit_epochs = _nn_refit_epochs(per_fold_best_epoch, max_epochs_cfg)
     full_train_loader, _ = load_data(
-        engineered.X_full,
-        engineered.y_full,
-        engineered.X_full[:0],
-        engineered.y_full[:0],
+        engineered.X_refit,
+        engineered.y_refit,
+        engineered.X_refit[:0],
+        engineered.y_refit[:0],
         config,
         seed_model,
         num_workers=num_workers,
@@ -2495,8 +2515,10 @@ def custom_xgb_metric(
 
 
 def _prepare_xgb_classification_labels(
-    config: Dict[str, Any], y_full: np.ndarray
-) -> Tuple[np.ndarray, int]:
+    config: Dict[str, Any],
+    y_refit: np.ndarray,
+    extra_ys: Sequence[np.ndarray] = (),
+) -> Tuple[np.ndarray, int, List[np.ndarray]]:
     """Encode K-fold targets to contiguous 0..K-1 ints for ``multi:softprob``.
 
     Mirrors the label-encoding branch of single-split ``train_xgb_class``:
@@ -2504,23 +2526,31 @@ def _prepare_xgb_classification_labels(
     ``config["_label_encoder"]`` (non-numeric target), reuse it -- the y
     values are already 0-indexed floats, so we only round + cast. For
     numeric targets the encoder is absent; we fit one here on the rounded
-    ints and stash it on ``config`` so the caller can persist it via
-    ``_save_label_encoder(config)`` before xgb param construction (the
-    encoder MUST leave ``config`` before ``xgb.train`` to avoid an
-    "unknown parameter" warning).
+    ints of ``y_refit`` (which sees every label) and stash it on ``config``
+    so the caller can persist it via ``_save_label_encoder(config)`` before
+    xgb param construction (the encoder MUST leave ``config`` before
+    ``xgb.train`` to avoid an "unknown parameter" warning).
 
-    Returns the integer-encoded labels and the class count for
-    ``num_class`` in xgb params.
+    ``extra_ys`` are per-fold ``y_tr`` / ``y_va`` arrays that need to share
+    the same label-to-int mapping as ``y_refit`` -- they are encoded with
+    the same logic (round + cast for the non-numeric path, ``le.transform``
+    on rounded ints for the numeric path) and returned in input order.
+
+    Returns ``(y_refit_int, num_classes, extras_int)``.
     """
     le = config.get("_label_encoder")
-    if le is not None:
-        y_int = np.round(y_full).astype(int)
-    else:
+    if le is None:
         le = LabelEncoder()
-        le.fit(np.round(y_full).astype(int))
+        le.fit(np.round(y_refit).astype(int))
         config["_label_encoder"] = le
-        y_int = le.transform(np.round(y_full).astype(int))
-    return y_int, len(le.classes_)
+        y_refit_int = np.asarray(le.transform(np.round(y_refit).astype(int)))
+        extras_int = [
+            np.asarray(le.transform(np.round(y).astype(int))) for y in extra_ys
+        ]
+    else:
+        y_refit_int = np.round(y_refit).astype(int)
+        extras_int = [np.round(y).astype(int) for y in extra_ys]
+    return y_refit_int, len(le.classes_), extras_int
 
 
 def _xgb_params_from_config(
@@ -2690,19 +2720,21 @@ def _run_kfold_xgb(
     ``xgb_params``, so per-fold parallelism inside xgb itself absorbs the
     trial's CPU budget without an outer Ray-remote fan-out.
 
-    For ``task_type == "classification"`` the y returned by
-    ``process_train_kfold`` is encoded by ``_encode_target`` (already
-    0-indexed for string targets via the LabelEncoder it stashes in
-    ``config["_label_encoder"]``; numeric targets pass through as floats).
-    We mirror the single-split branch of ``train_xgb_class``: if no encoder
-    was stashed (numeric target) we fit one here on the rounded ints, then
-    transform y_full so xgb sees contiguous 0..K-1 integer labels for
-    ``multi:softprob``. We then call ``_save_label_encoder(config)``
-    immediately -- before building xgb params -- so the encoder is
-    persisted for prediction-time inverse transform AND popped off
-    ``config`` (otherwise it leaks into ``xgb.train`` and xgb logs a
-    "Parameters: { _label_encoder } are not used" warning each fold +
-    at refit).
+    For ``task_type == "classification"`` the per-fold and refit targets
+    returned by ``process_train_kfold`` are encoded by ``_encode_target``
+    (already 0-indexed for string targets via the LabelEncoder it stashes
+    in ``config["_label_encoder"]``; numeric targets pass through as
+    floats). We mirror the single-split branch of ``train_xgb_class``: if
+    no encoder was stashed (numeric target) we fit one here on the rounded
+    ints of ``y_refit`` (which sees every label) via
+    ``_prepare_xgb_classification_labels``, which also encodes the
+    flattened per-fold ``(y_tr, y_va)`` arrays consistently so xgb sees
+    contiguous 0..K-1 integer labels for ``multi:softprob`` everywhere.
+    We then call ``_save_label_encoder(config)`` immediately -- before
+    building xgb params -- so the encoder is persisted for
+    prediction-time inverse transform AND popped off ``config``
+    (otherwise it leaks into ``xgb.train`` and xgb logs a "Parameters: {
+    _label_encoder } are not used" warning each fold + at refit).
     """
     np.random.seed(seed_model)
     random.seed(seed_model)
@@ -2718,10 +2750,29 @@ def _run_kfold_xgb(
         stratify_by=stratify_by,
     )
 
-    y_full = engineered.y_full
+    y_refit = engineered.y_refit
+    folds_data: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = list(
+        engineered.folds
+    )
     num_classes: Optional[int] = None
     if task_type == "classification":
-        y_full, num_classes = _prepare_xgb_classification_labels(config, y_full)
+        # Encode the refit targets AND every per-fold (y_tr, y_va) using a
+        # single shared label-to-int map. Order in the flattened list is
+        # (fold0_tr, fold0_va, fold1_tr, fold1_va, ...) so the unpacker
+        # below stays in sync.
+        flat_extra_ys = [y for fold in engineered.folds for y in (fold[1], fold[3])]
+        y_refit, num_classes, encoded_fold_ys = _prepare_xgb_classification_labels(
+            config, y_refit, flat_extra_ys
+        )
+        folds_data = [
+            (
+                X_tr,
+                encoded_fold_ys[2 * i],
+                X_va,
+                encoded_fold_ys[2 * i + 1],
+            )
+            for i, (X_tr, _, X_va, _) in enumerate(engineered.folds)
+        ]
         # Persist + drop the label encoder before building xgb params so it
         # doesn't leak into ``xgb.train`` (which would log "Parameters: {
         # _label_encoder } are not used" each fold + at refit).
@@ -2736,10 +2787,8 @@ def _run_kfold_xgb(
 
     per_fold_metrics: List[Dict[str, float]] = []
     per_fold_best_iter: List[Optional[int]] = []
-    nb_features = int(engineered.X_full.shape[1])
-    for fold_idx, (tr_idx, va_idx) in enumerate(engineered.fold_indices):
-        X_tr, y_tr = engineered.X_full[tr_idx], y_full[tr_idx]
-        X_va, y_va = engineered.X_full[va_idx], y_full[va_idx]
+    nb_features = int(engineered.X_refit.shape[1])
+    for fold_idx, (X_tr, y_tr, X_va, y_va) in enumerate(folds_data):
         dtrain = xgb.DMatrix(X_tr, label=y_tr)
         dvalid = xgb.DMatrix(X_va, label=y_va)
         booster = xgb.train(
@@ -2761,7 +2810,7 @@ def _run_kfold_xgb(
     aggregated["nb_features"] = nb_features
 
     refit_rounds = _xgb_refit_rounds(per_fold_best_iter, n_estimators)
-    dfull = xgb.DMatrix(engineered.X_full, label=y_full)
+    dfull = xgb.DMatrix(engineered.X_refit, label=y_refit)
     refit = xgb.train(
         xgb_params, dfull, num_boost_round=refit_rounds, verbose_eval=False
     )
