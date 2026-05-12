@@ -1,7 +1,7 @@
 import os
 import random
 from functools import partial
-from typing import Callable
+from typing import Any, Callable, Dict
 
 import dotenv
 import numpy as np
@@ -62,6 +62,126 @@ OPTUNA_SAMPLER_CLASSES = {
     "GPSampler": GPSampler,  # inefficient cond. search space
     "QMCSampler": QMCSampler,  # inefficient cat.params + cond. search space
 }
+
+# Floor and multiplier for n_startup_trials = max(floor, mult * effective_dims).
+# 5x is enough to seed multivariate-TPE's grouped Parzen estimator without
+# wasting the time budget on pure random search (Optuna's own default is 10,
+# but multivariate=True with conditional groups needs more).
+N_STARTUP_TRIALS_FLOOR = 20
+N_STARTUP_TRIALS_MULT = 5
+
+
+class _RecordingTrial:
+    """Mock Optuna ``Trial`` that records every ``suggest_*`` call.
+
+    Used by :func:`_count_effective_dims` to count search-space dimensions
+    along the *longest conditional path* (the deepest trial the search space
+    can produce). Values are recorded but never validated, so invalid bounds
+    (e.g. ``low > high`` when the user data has zero microbial features) are
+    tolerated; only the call count matters.
+
+    The trial steers categorical choices toward the longest branch:
+
+    - ``data_selection`` -> ``"abundance_ith"`` so the dependent
+      :func:`_suggest_integer` fires (adding ``data_selection_i``);
+    - ``penalty`` -> ``"elasticnet"`` so the conditional ``l1_ratio`` fires;
+    - any other categorical -> first non-None choice, so the count reflects
+      "user picked an option" rather than the no-op None branch.
+
+    For ``n_hidden_layers``, ``suggest_int`` returns the maximum value, so the
+    nn search space's ``for i in range(n_hidden_layers)`` loop adds one
+    width-parameter call per possible layer.
+    """
+
+    _LONGEST_BRANCH_PICKS = {
+        "data_selection": "abundance_ith",
+        "penalty": "elasticnet",
+    }
+
+    def __init__(self) -> None:
+        self.params: Dict[str, Any] = {}
+
+    def _store(self, name: str, value: Any) -> Any:
+        self.params[name] = value
+        return value
+
+    def suggest_categorical(self, name: str, choices):
+        preferred = self._LONGEST_BRANCH_PICKS.get(name)
+        if preferred is not None and preferred in choices:
+            return self._store(name, preferred)
+        for c in choices:
+            if c is not None:
+                return self._store(name, c)
+        return self._store(name, choices[0])
+
+    def suggest_int(self, name: str, low, high, log: bool = False, step: int = 1):
+        if name == "n_hidden_layers":
+            return self._store(name, high)
+        return self._store(name, low)
+
+    def suggest_float(self, name: str, low, high, log: bool = False, step=None):
+        return self._store(name, low)
+
+
+def _count_effective_dims(
+    model_type: str,
+    train_val: pd.DataFrame,
+    tax,
+    model_hyperparameters: dict,
+) -> int:
+    """Count ``trial.suggest_*`` calls along the longest conditional path.
+
+    Runs :func:`static_searchspace.get_search_space` once with a
+    :class:`_RecordingTrial`, returning the number of distinct parameters the
+    search space would suggest in its deepest branch. Driven by the actual
+    search-space code so the count cannot drift if a parameter is added.
+    """
+    trial = _RecordingTrial()
+    ss.get_search_space(
+        trial,
+        model_type=model_type,
+        tax=tax,
+        train_val=train_val,
+        model_hyperparameters=model_hyperparameters,
+    )
+    return len(trial.params)
+
+
+def _adaptive_n_startup_trials(
+    model_type: str,
+    train_val: pd.DataFrame,
+    tax,
+    model_hyperparameters: dict,
+) -> int:
+    """Compute n_startup_trials from the model's effective search-space dim.
+
+    Returns ``max(N_STARTUP_TRIALS_FLOOR, N_STARTUP_TRIALS_MULT * effective_dims)``,
+    where ``effective_dims`` is :func:`_count_effective_dims` evaluated on the
+    longest conditional path of the search space.
+
+    For nn trainables this longest path is the one with ``n_hidden_layers ==
+    max`` of the (possibly user-customised) range, so every per-layer width
+    parameter ``n_units_hl{i}`` contributes one dimension. We deliberately use
+    the maximum (not the midpoint or expected value) for two reasons:
+
+    1. **Consistency with non-NN models.** Every other model type's count is
+       the longest path through its conditional structure; treating
+       ``n_hidden_layers`` as just another conditional branch keeps the rule
+       uniform.
+    2. **Asymmetric cost of being wrong.** Under-budgeting startup trials is
+       worse than over-budgeting them: TPE engaging on a poorly-fit kernel
+       density estimate produces biased proposals for the rest of the run,
+       whereas a few extra random samples are still informative for the KDE
+       once it does engage. The deepest configuration is the highest-dim
+       group multivariate-TPE has to model, so sizing for it (rather than the
+       average shallow case) avoids that asymmetric failure.
+
+    The trade-off is that shallow nn configurations spend more wall time in
+    random sampling than strictly necessary; in practice that is dominated by
+    nn-trainable wall time per fit, not by the count of warmup trials.
+    """
+    n_dims = _count_effective_dims(model_type, train_val, tax, model_hyperparameters)
+    return max(N_STARTUP_TRIALS_FLOOR, N_STARTUP_TRIALS_MULT * n_dims)
 
 
 def _get_slurm_resource(resource_name: str, default_value: int = 0) -> int:
@@ -143,9 +263,15 @@ def _define_search_algo(
 
     sampler_kwargs = {"seed": seed_model}
     if sampler_class in (TPESampler, CmaEsSampler, GPSampler):
-        # These samplers can use n_startup_trials to better explore the space
-        # todo: expose this paraemter to user such that it can be configured
-        sampler_kwargs["n_startup_trials"] = 1000
+        # n_startup_trials sized from the model's effective search-space
+        # dimensionality (see _adaptive_n_startup_trials). The previous default
+        # of 1000 was a hand-set upper bound that, on most ritme runs,
+        # consumed the entire time budget on random sampling and prevented TPE
+        # from engaging.
+        n_startup = model_hyperparameters.get("n_startup_trials") or (
+            _adaptive_n_startup_trials(exp_name, train_val, tax, model_hyperparameters)
+        )
+        sampler_kwargs["n_startup_trials"] = n_startup
     if sampler_class is TPESampler:
         # handles conditional search spaces well
         sampler_kwargs["multivariate"] = True
@@ -259,6 +385,7 @@ def run_trials(
     scheduler_max_t: int = DEFAULT_SCHEDULER_MAX_T,
     resources: dict = None,
     task_type: str = "regression",
+    k_folds: int = 1,
 ) -> ResultGrid:
     if model_hyperparameters is None:
         model_hyperparameters = {}
@@ -341,6 +468,7 @@ def run_trials(
                 cpus_per_trial=cpus_per_trial,
                 gpus_per_trial=gpus_per_trial,
                 task_type=task_type,
+                k_folds=k_folds,
             ),
             resources,
         ),
@@ -416,6 +544,7 @@ def run_all_trials(
     model_hyperparameters: dict = {},
     optuna_searchspace_sampler: str = "TPESampler",
     task_type: str = "regression",
+    k_folds: int = 1,
 ) -> dict[str, ResultGrid]:
     results_all = {}
 
@@ -529,6 +658,7 @@ def run_all_trials(
             model_hyperparameters=model_hparams_type,
             optuna_searchspace_sampler=optuna_searchspace_sampler,
             task_type=task_type,
+            k_folds=k_folds,
         )
         results_all[model] = result
     return results_all

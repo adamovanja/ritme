@@ -6,13 +6,20 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
 
+import joblib
 import numpy as np
 import pandas as pd
+import ray
 import skbio
+import torch
 from parameterized import parameterized
 from ray import tune
-from sklearn.linear_model import LinearRegression
+from sklearn.base import BaseEstimator
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import ElasticNet, LinearRegression, LogisticRegression
 from sklearn.metrics import mean_squared_error, r2_score, root_mean_squared_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from ritme.evaluate_models import (
     TunedModel,
@@ -20,7 +27,10 @@ from ritme.evaluate_models import (
     get_model,
     get_predictions,
     get_taxonomy,
+    load_nn_model,
+    load_xgb_model,
 )
+from ritme.feature_space._process_train import KFoldEngineered
 from ritme.model_space import static_trainables as st
 from ritme.split_train_test import _split_data_grouped
 from ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
@@ -111,6 +121,19 @@ class TestTrainables(unittest.TestCase):
         self.seed_data = 0
         self.seed_model = 0
         self.tax = pd.DataFrame([])
+        # Lightning's default Trainer writes lightning_logs/ to the cwd; redirect
+        # those into a per-test tmpdir so the repo root stays clean and the logs
+        # are removed when the test ends.
+        self._original_cwd = os.getcwd()
+        self._lightning_tmp = tempfile.TemporaryDirectory(
+            prefix="ritme_lightning_logs_"
+        )
+        os.chdir(self._lightning_tmp.name)
+        self.addCleanup(self._restore_cwd_and_cleanup)
+
+    def _restore_cwd_and_cleanup(self):
+        os.chdir(self._original_cwd)
+        self._lightning_tmp.cleanup()
 
     @patch("ritme.model_space.static_trainables.process_train")
     @patch("ritme.model_space.static_trainables.StandardScaler.fit_transform")
@@ -949,3 +972,1960 @@ class TestNNTuneReportCheckpointCallback(unittest.TestCase):
         self.assertEqual(
             mock_report.call_args.kwargs.get("checkpoint"), "fallback_checkpoint"
         )
+
+
+class TestKfoldHelpers(unittest.TestCase):
+    """Helpers used by the K-fold path of every sklearn-style trainable."""
+
+    def test_aggregate_fold_metrics_emits_mean_std_se(self):
+        per_fold = [
+            {"rmse_val": 0.40, "r2_val": 0.5},
+            {"rmse_val": 0.50, "r2_val": 0.4},
+            {"rmse_val": 0.60, "r2_val": 0.3},
+        ]
+        out = st._aggregate_fold_metrics(per_fold)
+        # Bare key tracks the mean (so existing single-split metric names
+        # keep working as Ray Tune's optimisation target).
+        self.assertAlmostEqual(out["rmse_val"], 0.50, places=6)
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.50, places=6)
+        # Sample std (ddof=1) of [0.4, 0.5, 0.6] is 0.1; SE = 0.1 / sqrt(3).
+        self.assertAlmostEqual(out["rmse_val_std"], 0.1, places=6)
+        self.assertAlmostEqual(out["rmse_val_se"], 0.1 / np.sqrt(3), places=6)
+        self.assertEqual(out["n_folds"], 3)
+
+    def test_aggregate_fold_metrics_handles_single_fold(self):
+        # Single-fold input cannot support a meaningful SE; emit NaN so the
+        # downstream 1-SE rule recognises the trial as unreliable.
+        out = st._aggregate_fold_metrics([{"rmse_val": 0.45}])
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.45, places=6)
+        self.assertTrue(np.isnan(out["rmse_val_std"]))
+        self.assertTrue(np.isnan(out["rmse_val_se"]))
+        self.assertEqual(out["n_folds"], 1)
+
+    def test_aggregate_fold_metrics_skips_nan_only_keys(self):
+        per_fold = [{"rmse_val": np.nan}, {"rmse_val": np.nan}]
+        out = st._aggregate_fold_metrics(per_fold)
+        self.assertNotIn("rmse_val", out)
+        self.assertEqual(out["n_folds"], 2)
+
+    def test_allocate_fold_resources_splits_cpus(self):
+        # 14 CPUs, 5 folds -> 5 fold workers, 2 cpus per inner fit.
+        n, c = st._allocate_fold_resources(n_splits=5, cpus_per_trial=14)
+        self.assertEqual(n, 5)
+        self.assertEqual(c, 2)
+
+    def test_allocate_fold_resources_caps_workers_at_cpu_count(self):
+        # 4 CPUs, 10 folds -> 4 workers in parallel, 1 cpu each.
+        n, c = st._allocate_fold_resources(n_splits=10, cpus_per_trial=4)
+        self.assertEqual(n, 4)
+        self.assertEqual(c, 1)
+
+    def test_allocate_fold_resources_handles_single_cpu(self):
+        n, c = st._allocate_fold_resources(n_splits=5, cpus_per_trial=1)
+        self.assertEqual(n, 1)
+        self.assertEqual(c, 1)
+
+    def test_fit_one_fold_sklearn_regression_uses_correct_train_val_slices(self):
+        """``_fit_one_fold_sklearn_regression`` takes pre-engineered
+        ``(X_tr, y_tr, X_va, y_va)`` tuples directly (no more index slicing
+        inside the task -- per-fold engineering happens upstream in
+        ``process_train_kfold``). A regression that accidentally swapped
+        train/val would compute "val" metrics on the train set or vice
+        versa; this test pins the contract by recomputing metrics
+        independently from the produced slices.
+        """
+        rng = np.random.default_rng(0)
+        n_rows, n_features = 20, 4
+        X_full = rng.normal(size=(n_rows, n_features))
+        y_full = X_full.sum(axis=1) + rng.normal(size=n_rows) * 0.05
+        X_tr, y_tr = X_full[:15], y_full[:15]
+        X_va, y_va = X_full[15:], y_full[15:]
+
+        out = st._fit_one_fold_sklearn_regression(
+            X_tr,
+            y_tr,
+            X_va,
+            y_va,
+            estimator_builder=st._build_linreg,
+            builder_kwargs={"alpha": 0.01, "l1_ratio": 0.5},
+            seed_model=0,
+            cpus_per_fold=1,
+        )
+
+        # Independently recompute the expected metrics.
+        fit_model = st._build_linreg(alpha=0.01, l1_ratio=0.5)
+        fit_model.fit(X_tr, y_tr)
+        rmse_tr_exp, r2_tr_exp = st._predict_rmse_r2(fit_model, X_tr, y_tr)
+        rmse_va_exp, r2_va_exp = st._predict_rmse_r2(fit_model, X_va, y_va)
+        self.assertAlmostEqual(out["rmse_train"], rmse_tr_exp, places=8)
+        self.assertAlmostEqual(out["r2_train"], r2_tr_exp, places=8)
+        self.assertAlmostEqual(out["rmse_val"], rmse_va_exp, places=8)
+        self.assertAlmostEqual(out["r2_val"], r2_va_exp, places=8)
+
+        # And a sanity contrast: swapping train/val must change the numbers
+        # (i.e. they are not symmetric / mistakenly computed on the wrong
+        # slice in some way).
+        swapped = st._fit_one_fold_sklearn_regression(
+            X_va,
+            y_va,
+            X_tr,
+            y_tr,
+            estimator_builder=st._build_linreg,
+            builder_kwargs={"alpha": 0.01, "l1_ratio": 0.5},
+            seed_model=0,
+            cpus_per_fold=1,
+        )
+        self.assertNotAlmostEqual(out["rmse_val"], swapped["rmse_val"], places=6)
+
+    @patch("ritme.model_space.static_trainables.ray")
+    def test_throttled_fold_dispatch_bounds_in_flight_and_runs_refit_after(
+        self, mock_ray
+    ):
+        """The shared dispatcher submits at most ``n_workers`` fold tasks
+        concurrently and submits the refit task only after all folds have
+        completed. Earlier the dispatcher fired K+1 tasks at once with
+        ``num_cpus=0``, allowing peak threads to roughly double the trial's
+        CPU reservation.
+        """
+        n_folds = 5
+        n_workers = 2
+
+        in_flight_history = []  # snapshots of len(in_flight) over time
+        submit_order = []
+        refit_called_at_step = [None]
+        step = [0]
+
+        def fake_submit_fold(i):
+            submit_order.append(("fold", i, step[0]))
+            step[0] += 1
+            return ("fold_ref", i)
+
+        def fake_submit_refit():
+            refit_called_at_step[0] = step[0]
+            submit_order.append(("refit", None, step[0]))
+            step[0] += 1
+            return ("refit_ref",)
+
+        # ray.wait returns one ready ref at a time (FIFO order of the
+        # in-flight refs we hand it), simulating a worker freeing up.
+        def fake_ray_wait(refs, num_returns):
+            in_flight_history.append(len(refs))
+            return ([refs[0]], refs[1:])
+
+        # ray.get returns a numbered fake metric dict keyed by fold index.
+        def fake_ray_get(ref):
+            if isinstance(ref, tuple) and ref[0] == "fold_ref":
+                return {"rmse_val": 0.1 * ref[1]}
+            return {"full": True}
+
+        mock_ray.wait.side_effect = fake_ray_wait
+        mock_ray.get.side_effect = fake_ray_get
+
+        fold_results, refit_result = st._dispatch_folds_then_refit(
+            submit_fold=fake_submit_fold,
+            n_folds=n_folds,
+            submit_refit=fake_submit_refit,
+            n_workers=n_workers,
+        )
+
+        # Folds appear in submission order (one slot per index).
+        self.assertEqual(len(fold_results), n_folds)
+        for i, r in enumerate(fold_results):
+            self.assertAlmostEqual(r["rmse_val"], 0.1 * i, places=6)
+        # Refit happens after all folds.
+        self.assertEqual(refit_result, {"full": True})
+        fold_submit_steps = [s for kind, _, s in submit_order if kind == "fold"]
+        self.assertTrue(
+            refit_called_at_step[0] > max(fold_submit_steps),
+            "refit must be submitted after every fold has been submitted",
+        )
+        # In-flight count never exceeds n_workers at the moment of any
+        # ``ray.wait`` call.
+        self.assertTrue(in_flight_history, "ray.wait should be invoked")
+        self.assertLessEqual(max(in_flight_history), n_workers)
+
+    def test_aggregate_fold_metrics_one_valid_value_yields_nan_se(self):
+        """A single valid observation cannot support a meaningful SE: K-1
+        folds returned NaN (degenerate val split, SIGSEGV worker, etc.), so
+        the trial's mean is a single-fold point estimate masquerading as a
+        K-fold result. Emit ``_se = NaN`` so the downstream 1-SE rule can
+        recognise the trial as unreliable and exclude it from selection,
+        rather than silently treating it as a zero-noise winner.
+        """
+        per_fold = [
+            {"rmse_val": np.nan},
+            {"rmse_val": np.nan},
+            {"rmse_val": 0.42},
+        ]
+        out = st._aggregate_fold_metrics(per_fold)
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.42, places=6)
+        self.assertTrue(np.isnan(out["rmse_val_std"]))
+        self.assertTrue(np.isnan(out["rmse_val_se"]))
+        self.assertEqual(out["n_folds"], 3)
+
+    def test_aggregate_fold_metrics_partial_nan_uses_only_valid_for_se(self):
+        """SE divisor uses the count of *valid* observations, not the total
+        fold count. With 3 real values and 2 NaNs, ``se == std / sqrt(3)``
+        (not ``std / sqrt(5)``).
+        """
+        per_fold = [
+            {"rmse_val": 0.40},
+            {"rmse_val": np.nan},
+            {"rmse_val": 0.50},
+            {"rmse_val": np.nan},
+            {"rmse_val": 0.60},
+        ]
+        out = st._aggregate_fold_metrics(per_fold)
+        # std (ddof=1) of [0.4, 0.5, 0.6] is 0.1; SE = 0.1 / sqrt(3).
+        self.assertAlmostEqual(out["rmse_val_mean"], 0.50, places=6)
+        self.assertAlmostEqual(out["rmse_val_std"], 0.1, places=6)
+        self.assertAlmostEqual(out["rmse_val_se"], 0.1 / np.sqrt(3), places=6)
+        # NOT divided by 5 (the total fold count).
+        self.assertNotAlmostEqual(out["rmse_val_se"], 0.1 / np.sqrt(5), places=6)
+        self.assertEqual(out["n_folds"], 5)
+
+    def test_xgb_refit_rounds_fallback_when_any_fold_none(self):
+        self.assertEqual(st._xgb_refit_rounds([None, 5, 8], 100), 100)
+        self.assertEqual(st._xgb_refit_rounds([3, None, 8], 100), 100)
+        self.assertEqual(st._xgb_refit_rounds([None, None, None], 100), 100)
+
+    def test_xgb_refit_rounds_median_plus_one(self):
+        self.assertEqual(st._xgb_refit_rounds([4, 5, 6], 100), 6)
+        # median=3.5 -> int=3, +1 = 4
+        self.assertEqual(st._xgb_refit_rounds([2, 3, 4, 5], 100), 4)
+        # 1-tree refit is legitimate
+        self.assertEqual(st._xgb_refit_rounds([0, 0, 0], 100), 1)
+
+    def test_nn_refit_epochs_fallback_when_any_fold_none(self):
+        self.assertEqual(st._nn_refit_epochs([None, 5, 8], 100), 100)
+        self.assertEqual(st._nn_refit_epochs([None, None, None], 100), 100)
+
+    def test_nn_refit_epochs_median_plus_one(self):
+        self.assertEqual(st._nn_refit_epochs([3, 4, 5], 100), 5)
+        self.assertEqual(st._nn_refit_epochs([2, 3, 4, 5], 100), 4)
+        # I-1 fix: median=0 must NOT fall back to max_epochs_config;
+        # refits for 1 epoch.
+        self.assertEqual(st._nn_refit_epochs([0, 0, 0], 100), 1)
+        # And a single positive value still rounds correctly.
+        self.assertEqual(st._nn_refit_epochs([7], 100), 8)
+
+    def test_extract_best_epoch_returns_none_when_never_fired(self):
+        early_stop = MagicMock(stopped_epoch=0, patience=10)
+        self.assertIsNone(st._extract_best_epoch(early_stop, max_epochs=100))
+
+    def test_extract_best_epoch_clamps_below_zero(self):
+        early_stop = MagicMock(stopped_epoch=3, patience=10)
+        # 3 - 10 = -7, clamps to 0
+        self.assertEqual(st._extract_best_epoch(early_stop, max_epochs=100), 0)
+
+    def test_extract_best_epoch_normal_case(self):
+        early_stop = MagicMock(stopped_epoch=25, patience=10)
+        # 25 - 10 = 15
+        self.assertEqual(st._extract_best_epoch(early_stop, max_epochs=100), 15)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    def test_emit_running_fold_aggregate_skips_last_fold(self, mock_report):
+        # The final fold is surfaced by the post-refit final report (which
+        # also carries the deployable checkpoint), so the helper must NOT
+        # emit on ``fold_idx == n_splits - 1``.
+        st._emit_running_fold_aggregate(
+            per_fold_metrics=[{"rmse_val": 0.4}, {"rmse_val": 0.5}, {"rmse_val": 0.6}],
+            nb_features=10,
+            fold_idx=2,
+            n_splits=3,
+        )
+        mock_report.assert_not_called()
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    def test_emit_running_fold_aggregate_emits_growing_aggregate(self, mock_report):
+        # For folds 0..K-2 the helper emits a running aggregate. ``n_folds``
+        # in the payload must equal the count of completed folds (not the
+        # total ``n_splits``), and no ``checkpoint`` kwarg is attached --
+        # the deployable artifact only exists after the post-loop refit.
+        st._emit_running_fold_aggregate(
+            per_fold_metrics=[{"rmse_val": 0.4}],
+            nb_features=10,
+            fold_idx=0,
+            n_splits=3,
+        )
+        st._emit_running_fold_aggregate(
+            per_fold_metrics=[{"rmse_val": 0.4}, {"rmse_val": 0.5}],
+            nb_features=10,
+            fold_idx=1,
+            n_splits=3,
+        )
+        self.assertEqual(mock_report.call_count, 2)
+        for actual_call, expected_n_folds in zip(mock_report.call_args_list, (1, 2)):
+            metrics = actual_call.kwargs["metrics"]
+            self.assertEqual(metrics["n_folds"], expected_n_folds)
+            self.assertEqual(metrics["nb_features"], 10)
+            self.assertIn("rmse_val", metrics)
+            self.assertNotIn("checkpoint", actual_call.kwargs)
+
+
+class TestKfoldTrainables(unittest.TestCase):
+    """End-to-end mocked tests for the K-fold path of each sklearn-style
+    trainable. Each trainable's K-fold path goes through
+    ``process_train_kfold`` -> ``_dispatch_kfold_and_refit_sklearn`` ->
+    ``_finalize_and_report_sklearn``. We mock ``process_train_kfold`` and
+    ``_dispatch_kfold_and_refit_sklearn`` so the test stays in-process (no
+    Ray cluster spin-up), and patch ``ray.tune.get_context`` / ``tune.report``
+    to capture what was reported.
+    """
+
+    def setUp(self):
+        super().setUp()
+        np.random.seed(0)
+        n_rows = 30
+        n_features = 5
+        # 30 rows × 5 F-features + host_id grouping column. Targets are a
+        # noisy sum so any real model fit produces finite metrics.
+        X = np.random.randn(n_rows, n_features)
+        feature_cols = [f"F{i}" for i in range(n_features)]
+        df = pd.DataFrame(X, columns=feature_cols)
+        df["target"] = X.sum(axis=1) + np.random.randn(n_rows) * 0.1
+        df["host_id"] = np.repeat(np.arange(10), 3)  # 10 hosts, 3 rows each
+        self.train_val = df
+        self.feature_cols = feature_cols
+        self.X_full = X
+        self.y_reg = df["target"].values
+        # Classification targets in {0, 1, 2} so log_loss/roc_auc work.
+        self.y_class = np.tile([0, 1, 2], n_rows // 3)[:n_rows].astype(float)
+        self.target = "target"
+        self.host_id = "host_id"
+        self.seed_data = 0
+        self.seed_model = 0
+        self.tax = pd.DataFrame([])
+        self.tree_phylo = skbio.TreeNode()
+        # Per-fold metric dicts the mocked dispatcher will return.
+        self.reg_fold_metrics = [
+            {"rmse_val": 0.40, "rmse_train": 0.30, "r2_val": 0.7, "r2_train": 0.8},
+            {"rmse_val": 0.50, "rmse_train": 0.32, "r2_val": 0.6, "r2_train": 0.78},
+            {"rmse_val": 0.60, "rmse_train": 0.34, "r2_val": 0.5, "r2_train": 0.76},
+        ]
+        self.class_fold_metrics = [
+            {
+                "roc_auc_macro_ovr_val": 0.80,
+                "roc_auc_macro_ovr_train": 0.90,
+                "f1_macro_val": 0.70,
+                "f1_macro_train": 0.85,
+                "balanced_accuracy_val": 0.72,
+                "balanced_accuracy_train": 0.86,
+                "mcc_val": 0.55,
+                "mcc_train": 0.75,
+                "log_loss_val": 0.65,
+                "log_loss_train": 0.40,
+            },
+            {
+                "roc_auc_macro_ovr_val": 0.78,
+                "roc_auc_macro_ovr_train": 0.91,
+                "f1_macro_val": 0.68,
+                "f1_macro_train": 0.86,
+                "balanced_accuracy_val": 0.71,
+                "balanced_accuracy_train": 0.87,
+                "mcc_val": 0.53,
+                "mcc_train": 0.76,
+                "log_loss_val": 0.66,
+                "log_loss_train": 0.41,
+            },
+            {
+                "roc_auc_macro_ovr_val": 0.82,
+                "roc_auc_macro_ovr_train": 0.89,
+                "f1_macro_val": 0.72,
+                "f1_macro_train": 0.84,
+                "balanced_accuracy_val": 0.74,
+                "balanced_accuracy_train": 0.85,
+                "mcc_val": 0.57,
+                "mcc_train": 0.74,
+                "log_loss_val": 0.64,
+                "log_loss_train": 0.39,
+            },
+        ]
+        # Lightning's default Trainer writes lightning_logs/ to the cwd; redirect
+        # those into a per-test tmpdir so the repo root stays clean and the logs
+        # are removed when the test ends.
+        self._original_cwd = os.getcwd()
+        self._lightning_tmp = tempfile.TemporaryDirectory(
+            prefix="ritme_lightning_logs_"
+        )
+        os.chdir(self._lightning_tmp.name)
+        self.addCleanup(self._restore_cwd_and_cleanup)
+
+    def _restore_cwd_and_cleanup(self):
+        os.chdir(self._original_cwd)
+        self._lightning_tmp.cleanup()
+
+    def _make_kfold_engineered(self, n_splits=3, classification=False):
+        """Build a KFoldEngineered NamedTuple with the synthetic fixture data.
+
+        Each fold's ``(X_tr, y_tr, X_va, y_va)`` is sliced from the full
+        fixture matrix -- the dispatcher is mocked downstream so the per-fold
+        engineering is faithful only in shape, not in true train/val
+        independence. ``X_refit`` / ``y_refit`` are the full fixture matrix
+        (matches the deployable-refit contract).
+        """
+        y = self.y_class if classification else self.y_reg
+        rows = self.X_full.shape[0]
+        per_fold_size = rows // n_splits
+        folds = []
+        for k in range(n_splits):
+            val_start = k * per_fold_size
+            val_end = (k + 1) * per_fold_size if k < n_splits - 1 else rows
+            val_idx = np.arange(val_start, val_end)
+            train_idx = np.setdiff1d(np.arange(rows), val_idx)
+            folds.append(
+                (
+                    self.X_full[train_idx],
+                    y[train_idx],
+                    self.X_full[val_idx],
+                    y[val_idx],
+                )
+            )
+        return KFoldEngineered(
+            folds=folds,
+            X_refit=self.X_full,
+            y_refit=np.asarray(y),
+            ft_ls_used=self.feature_cols,
+        )
+
+    def _assert_kfold_report(self, mock_report, metric_name, n_splits=3):
+        """Common assertions for any K-fold sklearn-style trainable."""
+        mock_report.assert_called_once()
+        # tune.report(metrics=...) keyword-only call from
+        # _finalize_and_report_sklearn.
+        reported = mock_report.call_args.kwargs.get("metrics")
+        if reported is None:
+            # Fallback for positional call.
+            reported = mock_report.call_args.args[0]
+        self.assertIsInstance(reported, dict)
+        # Required keys.
+        for key in (
+            metric_name,
+            f"{metric_name}_mean",
+            f"{metric_name}_std",
+            f"{metric_name}_se",
+            "n_folds",
+            "model_path",
+            "nb_features",
+        ):
+            self.assertIn(key, reported)
+        # Bare key tracks the mean.
+        self.assertAlmostEqual(
+            reported[metric_name], reported[f"{metric_name}_mean"], places=12
+        )
+        # SE is a finite real, not NaN.
+        se = reported[f"{metric_name}_se"]
+        self.assertFalse(np.isnan(se))
+        self.assertGreaterEqual(se, 0.0)
+        # n_folds matches the requested splits.
+        self.assertEqual(reported["n_folds"], n_splits)
+        # nb_features matches the design matrix's column count.
+        self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+        # model_path saved file exists and is loadable.
+        model_path = reported["model_path"]
+        self.assertTrue(os.path.exists(model_path))
+        loaded = joblib.load(model_path)
+        self.assertIsInstance(loaded, BaseEstimator)
+        # Loaded estimator is already fitted (calling predict must not raise).
+        loaded.predict(self.X_full[:1])
+        return reported
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_linreg_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        # Real fitted estimator so the saved model is loadable end-to-end.
+        fitted = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("linreg", ElasticNet(alpha=0.1, l1_ratio=0.5)),
+            ]
+        ).fit(self.X_full, self.y_reg)
+        mock_dispatch.return_value = (list(self.reg_fold_metrics), fitted)
+
+        config = {"alpha": 0.1, "l1_ratio": 0.5}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_linreg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_linreg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "rmse_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_rf_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        fitted = RandomForestRegressor(n_estimators=5, random_state=0).fit(
+            self.X_full, self.y_reg
+        )
+        mock_dispatch.return_value = (list(self.reg_fold_metrics), fitted)
+
+        config = {
+            "n_estimators": 5,
+            "max_depth": 3,
+            "min_samples_split": 0.2,
+            "min_weight_fraction_leaf": 0.001,
+            "min_samples_leaf": 0.1,
+            "max_features": "sqrt",
+            "min_impurity_decrease": 0.0,
+            "bootstrap": True,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_rf"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_rf(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "rmse_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_xgb`` runs the real fold loop and emits one
+        aggregated ``tune.report`` call with mean/std/SE per metric.
+
+        We do NOT mock xgb internals or ``process_train_kfold`` -- the real
+        fold loop must run, and the bare metric keys / ``n_folds`` /
+        ``nb_features`` must be present in the aggregated dict.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_xgb"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            for key in ("rmse_val", "rmse_train", "r2_val", "r2_train"):
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_emits_running_aggregate_per_fold(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold trainables emit a running aggregate after each completed
+        fold (no checkpoint) plus a final aggregate with checkpoint, so
+        ASHA can prune before all K folds finish.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": "variance_threshold",
+            "data_selection_t": 0.0,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_get_context.return_value = MagicMock()
+            mock_get_context.return_value.get_trial_dir.return_value = tmpdir
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            # Exactly K=3 reports: 2 running mid-trial + 1 final.
+            self.assertEqual(mock_report.call_count, 3)
+
+            calls = mock_report.call_args_list
+
+            # Mid-trial reports carry a running aggregate (n_folds grows
+            # 1, 2) and no checkpoint -- the deployable artifact only
+            # exists after the post-loop refit.
+            for fold_idx, expected_n_folds in enumerate((1, 2), start=0):
+                metrics = calls[fold_idx].kwargs.get("metrics")
+                if metrics is None:
+                    metrics = calls[fold_idx].args[0]
+                self.assertEqual(metrics["n_folds"], expected_n_folds)
+                self.assertIn("rmse_val", metrics)
+                self.assertNotIn(
+                    "checkpoint",
+                    calls[fold_idx].kwargs,
+                    "Mid-trial reports must NOT carry a checkpoint",
+                )
+
+            # Final report has the full aggregate AND a checkpoint kwarg
+            # for the deployable refit booster.
+            final = calls[-1]
+            final_metrics = final.kwargs.get("metrics") or final.args[0]
+            self.assertEqual(final_metrics["n_folds"], 3)
+            self.assertIn(
+                "checkpoint",
+                final.kwargs,
+                "Final report must carry the refit checkpoint",
+            )
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_class_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_xgb_class`` runs the real fold loop and
+        emits one aggregated ``tune.report`` call with mean/std/SE per
+        classification metric.
+
+        Mirrors ``test_train_xgb_kfold_reports_aggregated_metrics`` but with
+        a 3-class numeric target so ``multi:softprob`` is exercised end-to-end:
+        feature engineering, K-fold splitting, per-fold xgb fit + best-iter
+        metric eval, aggregation, and the full-data refit all run for real.
+        """
+        # Overwrite the regression target with a 3-class numeric target so
+        # process_train_kfold treats it as numeric (returns floats), and
+        # the trainable rounds + LabelEncodes inside the xgb-class path.
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_xgb_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=3,
+            )
+
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            # Mirror the metric KEYS that single-split train_xgb_class emits
+            # (see its _RitmeXGBCheckpointCallback metrics dict).
+            metric_keys = (
+                "roc_auc_macro_ovr_train",
+                "roc_auc_macro_ovr_val",
+                "log_loss_train",
+                "log_loss_val",
+                "f1_macro_train",
+                "f1_macro_val",
+                "balanced_accuracy_train",
+                "balanced_accuracy_val",
+                "mcc_train",
+                "mcc_val",
+            )
+            for key in metric_keys:
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_saves_loadable_checkpoint(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold refit booster is surfaced as a Ray Tune ``Checkpoint`` and
+        is loadable end-to-end through ``load_xgb_model`` / ``TunedModel``.
+
+        Verifies that the K-fold branch wires the deployable checkpoint
+        through the *same* ``tune.report(metrics=..., checkpoint=...)`` API
+        the single-split path uses (see
+        :class:`_RitmeXGBCheckpointCallback`), so a downstream consumer
+        consuming a ``Result`` object can reconstruct the trained booster
+        via :func:`load_xgb_model` and predict on a fresh holdout.
+
+        ``_save_xgb_checkpoint`` is a context manager whose temp dir is
+        torn down at the close of the ``with`` block in
+        ``_run_kfold_xgb``; the real Ray Tune ``tune.report`` persists the
+        checkpoint contents to durable storage during the call, so the
+        temp dir going away after the report is fine. Under a mocked
+        ``tune.report`` that durable-copy never happens, so we use
+        ``side_effect`` to materialise the checkpoint to a stable directory
+        WHILE the trainable's ``with`` block is still open, then validate
+        the load + predict after the trainable returns.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_xgb_ckpt"
+            mock_get_context.return_value = mock_ctx
+
+            # Persist the checkpoint contents to a stable directory during
+            # the patched ``tune.report`` call. Ray's ``Checkpoint`` wraps a
+            # temp dir whose lifetime ends with the context manager in
+            # ``_save_xgb_checkpoint``, so we must read it now -- not after
+            # the trainable returns. Mirrors what real Ray Tune does during
+            # ``tune.report``: stage the checkpoint to durable storage.
+            persisted = {}
+            stable_ckpt_dir = os.path.join(tmpdir, "persisted_checkpoint")
+
+            def _persist(*args, **kwargs):
+                checkpoint = kwargs.get("checkpoint")
+                if checkpoint is None and len(args) >= 2:
+                    checkpoint = args[1]
+                if checkpoint is None:
+                    # Mid-trial running-aggregate report; no checkpoint
+                    # expected until the final post-refit report.
+                    return
+                # Copy the checkpoint files to a path that outlives the
+                # trainable's temp dir.
+                src = checkpoint.to_directory()
+                shutil.copytree(src, stable_ckpt_dir)
+                persisted["metrics"] = kwargs.get("metrics") or (
+                    args[0] if args else None
+                )
+
+            mock_report.side_effect = _persist
+
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            # K-fold trials emit K=3 reports: 2 running-aggregate
+            # mid-trial reports + 1 final with checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
+            self.assertTrue(
+                os.path.isfile(os.path.join(stable_ckpt_dir, "checkpoint")),
+                "K-fold refit checkpoint must land at the 'checkpoint' "
+                "filename load_xgb_model reads via _get_checkpoint_path.",
+            )
+
+            # Exercise the public reload surface. ``load_xgb_model`` reads
+            # ``result.checkpoint.to_directory() / 'checkpoint'``; we wrap
+            # the stable directory in a fresh Checkpoint so the stub
+            # ``Result`` mirrors what Ray Tune would hand back.
+            stable_checkpoint = ray.train.Checkpoint.from_directory(stable_ckpt_dir)
+            fake_result = MagicMock()
+            fake_result.checkpoint = stable_checkpoint
+            loaded_booster = load_xgb_model(fake_result)
+            self.assertIsInstance(loaded_booster, st.xgb.Booster)
+
+            # Wrap in TunedModel so the public reload surface (the way the
+            # orchestrator instantiates it from a Result) is exercised.
+            tuned = TunedModel(
+                model=loaded_booster,
+                data_config={k: v for k, v in config.items() if k.startswith("data_")},
+                tax=self.tax,
+                path=tmpdir,
+                model_type="xgb",
+            )
+            self.assertIs(tuned.model, loaded_booster)
+
+            # Smoke-predict on a 5-row holdout using the same feature
+            # schema the refit booster was trained on. ``_run_kfold_xgb``
+            # builds the design matrix via ``process_train_kfold`` from
+            # ``self.train_val`` (5 F-columns under this fixture), so a
+            # 5-row slice of the synthetic feature matrix is the closest
+            # analogue to fresh test data with the same column count.
+            holdout = st.xgb.DMatrix(self.X_full[:5])
+            preds = loaded_booster.predict(holdout)
+            self.assertEqual(preds.shape, (5,))
+            self.assertTrue(np.all(np.isfinite(preds)))
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard: ``train_xgb(..., k_folds=1)`` must keep the original
+        single-split shape -- bare metric keys only, no ``_mean``/``_std``/
+        ``_se`` suffixes and no ``n_folds``. Catches a future regression
+        where the K-fold dispatch accidentally captures ``k_folds=1``.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_xgb"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=1,
+            )
+
+            # Single-split path reports many times (per boost iter); inspect
+            # every reported metrics dict to ensure none leaks K-fold keys.
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Bare metric keys must be present (at least val-side ones --
+                # ``_RitmeXGBCheckpointCallback`` may emit a final fallback
+                # dict from postprocessing alone when early reports are
+                # skipped, so guard on the canonical val key).
+                self.assertIn("rmse_val", reported)
+                # K-fold aggregate keys must NOT be present.
+                for forbidden in (
+                    "rmse_val_mean",
+                    "rmse_val_std",
+                    "rmse_val_se",
+                    "r2_val_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_class_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard for ``train_xgb_class(..., k_folds=1)``: classification
+        single-split path must emit bare metric keys only, with no K-fold
+        aggregate suffixes or ``n_folds``.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_xgb_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=1,
+            )
+
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Bare classification val key must be present.
+                self.assertIn("roc_auc_macro_ovr_val", reported)
+                # No K-fold aggregate keys -- guard against future regression
+                # where ``k_folds=1`` accidentally dispatches into the K-fold
+                # branch (which would emit ``_mean``/``_std``/``_se`` keys
+                # plus ``n_folds``).
+                for forbidden in (
+                    "roc_auc_macro_ovr_val_mean",
+                    "roc_auc_macro_ovr_val_std",
+                    "roc_auc_macro_ovr_val_se",
+                    "log_loss_val_mean",
+                    "f1_macro_val_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_logreg_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=True
+        )
+        fitted = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                (
+                    "logreg",
+                    LogisticRegression(
+                        C=1.0,
+                        penalty="l2",
+                        solver="saga",
+                        max_iter=200,
+                        random_state=0,
+                    ),
+                ),
+            ]
+        ).fit(self.X_full, np.round(self.y_class).astype(int))
+        mock_dispatch.return_value = (list(self.class_fold_metrics), fitted)
+
+        config = {"C": 1.0, "penalty": "l2"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_logreg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_logreg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "roc_auc_macro_ovr_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_rf_class_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=True
+        )
+        fitted = RandomForestClassifier(n_estimators=5, random_state=0).fit(
+            self.X_full, np.round(self.y_class).astype(int)
+        )
+        mock_dispatch.return_value = (list(self.class_fold_metrics), fitted)
+
+        config = {
+            "n_estimators": 5,
+            "max_depth": 3,
+            "min_samples_split": 0.2,
+            "min_weight_fraction_leaf": 0.001,
+            "min_samples_leaf": 0.1,
+            "max_features": "sqrt",
+            "min_impurity_decrease": 0.0,
+            "bootstrap": True,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_rf_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_rf_class(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            self._assert_kfold_report(mock_report, "roc_auc_macro_ovr_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_trac")
+    @patch("ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
+    @patch("ritme.model_space.static_trainables.create_matrix_from_tree")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_trac_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_create_matrix,
+        mock_preprocess,
+        mock_dispatch_trac,
+    ):
+        # Engineered features & fold indices look the same as for sklearn.
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        a_df = pd.DataFrame(
+            np.eye(self.X_full.shape[1]),
+            index=self.feature_cols,
+            columns=self.feature_cols,
+        )
+        mock_create_matrix.return_value = a_df
+        mock_preprocess.return_value = (
+            self.X_full.copy(),
+            np.ones(self.X_full.shape[1]),
+        )
+        # Per-fold metrics for three folds + one full-data refit.
+        per_fold = [
+            {"rmse_val": 0.40, "rmse_train": 0.30, "r2_val": 0.7, "r2_train": 0.8},
+            {"rmse_val": 0.50, "rmse_train": 0.32, "r2_val": 0.6, "r2_train": 0.78},
+            {"rmse_val": 0.60, "rmse_train": 0.34, "r2_val": 0.5, "r2_train": 0.76},
+        ]
+        # Match the trac single-split shape: model = {"model": <alpha DF>}.
+        alpha_df = pd.DataFrame(
+            {"alpha": [0.5, 0.0, 0.3, 0.0, 0.7, 0.2]},
+            index=["intercept"] + self.feature_cols,
+        )
+        full_model = {"model": alpha_df, "matrix_a": a_df}
+        mock_dispatch_trac.return_value = (per_fold, full_model)
+
+        config = {"lambda": 0.1}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_trac"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_trac(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+            )
+
+            mock_report.assert_called_once()
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            for key in (
+                "rmse_val",
+                "rmse_val_mean",
+                "rmse_val_std",
+                "rmse_val_se",
+                "n_folds",
+                "model_path",
+                "nb_features",
+            ):
+                self.assertIn(key, reported)
+            # Bare key tracks the mean.
+            self.assertAlmostEqual(
+                reported["rmse_val"], reported["rmse_val_mean"], places=12
+            )
+            self.assertEqual(reported["n_folds"], 3)
+            # nb_features is the count of non-zero alpha coefficients in the
+            # refit model: alpha_df has 4 non-zero values out of 6.
+            n_nonzero = int((alpha_df["alpha"] != 0.0).sum())
+            self.assertEqual(reported["nb_features"], n_nonzero)
+            # SE is finite and non-negative.
+            self.assertFalse(np.isnan(reported["rmse_val_se"]))
+            self.assertGreaterEqual(reported["rmse_val_se"], 0.0)
+            # The model was pickled to disk by the trainable.
+            self.assertTrue(os.path.exists(reported["model_path"]))
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_nn_reg`` runs the real fold loop and emits
+        one aggregated ``train.report`` call with mean/std/SE per metric.
+
+        Mirrors :meth:`test_train_xgb_kfold_reports_aggregated_metrics` --
+        we do NOT mock Lightning, the model, or ``process_train_kfold``;
+        the real fold loop runs end-to-end on the 30-row synthetic
+        regression fixture.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size chosen to avoid single-sample batches: each host has
+            # 3 rows and groups stay together, so val sizes are multiples of
+            # 3 (6, 9, 12, ...). A batch_size of 3 keeps every batch >=2
+            # samples after the data loader splits the val set.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_reg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            for key in ("rmse_val", "rmse_train", "r2_val", "r2_train"):
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_saves_loadable_checkpoint(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold refit NeuralNet is surfaced as a Ray Tune ``Checkpoint`` and
+        is loadable end-to-end through ``load_nn_model`` / ``TunedModel``.
+
+        Mirrors :meth:`test_train_xgb_kfold_saves_loadable_checkpoint` but for
+        the nn_reg path: verifies the K-fold branch wires the deployable
+        Lightning checkpoint through the same ``tune.report(metrics=...,
+        checkpoint=...)`` API the single-split path uses (see
+        :class:`NNTuneReportCheckpointCallback`), so a downstream consumer
+        holding a ``Result`` object can reconstruct the trained NeuralNet via
+        :func:`load_nn_model` and predict on a fresh holdout.
+
+        ``_save_nn_checkpoint`` is a context manager whose temp dir is torn
+        down at the close of the ``with`` block in ``_run_kfold_nn``; the real
+        Ray Tune ``tune.report`` persists the checkpoint contents to durable
+        storage during the call, so the temp dir going away after the report
+        is fine. Under a mocked ``tune.report`` that durable-copy never
+        happens, so we use ``side_effect`` to materialise the checkpoint to a
+        stable directory WHILE the trainable's ``with`` block is still open,
+        then validate the load + predict after the trainable returns.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash in NeuralNet
+            # (squeeze() collapses a 1-element batch to 0-d, breaking
+            # torch.cat in on_validation_epoch_end). Same workaround used in
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_reg_ckpt"
+            mock_get_context.return_value = mock_ctx
+
+            # Persist the checkpoint contents to a stable directory during
+            # the patched ``tune.report`` call. Ray's ``Checkpoint`` wraps a
+            # temp dir whose lifetime ends with the context manager in
+            # ``_save_nn_checkpoint``, so we must read it now -- not after
+            # the trainable returns. Mirrors what real Ray Tune does during
+            # ``tune.report``: stage the checkpoint to durable storage.
+            stable_ckpt_dir = os.path.join(tmpdir, "persisted_checkpoint")
+
+            def _persist(*args, **kwargs):
+                checkpoint = kwargs.get("checkpoint")
+                if checkpoint is None and len(args) >= 2:
+                    checkpoint = args[1]
+                if checkpoint is None:
+                    # Mid-trial running-aggregate report; no checkpoint
+                    # expected until the final post-refit report.
+                    return
+                src = checkpoint.to_directory()
+                shutil.copytree(src, stable_ckpt_dir)
+
+            mock_report.side_effect = _persist
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            # K-fold trials emit K=3 reports: 2 running-aggregate
+            # mid-trial reports + 1 final with checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
+            self.assertTrue(
+                os.path.isfile(os.path.join(stable_ckpt_dir, "checkpoint")),
+                "K-fold refit checkpoint must land at the 'checkpoint' "
+                "filename load_nn_model reads via _get_checkpoint_path.",
+            )
+
+            # Exercise the public reload surface. ``load_nn_model`` reads
+            # ``result.checkpoint.to_directory() / 'checkpoint'``; we wrap
+            # the stable directory in a fresh Checkpoint so the stub
+            # ``Result`` mirrors what Ray Tune would hand back.
+            stable_checkpoint = ray.train.Checkpoint.from_directory(stable_ckpt_dir)
+            fake_result = MagicMock()
+            fake_result.checkpoint = stable_checkpoint
+            loaded_nn = load_nn_model(fake_result)
+            self.assertIsInstance(loaded_nn, st.NeuralNet)
+
+            # Wrap in TunedModel so the public reload surface (the way the
+            # orchestrator instantiates it from a Result) is exercised.
+            tuned = TunedModel(
+                model=loaded_nn,
+                data_config={k: v for k, v in config.items() if k.startswith("data_")},
+                tax=self.tax,
+                path=tmpdir,
+                model_type="nn_reg",
+            )
+            self.assertIs(tuned.model, loaded_nn)
+
+            # Smoke-predict on a 5-row holdout using the same feature schema
+            # the refit NeuralNet was trained on (5 F-columns under this
+            # fixture). Mirror what ``TunedModel.predict`` does internally
+            # for the NeuralNet branch (eval mode, no_grad, forward,
+            # _prepare_predictions, flatten) so the assertion catches both a
+            # bad checkpoint and a bad reload.
+            loaded_nn.eval()
+            with torch.no_grad():
+                model_device = next(loaded_nn.parameters()).device
+                X_t = (
+                    torch.tensor(self.X_full[:5], dtype=torch.float32)
+                    .clone()
+                    .detach()
+                    .to(model_device)
+                )
+                raw = loaded_nn(X_t)
+                raw = loaded_nn._prepare_predictions(raw)
+                preds = raw.detach().cpu().numpy().flatten()
+            self.assertEqual(preds.shape, (5,))
+            self.assertTrue(np.all(np.isfinite(preds)))
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_class_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_nn_class`` runs the real fold loop and
+        emits one aggregated ``tune.report`` call with mean/std/SE per
+        classification metric.
+
+        Mirrors :meth:`test_train_nn_reg_kfold_reports_aggregated_metrics`
+        but uses the 3-class numeric target ``self.y_class`` and asserts on
+        every key produced by ``_NN_CLASS_METRIC_MAP`` (val + train
+        variants), so a future shrink of that map will trip this test.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash in NeuralNet
+            # (squeeze() collapses a 1-element batch to 0-d, breaking
+            # torch.cat in on_validation_epoch_end). Same workaround used
+            # in test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=3,
+            )
+
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            # Mirror EVERY key emitted by _nn_extract_fold_metrics for the
+            # classification path: each entry of _NN_CLASS_METRIC_MAP gets
+            # both a _val and a _train variant.
+            metric_keys = (
+                "roc_auc_macro_ovr_val",
+                "roc_auc_macro_ovr_train",
+                "log_loss_val",
+                "log_loss_train",
+                "f1_macro_val",
+                "f1_macro_train",
+                "balanced_accuracy_val",
+                "balanced_accuracy_train",
+                "mcc_val",
+                "mcc_train",
+                "loss_val",
+                "loss_train",
+            )
+            for key in metric_keys:
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_corn_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_nn_corn`` (CORN ordinal regression) runs
+        the real fold loop and emits one aggregated ``tune.report`` call
+        with mean/std/SE per metric.
+
+        CORN's head is ordinal but the trainable's ``task_type`` is
+        ``"classification"``, so the reported metric set is the same one
+        produced by :data:`_NN_CLASS_METRIC_MAP`. The 3-class numeric
+        ``self.y_class`` (values ``{0.0, 1.0, 2.0}``) supplies the ordinal
+        labels in increasing order.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see comment
+            # in test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_corn",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_corn"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_corn(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=3,
+            )
+
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            # CORN runs through the same classification metric extraction as
+            # nn_class (task_type="classification"), so assert the full
+            # _NN_CLASS_METRIC_MAP coverage in both val + train variants.
+            metric_keys = (
+                "roc_auc_macro_ovr_val",
+                "roc_auc_macro_ovr_train",
+                "log_loss_val",
+                "log_loss_train",
+                "f1_macro_val",
+                "f1_macro_train",
+                "balanced_accuracy_val",
+                "balanced_accuracy_train",
+                "mcc_val",
+                "mcc_train",
+                "loss_val",
+                "loss_train",
+            )
+            for key in metric_keys:
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard: ``train_nn_reg(..., k_folds=1)`` must keep the
+        original single-split shape -- bare metric keys only, no
+        ``_mean``/``_std``/``_se`` suffixes and no ``n_folds``. Catches a
+        future regression where the K-fold dispatch accidentally captures
+        ``k_folds=1``.
+
+        Mirrors :meth:`test_train_xgb_single_split_no_kfold_aggregates` but
+        runs the real Lightning loop end-to-end on the 30-row synthetic
+        regression fixture; ``NNTuneReportCheckpointCallback`` emits one
+        ``tune.report`` per validation epoch in the single-split path, so we
+        inspect EVERY reported dict.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_nn_reg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=1,
+            )
+
+            # Single-split callback reports per validation epoch; inspect
+            # every reported metrics dict to ensure none leaks K-fold keys.
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                # NNTuneReportCheckpointCallback calls tune.report
+                # positionally (``tune.report(report_dict)`` or
+                # ``tune.report(report_dict, checkpoint=...)``), but accept
+                # the keyword ``metrics=`` shape too for safety.
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Canonical val key must be present -- proves the single-
+                # split path is actually producing metrics.
+                self.assertIn("rmse_val", reported)
+                # K-fold aggregate keys must NOT be present.
+                for forbidden in (
+                    "rmse_val_mean",
+                    "rmse_val_std",
+                    "rmse_val_se",
+                    "rmse_train_mean",
+                    "r2_val_mean",
+                    "r2_train_mean",
+                    "loss_val_mean",
+                    "loss_train_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_class_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard for ``train_nn_class(..., k_folds=1)``: single-split
+        classification path must emit bare metric keys only, with no K-fold
+        aggregate suffixes or ``n_folds``.
+
+        Mirrors :meth:`test_train_xgb_class_single_split_no_kfold_aggregates`
+        but runs the real Lightning loop end-to-end on the 3-class numeric
+        ``self.y_class`` fixture.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_nn_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=1,
+            )
+
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Canonical val key from _NN_CLASS_METRIC_MAP must be present.
+                self.assertIn("roc_auc_macro_ovr_val", reported)
+                # No K-fold aggregate keys -- guard against future regression
+                # where ``k_folds=1`` accidentally dispatches into the K-fold
+                # branch (which would emit ``_mean``/``_std``/``_se`` keys
+                # plus ``n_folds``).
+                for forbidden in (
+                    "roc_auc_macro_ovr_val_mean",
+                    "roc_auc_macro_ovr_val_std",
+                    "roc_auc_macro_ovr_val_se",
+                    "roc_auc_macro_ovr_train_mean",
+                    "log_loss_val_mean",
+                    "log_loss_train_mean",
+                    "f1_macro_val_mean",
+                    "f1_macro_train_mean",
+                    "balanced_accuracy_val_mean",
+                    "balanced_accuracy_train_mean",
+                    "mcc_val_mean",
+                    "mcc_train_mean",
+                    "loss_val_mean",
+                    "loss_train_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_corn_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard for ``train_nn_corn(..., k_folds=1)``: CORN ordinal
+        single-split path must emit bare classification metric keys only,
+        with no K-fold aggregate suffixes or ``n_folds``.
+
+        CORN runs through the same classification metric set as nn_class
+        (``task_type="classification"``), so the guard mirrors
+        :meth:`test_train_nn_class_single_split_no_kfold_aggregates`.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_corn",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_nn_corn"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_corn(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=1,
+            )
+
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Canonical val key from _NN_CLASS_METRIC_MAP must be present.
+                self.assertIn("roc_auc_macro_ovr_val", reported)
+                # No K-fold aggregate keys.
+                for forbidden in (
+                    "roc_auc_macro_ovr_val_mean",
+                    "roc_auc_macro_ovr_val_std",
+                    "roc_auc_macro_ovr_val_se",
+                    "roc_auc_macro_ovr_train_mean",
+                    "log_loss_val_mean",
+                    "log_loss_train_mean",
+                    "f1_macro_val_mean",
+                    "f1_macro_train_mean",
+                    "balanced_accuracy_val_mean",
+                    "balanced_accuracy_train_mean",
+                    "mcc_val_mean",
+                    "mcc_train_mean",
+                    "loss_val_mean",
+                    "loss_train_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)

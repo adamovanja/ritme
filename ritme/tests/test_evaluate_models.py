@@ -10,8 +10,11 @@ from pandas.testing import assert_frame_equal
 from ray.air.result import Result
 
 from ritme.evaluate_models import (
+    _MODEL_SIMPLICITY_KNOBS,
     TunedModel,
     _get_checkpoint_path,
+    _select_best_with_one_se,
+    _trial_simplicity_key,
     get_data_processing,
     get_predictions,
     load_best_model,
@@ -23,6 +26,8 @@ from ritme.evaluate_models import (
     retrieve_n_init_best_models,
     save_best_models,
 )
+from ritme.model_space import static_searchspace as ss
+from ritme.tune_models import _RecordingTrial
 
 
 class TestEvaluateModels(unittest.TestCase):
@@ -624,6 +629,418 @@ class TestBuildDesignMatrix(unittest.TestCase):
         preds = tmodel.predict(self.data, split="train")
         expected = np.max(X.values, axis=1).flatten()
         assert_allclose(preds, expected, rtol=1e-6)
+
+
+def _make_mock_result(metrics: dict, config: dict):
+    """Build a MagicMock standing in for a Ray Tune ``Result`` row."""
+    r = MagicMock(spec=Result)
+    r.metrics = metrics
+    r.config = config
+    return r
+
+
+class TestOneStandardErrorRule(unittest.TestCase):
+    """Picking the simplest configuration whose K-fold mean is within one
+    standard error of the best mean (Hastie/Tibshirani/Friedman 2009 §7.10;
+    glmnet's ``lambda.1se``)."""
+
+    def test_falls_back_to_get_best_when_no_se_present(self):
+        # Single-split runs do not report _se fields. The selector must
+        # defer to Ray Tune's normal best-result lookup.
+        rg = MagicMock()
+        sentinel = MagicMock()
+        rg.get_best_result.return_value = sentinel
+        rg.__iter__ = lambda self: iter(
+            [
+                _make_mock_result({"rmse_val": 0.5, "nb_features": 10}, {"alpha": 1.0}),
+                _make_mock_result(
+                    {"rmse_val": 0.4, "nb_features": 50}, {"alpha": 0.01}
+                ),
+            ]
+        )
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        rg.get_best_result.assert_called_once_with(scope="all")
+        self.assertIs(chosen, sentinel)
+
+    def test_picks_simplest_within_band_for_min_metric(self):
+        # Three configs: A best mean but high SE; B and C both inside the band.
+        # Within the band, the simplest (highest alpha for linreg) should win.
+        a = _make_mock_result(
+            {"rmse_val_mean": 0.45, "rmse_val_se": 0.05, "nb_features": 200},
+            {"alpha": 0.001, "l1_ratio": 0.5},
+        )
+        b = _make_mock_result(
+            {"rmse_val_mean": 0.47, "rmse_val_se": 0.02, "nb_features": 180},
+            {"alpha": 0.01, "l1_ratio": 0.5},
+        )
+        c = _make_mock_result(
+            {"rmse_val_mean": 0.49, "rmse_val_se": 0.01, "nb_features": 60},
+            {"alpha": 1.0, "l1_ratio": 0.5},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([a, b, c])
+        rg.get_best_result.side_effect = AssertionError("must not fall through")
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIs(chosen, c)  # highest alpha + fewest features
+
+    def test_picks_best_when_band_is_just_the_winner(self):
+        # B is far worse than A (gap >> SE). Selector must keep A.
+        a = _make_mock_result(
+            {"rmse_val_mean": 0.40, "rmse_val_se": 0.001, "nb_features": 100},
+            {"alpha": 0.01},
+        )
+        b = _make_mock_result(
+            {"rmse_val_mean": 0.50, "rmse_val_se": 0.001, "nb_features": 50},
+            {"alpha": 1.0},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([a, b])
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIs(chosen, a)
+
+    def test_max_metric_uses_correct_band_direction(self):
+        # roc_auc maximised: best_mean - se to best_mean is the band.
+        a = _make_mock_result(
+            {
+                "roc_auc_macro_ovr_val_mean": 0.85,
+                "roc_auc_macro_ovr_val_se": 0.04,
+                "nb_features": 200,
+            },
+            {"C": 100.0},
+        )
+        b = _make_mock_result(
+            {
+                "roc_auc_macro_ovr_val_mean": 0.82,
+                "roc_auc_macro_ovr_val_se": 0.02,
+                "nb_features": 50,
+            },
+            {"C": 0.01},  # smaller C = more regularised = simpler for logreg
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([a, b])
+        chosen = _select_best_with_one_se(rg, "roc_auc_macro_ovr_val", "max", "logreg")
+        self.assertIs(chosen, b)
+
+    def test_simplicity_key_orders_by_nb_features_first(self):
+        k_low = _trial_simplicity_key("linreg", {"nb_features": 10}, {"alpha": 0.001})
+        k_high = _trial_simplicity_key("linreg", {"nb_features": 100}, {"alpha": 1.0})
+        # nb_features 10 should beat nb_features 100 even when alpha is smaller.
+        self.assertLess(k_low, k_high)
+
+    def test_one_se_rule_uses_only_kfold_trial_when_band_overlaps_single_split_one(
+        self,
+    ):
+        """Mixed result grids -- some trials reported K-fold metrics (with
+        ``_se``), others single-split (no ``_se``) -- must still enter the
+        1-SE band path. The selector must NOT silently fall through to
+        ``get_best_result`` just because some trials are missing ``_se``.
+        """
+        # K-fold trial: has _mean and _se; this is the global best by mean.
+        kfold_best = _make_mock_result(
+            {
+                "rmse_val": 0.42,
+                "rmse_val_mean": 0.42,
+                "rmse_val_se": 0.10,  # wide band: 0.42 + 0.10 covers 0.50 below
+                "nb_features": 200,
+            },
+            {"alpha": 0.001, "l1_ratio": 0.5},
+        )
+        # K-fold trial inside the band: simpler config (fewer features, higher
+        # alpha) should win the simplicity tiebreak within the 1-SE band.
+        kfold_simpler = _make_mock_result(
+            {
+                "rmse_val": 0.50,
+                "rmse_val_mean": 0.50,
+                "rmse_val_se": 0.02,
+                "nb_features": 60,
+            },
+            {"alpha": 1.0, "l1_ratio": 0.5},
+        )
+        # Single-split trial in the same grid -- no _se reported. Its bare
+        # ``rmse_val`` (0.55) is OUTSIDE the band (0.42 + 0.10 = 0.52), so it
+        # is excluded from the band; the selector still treats it as a
+        # candidate with se=0.0 but it isn't selected on simplicity grounds.
+        single_split = _make_mock_result(
+            {"rmse_val": 0.55, "nb_features": 150},
+            {"alpha": 0.01, "l1_ratio": 0.5},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([kfold_best, kfold_simpler, single_split])
+        # If the selector silently fell through to get_best_result, this would
+        # be called -- assert that does NOT happen when any trial has _se.
+        rg.get_best_result.side_effect = AssertionError(
+            "must not fall through to get_best_result when any trial has _se"
+        )
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        # Best mean is kfold_best (0.42); band = best_se = 0.10.
+        # kfold_simpler (0.50) is within the band (0.50 - 0.42 = 0.08 <= 0.10).
+        # single_split (0.55) is outside (0.55 - 0.42 = 0.13 > 0.10).
+        # Within the band {kfold_best, kfold_simpler}, the simpler config
+        # (fewer features, higher alpha) wins.
+        self.assertIs(chosen, kfold_simpler)
+
+    def test_trial_simplicity_key_secondary_axis_breaks_tie_on_equal_nb_features(
+        self,
+    ):
+        """When two configs have identical ``nb_features``, the secondary axis
+        of ``_trial_simplicity_key`` (model-internal regularisation knobs)
+        breaks the tie. For linreg, higher alpha -> stronger regularisation
+        -> simpler -> sorts first.
+        """
+        k_strong = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": 1.0, "l1_ratio": 0.5}
+        )
+        k_weak = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": 0.001, "l1_ratio": 0.5}
+        )
+        # Higher alpha (stronger regularisation) sorts first under
+        # "smaller-is-simpler" ordering.
+        self.assertLess(k_strong, k_weak)
+        # And the primary axis ties:
+        self.assertEqual(k_strong[0], k_weak[0])
+
+    def test_trial_with_nan_se_is_excluded_from_selection(self):
+        """A K-fold trial whose primary metric had K-1 NaN folds produces
+        ``_se = NaN`` (see ``_aggregate_fold_metrics``). Such a trial's mean
+        is a single-fold point estimate dressed up as a K-fold result -- it
+        must not be selectable as 'best' even when its mean is numerically
+        the smallest. The selector picks among the trials with a finite SE.
+        """
+        # Mean=0.30 looks best, but SE=NaN means K-1 folds failed: unreliable.
+        unreliable = _make_mock_result(
+            {"rmse_val_mean": 0.30, "rmse_val_se": float("nan"), "nb_features": 100},
+            {"alpha": 0.001, "l1_ratio": 0.5},
+        )
+        # Reliable K-fold winner with a real, finite SE.
+        reliable_best = _make_mock_result(
+            {"rmse_val_mean": 0.42, "rmse_val_se": 0.02, "nb_features": 80},
+            {"alpha": 1.0, "l1_ratio": 0.5},
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([unreliable, reliable_best])
+        rg.get_best_result.side_effect = AssertionError(
+            "must not fall through when reliable K-fold trials exist"
+        )
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIs(chosen, reliable_best)
+
+    def test_falls_back_when_every_trial_has_nan_se(self):
+        """If no trial has a finite SE (all K-fold trials had K-1 NaN folds,
+        or the grid has only single-split trials), defer to Ray Tune's
+        single-best lookup -- there is no reliable basis for the 1-SE rule.
+        """
+        a = _make_mock_result(
+            {"rmse_val_mean": 0.30, "rmse_val_se": float("nan"), "nb_features": 100},
+            {"alpha": 0.001},
+        )
+        b = _make_mock_result(
+            {"rmse_val_mean": 0.40, "rmse_val_se": float("nan"), "nb_features": 80},
+            {"alpha": 1.0},
+        )
+        rg = MagicMock()
+        sentinel = MagicMock()
+        rg.get_best_result.return_value = sentinel
+        rg.__iter__ = lambda self: iter([a, b])
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        rg.get_best_result.assert_called_once_with(scope="all")
+        self.assertIs(chosen, sentinel)
+
+    def test_simplicity_knobs_match_actual_search_space(self):
+        """Every entry in ``_MODEL_SIMPLICITY_KNOBS`` names a hyperparameter
+        that the corresponding search space actually suggests. Without this
+        check, a rename in ``static_searchspace.py`` (e.g. ``alpha`` to
+        ``alpha_l2``) would silently disable the simplicity-tiebreak for the
+        affected knob -- ``_trial_simplicity_key`` would return ``inf`` for
+        the renamed knob and the 1-SE rule would degenerate to "best mean
+        only" with no warning.
+        """
+        # Tiny dummy train_val with a couple of F-features so search-space
+        # builders that probe column counts don't choke.
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, 8),
+                "F1": np.linspace(0.0, 1.0, 8),
+                "target": np.linspace(0.0, 1.0, 8),
+                "host_id": list(range(8)),
+            }
+        )
+        tax = pd.DataFrame([])
+        for model_type, knobs in _MODEL_SIMPLICITY_KNOBS.items():
+            recorder = _RecordingTrial()
+            ss.get_search_space(
+                recorder,
+                model_type=model_type,
+                train_val=train_val,
+                tax=tax,
+                model_hyperparameters={},
+            )
+            recorded = set(recorder.params.keys())
+            for knob_name, _sign in knobs:
+                self.assertIn(
+                    knob_name,
+                    recorded,
+                    msg=(
+                        f"_MODEL_SIMPLICITY_KNOBS[{model_type!r}] references "
+                        f"unknown hyperparameter {knob_name!r}; update the "
+                        f"table or the {model_type} search space."
+                    ),
+                )
+
+    def test_one_se_rule_iterative_trainables_picks_simplest_in_band(self):
+        """1-SE selection must work for iterative-trainable result grids
+        (xgb / xgb_class / nn_reg / nn_class / nn_corn) once their K-fold path
+        reports ``<metric>_mean`` + ``<metric>_se``. Trial A has the best mean
+        but a maximally complex config; Trial B is within one SE of A and is
+        strictly simpler on every knob in ``_MODEL_SIMPLICITY_KNOBS``. The
+        rule must pick B. ``rmse_val`` is used as the metric name for all
+        model types because ``_select_best_with_one_se`` reads
+        ``f"{metric}_mean"`` / ``f"{metric}_se"`` verbatim and is otherwise
+        metric-agnostic; this exercises the same code path classification
+        trainables hit at runtime with their own metric names.
+        """
+        # Complex / simple configs per model_type. Both trials share the same
+        # ``nb_features`` so the primary axis of ``_trial_simplicity_key``
+        # ties and the per-model knob tiebreak from ``_MODEL_SIMPLICITY_KNOBS``
+        # must do the actual work of picking the simpler trial.
+        complex_simple_configs = {
+            "xgb": (
+                {
+                    "n_estimators": 1000,
+                    "max_depth": 20,
+                    "gamma": 0.0,
+                    "reg_alpha": 0.0,
+                    "reg_lambda": 0.0,
+                },
+                {
+                    "n_estimators": 50,
+                    "max_depth": 3,
+                    "gamma": 1.0,
+                    "reg_alpha": 0.5,
+                    "reg_lambda": 2.0,
+                },
+            ),
+            "xgb_class": (
+                {
+                    "n_estimators": 1000,
+                    "max_depth": 20,
+                    "gamma": 0.0,
+                    "reg_alpha": 0.0,
+                    "reg_lambda": 0.0,
+                },
+                {
+                    "n_estimators": 50,
+                    "max_depth": 3,
+                    "gamma": 1.0,
+                    "reg_alpha": 0.5,
+                    "reg_lambda": 2.0,
+                },
+            ),
+            "nn_reg": (
+                {
+                    "n_hidden_layers": 10,
+                    "dropout_rate": 0.0,
+                    "weight_decay": 1e-8,
+                },
+                {
+                    "n_hidden_layers": 1,
+                    "dropout_rate": 0.5,
+                    "weight_decay": 1e-2,
+                },
+            ),
+            "nn_class": (
+                {
+                    "n_hidden_layers": 10,
+                    "dropout_rate": 0.0,
+                    "weight_decay": 1e-8,
+                },
+                {
+                    "n_hidden_layers": 1,
+                    "dropout_rate": 0.5,
+                    "weight_decay": 1e-2,
+                },
+            ),
+            "nn_corn": (
+                {
+                    "n_hidden_layers": 10,
+                    "dropout_rate": 0.0,
+                    "weight_decay": 1e-8,
+                },
+                {
+                    "n_hidden_layers": 1,
+                    "dropout_rate": 0.5,
+                    "weight_decay": 1e-2,
+                },
+            ),
+        }
+
+        # Sanity guard: every iterative trainable in _MODEL_SIMPLICITY_KNOBS
+        # has a config pair in this test. Catches a future regression where a
+        # new iterative trainable is added to the knobs table but skipped here.
+        self.assertEqual(
+            set(complex_simple_configs.keys()),
+            {"xgb", "xgb_class", "nn_reg", "nn_class", "nn_corn"},
+        )
+
+        for model_type, (complex_cfg, simple_cfg) in complex_simple_configs.items():
+            with self.subTest(model_type=model_type):
+                # Trial A: best mean (1.0) but high SE so the band reaches 1.5.
+                trial_complex = _make_mock_result(
+                    {
+                        "rmse_val_mean": 1.0,
+                        "rmse_val_se": 0.5,
+                        "nb_features": 100,
+                    },
+                    complex_cfg,
+                )
+                # Trial B: within the 1-SE band (1.4 <= 1.0 + 0.5) with a
+                # strictly simpler config on every knob.
+                trial_simple = _make_mock_result(
+                    {
+                        "rmse_val_mean": 1.4,
+                        "rmse_val_se": 0.5,
+                        "nb_features": 100,
+                    },
+                    simple_cfg,
+                )
+                rg = MagicMock()
+                rg.__iter__ = lambda self, _a=trial_complex, _b=trial_simple: iter(
+                    [_a, _b]
+                )
+                rg.get_best_result.side_effect = AssertionError(
+                    "must not fall through to get_best_result when SE is finite"
+                )
+                chosen = _select_best_with_one_se(rg, "rmse_val", "min", model_type)
+                self.assertIs(
+                    chosen,
+                    trial_simple,
+                    msg=(
+                        f"1-SE rule for {model_type!r} should pick the simpler "
+                        f"config within the band, got the complex one instead."
+                    ),
+                )
+
+    def test_trial_simplicity_key_missing_knob_sorts_last_for_negative_sign(self):
+        """Missing/non-numeric knob values must sort LAST regardless of the
+        knob's sign convention. For knobs with ``sign=-1`` (most entries in
+        ``_MODEL_SIMPLICITY_KNOBS``: linreg.alpha, trac.lambda, rf.min_samples_leaf,
+        xgb.gamma/reg_alpha/reg_lambda, nn.dropout_rate/weight_decay), the
+        earlier ``sign * inf`` formulation produced ``-inf`` which sorted FIRST,
+        silently rewarding malformed configs in the 1-SE band.
+        """
+        # Knob present vs knob missing for a negative-sign knob (linreg.alpha):
+        k_present = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": 1.0, "l1_ratio": 0.5}
+        )
+        k_missing_alpha = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"l1_ratio": 0.5}
+        )
+        self.assertLess(k_present, k_missing_alpha)
+
+        # Same property for a non-castable value (e.g. accidental string):
+        k_garbage = _trial_simplicity_key(
+            "linreg", {"nb_features": 50}, {"alpha": "n/a", "l1_ratio": 0.5}
+        )
+        self.assertLess(k_present, k_garbage)
 
 
 if __name__ == "__main__":

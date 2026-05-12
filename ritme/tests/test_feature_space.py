@@ -20,7 +20,14 @@ from ritme.feature_space._process_trac_specific import (
     _preprocess_taxonomy_aggregation,
     create_matrix_from_tree,
 )
-from ritme.feature_space._process_train import process_train
+from ritme.feature_space._process_train import (
+    KFoldEngineered,
+    _apply_frozen_selection,
+    _encode_target,
+    _engineer_features,
+    process_train,
+    process_train_kfold,
+)
 from ritme.feature_space.aggregate_features import (
     agg_microbial_fts_taxonomy,
     aggregate_ft_by_taxonomy,
@@ -760,7 +767,7 @@ class TestProcessTrain(unittest.TestCase):
     @patch("ritme.feature_space._process_train.select_microbial_features")
     @patch("ritme.feature_space._process_train.transform_microbial_features")
     @patch("ritme.feature_space._process_train._split_data_grouped")
-    def test_process_train_no_feature_engineering(
+    def test_process_train_splits_first_then_engineers_each_slice(
         self,
         mock_split_data_grouped,
         mock_transform_features,
@@ -768,7 +775,13 @@ class TestProcessTrain(unittest.TestCase):
         mock_aggregate_features,
         mock_enrich_features,
     ):
-        # With unsuffixed t0 input, snapshot slice returns columns as-is.
+        """``process_train`` splits on the raw ``train_val`` first and then
+        engineers the train slice (fit mode -- ``select_microbial_features``
+        runs) and the val slice (apply mode -- ``select_microbial_features``
+        does NOT run again; the captured columns are reused via
+        ``_apply_frozen_selection``). This is the contract that makes the
+        train/val boundary leak-free.
+        """
         raw_unsuffixed = pd.DataFrame(
             {
                 "F0": self.train_val["F0"].values,
@@ -779,26 +792,13 @@ class TestProcessTrain(unittest.TestCase):
         mock_aggregate_features.return_value = raw_unsuffixed
         mock_select_features.return_value = raw_unsuffixed
         mock_transform_features.return_value = raw_unsuffixed
+        mock_enrich_features.return_value = ([], self.train_val.copy())
 
-        # Build expected unsuffixed snapshot for enrichment call
-        snap_all_unsuff = self.train_val.copy()
+        train_raw = self.train_val.iloc[:2, :]
+        val_raw = self.train_val.iloc[2:, :]
+        mock_split_data_grouped.return_value = (train_raw, val_raw)
 
-        snap_md_unsuff = snap_all_unsuff.drop(
-            columns=["F0", "F1"]
-        )  # host_id, target & covariate
-        transf_plus_md_unsuff = raw_unsuffixed.join(snap_md_unsuff)
-
-        # Enrichment returns unsuffixed snapshot; _add_suffix("t0") is a no-op
-        enriched_unsuff = self.train_val.copy()
-        mock_enrich_features.return_value = ([], enriched_unsuff)
-
-        # After accumulation, split should be called on train_val_accum.
-        mock_split_data_grouped.return_value = (
-            self.train_val.iloc[:2, :],
-            self.train_val.iloc[2:, :],
-        )
-
-        X_train, y_train, X_val, y_val = process_train(
+        process_train(
             self.config,
             self.train_val,
             self.target,
@@ -807,39 +807,26 @@ class TestProcessTrain(unittest.TestCase):
             self.seed_data,
         )
 
-        # Assert
-        self._assert_called_with_df(
-            mock_aggregate_features, raw_unsuffixed, None, self.tax
-        )
-        self._assert_called_with_df(
-            mock_select_features, raw_unsuffixed, self.config, "F"
-        )
-        self._assert_called_with_df(mock_transform_features, raw_unsuffixed, None)
-        self._assert_called_with_df(
-            mock_enrich_features,
-            snap_all_unsuff,
-            ["F0", "F1"],
-            transf_plus_md_unsuff,
-            self.config,
-        )
-        # Expect split called with unsuffixed enriched snapshot (t0 stays unsuffixed)
-        enriched_suff_exp = pd.DataFrame(
-            {
-                "host_id": self.train_val["host_id"].values,
-                "target": self.train_val["target"].values,
-                "covariate": self.train_val["covariate"].values,
-                "F0": self.train_val["F0"].values,
-                "F1": self.train_val["F1"].values,
-            },
-            index=self.train_val.index,
-        )
-        self._assert_called_with_df(
-            mock_split_data_grouped,
-            enriched_suff_exp,
-            "host_id",
-            0.8,
-            0,
-        )
+        # Split must be the FIRST consumer of train_val: it was called once
+        # with the raw input (not with an engineered/accumulator frame).
+        self.assertEqual(mock_split_data_grouped.call_count, 1)
+        split_first_arg = mock_split_data_grouped.call_args[0][0]
+        assert_frame_equal(split_first_arg, self.train_val)
+
+        # Engineering downstream of split must have run twice -- once per
+        # slice -- and the aggregate/enrich/transform inputs must mirror the
+        # post-split row counts (2 train rows, 2 val rows).
+        self.assertEqual(mock_aggregate_features.call_count, 2)
+        self.assertEqual(mock_enrich_features.call_count, 2)
+        self.assertEqual(mock_transform_features.call_count, 2)
+        for call in mock_aggregate_features.call_args_list:
+            self.assertEqual(call[0][0].shape[0], 2)
+
+        # Selection (the cross-sample fit step) must run only ONCE -- on
+        # the train slice. The val slice goes through
+        # ``_apply_frozen_selection`` instead, which does not call
+        # ``select_microbial_features``.
+        self.assertEqual(mock_select_features.call_count, 1)
 
     @patch("ritme.feature_space._process_train.enrich_features")
     @patch("ritme.feature_space._process_train.aggregate_microbial_features")
@@ -1016,6 +1003,335 @@ class TestProcessTrain(unittest.TestCase):
         self.assertTrue(np.isnan(all_X).any())
         # Non-NaN values (CLR-transformed) should be finite
         self.assertTrue(np.isfinite(all_X[~np.isnan(all_X)]).all())
+
+
+class TestProcessTrainKFold(unittest.TestCase):
+    """Direct unit tests for :func:`process_train_kfold` (the K-fold variant
+    of :func:`process_train`). End-to-end K-fold trainable tests mock this
+    function out, so without these tests the partition / shape contract is
+    only exercised via the full Ray Tune integration path.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # No engineering -> the produced ``X_full`` should equal the input
+        # F-columns (modulo dtype and engineering side-effects).
+        self.config = {
+            "data_transform": None,
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_i": None,
+            "data_selection_q": None,
+            "data_selection_t": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+        rng = np.random.default_rng(0)
+        n_rows = 30
+        # 10 hosts x 3 rows: groups are large enough for n_splits=3.
+        host_ids = np.repeat(np.arange(10), 3)
+        self.train_val = pd.DataFrame(
+            {
+                "host_id": host_ids,
+                "target": rng.uniform(size=n_rows),
+                "F0": rng.uniform(size=n_rows),
+                "F1": rng.uniform(size=n_rows),
+                "F2": rng.uniform(size=n_rows),
+            },
+            index=[f"SR{i}" for i in range(n_rows)],
+        )
+        self.tax = pd.DataFrame([])
+
+    def test_returns_kfold_engineered_namedtuple(self):
+        out = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=0,
+            n_splits=3,
+        )
+        self.assertIsInstance(out, KFoldEngineered)
+        # Refit matrix covers the full input.
+        self.assertEqual(out.X_refit.shape[0], len(self.train_val))
+        self.assertEqual(out.y_refit.shape, (len(self.train_val),))
+        self.assertEqual(out.X_refit.shape[1], len(out.ft_ls_used))
+        # K folds, each with a 4-tuple of (X_tr, y_tr, X_va, y_va) arrays.
+        self.assertEqual(len(out.folds), 3)
+        for X_tr, y_tr, X_va, y_va in out.folds:
+            self.assertEqual(X_tr.shape[1], len(out.ft_ls_used))
+            self.assertEqual(X_va.shape[1], len(out.ft_ls_used))
+            self.assertEqual(X_tr.shape[0], y_tr.shape[0])
+            self.assertEqual(X_va.shape[0], y_va.shape[0])
+
+    def test_folds_partition_input_rows(self):
+        out = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=0,
+            n_splits=3,
+        )
+        n = len(self.train_val)
+        # Every fold's (train + val) covers exactly the full input row count.
+        for X_tr, _, X_va, _ in out.folds:
+            self.assertEqual(X_tr.shape[0] + X_va.shape[0], n)
+        # Across the K folds, the total number of val rows equals n exactly
+        # (each row contributes to exactly one fold's val slice).
+        total_val_rows = sum(X_va.shape[0] for _, _, X_va, _ in out.folds)
+        self.assertEqual(total_val_rows, n)
+
+    def test_seed_determinism(self):
+        a = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=42,
+            n_splits=3,
+        )
+        b = process_train_kfold(
+            self.config.copy(),
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=42,
+            n_splits=3,
+        )
+        # Same seed -> identical per-fold matrices and identical refit data.
+        for (X_tr_a, y_tr_a, X_va_a, y_va_a), (
+            X_tr_b,
+            y_tr_b,
+            X_va_b,
+            y_va_b,
+        ) in zip(a.folds, b.folds):
+            np.testing.assert_array_equal(X_tr_a, X_tr_b)
+            np.testing.assert_array_equal(y_tr_a, y_tr_b)
+            np.testing.assert_array_equal(X_va_a, X_va_b)
+            np.testing.assert_array_equal(y_va_a, y_va_b)
+        np.testing.assert_array_equal(a.X_refit, b.X_refit)
+        np.testing.assert_array_equal(a.y_refit, b.y_refit)
+
+    def test_ft_ls_used_describes_x_refit_under_data_selection(self):
+        """``ft_ls_used`` must match the column order of ``X_refit`` (the
+        deployable refit's column space) -- never a fold's survivor set.
+        Under ``data_selection`` modes that compute cross-sample statistics
+        (variance / abundance thresholds, quantiles, ith, topi), the surviving
+        column set on a fold's smaller train slice can differ from the
+        full-data set; this test pins that ``ft_ls_used`` follows ``X_refit``
+        regardless.
+        """
+        rng = np.random.default_rng(0)
+        n_rows = 30
+        host_ids = np.repeat(np.arange(10), 3)
+        # A wide feature table where some F-columns are low-abundance enough
+        # to be candidates for ``abundance_threshold`` grouping. The exact
+        # survivor set varies with the row subset (fold train slice vs the
+        # full data), exposing the bug if ``ft_ls_used`` were keyed to a
+        # fold's survivor list.
+        feat_cols = {f"F{i}": rng.uniform(size=n_rows) for i in range(8)}
+        # Push a handful of features deliberately low so a threshold prunes
+        # at least two of them on full data and (potentially differently) on
+        # a fold's smaller train slice.
+        for i, low in zip([5, 6, 7], [0.01, 0.02, 0.03]):
+            feat_cols[f"F{i}"] = rng.uniform(low=0.0, high=low * 2, size=n_rows)
+
+        df = pd.DataFrame(
+            {"host_id": host_ids, "target": rng.uniform(size=n_rows), **feat_cols},
+            index=[f"SR{i}" for i in range(n_rows)],
+        )
+
+        cfg = {
+            "data_transform": None,
+            "data_aggregation": None,
+            "data_selection": "abundance_threshold",
+            "data_selection_i": None,
+            "data_selection_q": None,
+            "data_selection_t": 0.1,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+        out = process_train_kfold(
+            cfg.copy(),
+            df,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=0,
+            n_splits=3,
+        )
+        self.assertEqual(
+            out.X_refit.shape[1],
+            len(out.ft_ls_used),
+            "ft_ls_used column count must match X_refit column count under "
+            "data-dependent feature selection",
+        )
+
+
+class TestEngineeringFitApplyLeakFree(unittest.TestCase):
+    """``_engineer_features`` supports two modes -- fit (no ``frozen_params``)
+    and apply (with ``frozen_params``) -- so per-fold/per-split engineering
+    can reuse the train-slice's cross-sample fits on the held-out slice
+    without leaking val-slice statistics into them. These tests pin the two
+    leak points (``select_microbial_features`` survivors + ALR denominator).
+    See ``issue_val_leakage.md``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Two clearly different microbial slices so the leaky stats
+        # (selection threshold, ALR denominator) would diverge if engineering
+        # were ever recomputed on the val slice. Train has two low-abundance
+        # features below the threshold so the selection actually groups them.
+        self.train_slice = pd.DataFrame(
+            {
+                "F0": [0.10, 0.20, 0.30, 0.40],
+                "F1": [0.50, 0.60, 0.70, 0.80],
+                "F2": [0.01, 0.01, 0.02, 0.03],
+                "F3": [0.01, 0.02, 0.03, 0.02],
+            },
+            index=["S1", "S2", "S3", "S4"],
+        )
+        self.val_slice = pd.DataFrame(
+            {
+                "F0": [0.05, 0.95],
+                "F1": [0.45, 0.55],
+                "F2": [0.40, 0.50],
+                "F3": [0.40, 0.50],
+            },
+            index=["S5", "S6"],
+        )
+        self.tax = pd.DataFrame()
+        # Threshold chosen so F2 and F3 (low mean abundance in train) get
+        # grouped into ``F_low_abun``; F0/F1 stay individual.
+        self.cfg_select = {
+            "data_transform": None,
+            "data_aggregation": None,
+            "data_selection": "abundance_threshold",
+            "data_selection_i": None,
+            "data_selection_q": None,
+            "data_selection_t": 0.1,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+        self.cfg_alr = {
+            "data_transform": "alr",
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_i": None,
+            "data_selection_q": None,
+            "data_selection_t": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+
+    def test_fit_mode_returns_captured_params(self):
+        cfg = self.cfg_select.copy()
+        _, _, frozen = _engineer_features(cfg, self.train_slice, self.tax)
+        self.assertIn("t0", frozen)
+        self.assertIn("selected_cols", frozen["t0"])
+        # The selection survivors must be a non-empty list of strings.
+        self.assertTrue(all(isinstance(c, str) for c in frozen["t0"]["selected_cols"]))
+
+    def test_apply_mode_reuses_captured_selection(self):
+        cfg = self.cfg_select.copy()
+        train_eng, ft_ls, frozen = _engineer_features(cfg, self.train_slice, self.tax)
+        # Train selection should differ from the raw column set (the
+        # threshold groups low-abundance features into ``F_low_abun``).
+        self.assertNotEqual(
+            set(frozen["t0"]["selected_cols"]),
+            set(self.train_slice.columns),
+        )
+
+        # Apply mode on the val slice must reuse the EXACT captured columns
+        # rather than re-running the threshold on val (which would give a
+        # different survivor set because val has different abundances).
+        val_eng, val_ft_ls, _ = _engineer_features(
+            cfg, self.val_slice, self.tax, frozen_params=frozen
+        )
+        self.assertEqual(
+            list(val_eng.columns),
+            list(train_eng.columns),
+            "Val slice column order must match the train-fit captured order",
+        )
+        self.assertEqual(val_ft_ls, ft_ls)
+
+    def test_apply_mode_reuses_captured_alr_denom_idx(self):
+        cfg = self.cfg_alr.copy()
+        _, _, frozen = _engineer_features(cfg, self.train_slice, self.tax)
+        train_denom = frozen["t0"]["denom_idx"]
+        train_map = cfg.get("data_alr_denom_idx_map")
+        self.assertEqual(train_map["t0"], train_denom)
+
+        # Apply mode on val must use the train-fit denom even when val's
+        # own ``_find_most_nonzero_feature_idx`` would have picked a
+        # different column.
+        cfg_apply = self.cfg_alr.copy()
+        _, _, _ = _engineer_features(
+            cfg_apply, self.val_slice, self.tax, frozen_params=frozen
+        )
+        self.assertEqual(cfg_apply["data_alr_denom_idx_map"]["t0"], train_denom)
+
+    def test_apply_frozen_selection_matches_select_on_same_slice(self):
+        """The apply-mode helper must be a faithful no-recompute reapplication
+        of ``select_microbial_features``: applying the captured columns to
+        the SAME slice the fit was done on yields the same matrix.
+        """
+        cfg = self.cfg_select.copy()
+        train_eng, _, frozen = _engineer_features(cfg, self.train_slice, self.tax)
+
+        reapplied = _apply_frozen_selection(
+            self.train_slice,
+            cfg["data_selection"],
+            frozen["t0"]["selected_cols"],
+            "F",
+        )
+        assert_frame_equal(
+            reapplied.reset_index(drop=True),
+            train_eng.reset_index(drop=True),
+            check_dtype=False,
+        )
+
+
+class TestEncodeTargetReuse(unittest.TestCase):
+    """``_encode_target`` is called once per slice during K-fold dispatch (via
+    ``process_train_kfold`` -> ``_encode_target``) and twice during single-split
+    dispatch (train slice + val slice). The second call must reuse the encoder
+    fit on the first call so train and val share a single label-to-int map.
+    """
+
+    def test_numeric_target_returns_floats_without_encoder(self):
+        config: dict = {}
+        train_val = pd.DataFrame({"target": [1.0, 2.0, 3.0, 4.0]})
+        out = _encode_target(config, train_val, "target", train_val["target"])
+        np.testing.assert_array_equal(out, np.array([1.0, 2.0, 3.0, 4.0]))
+        # Numeric path does NOT install an encoder.
+        self.assertNotIn("_label_encoder", config)
+
+    def test_non_numeric_target_fits_encoder_and_reuses(self):
+        config: dict = {}
+        train_val = pd.DataFrame({"target": ["cat", "dog", "cat", "bird"]})
+        first = _encode_target(config, train_val, "target", train_val["target"])
+        # An encoder is now stashed in ``config`` for downstream reuse.
+        self.assertIn("_label_encoder", config)
+        le_first = config["_label_encoder"]
+        # Second call (e.g. on a val slice) must reuse the same encoder
+        # instance -- never refit -- so train and val share a label map.
+        val_slice = pd.Series(["dog", "bird"])
+        second = _encode_target(config, train_val, "target", val_slice)
+        self.assertIs(config["_label_encoder"], le_first)
+        # Encoded values round-trip through the shared encoder.
+        np.testing.assert_array_equal(
+            first.astype(int), le_first.transform(train_val["target"].to_numpy())
+        )
+        np.testing.assert_array_equal(
+            second.astype(int), le_first.transform(val_slice.to_numpy())
+        )
 
 
 class TestProcessTracSpecific(unittest.TestCase):

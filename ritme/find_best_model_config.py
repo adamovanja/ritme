@@ -13,6 +13,7 @@ from ritme.evaluate_models import (
     save_best_models,
 )
 from ritme.feature_space.utils import _PAST_SUFFIX_RE
+from ritme.split_train_test import adaptive_k_folds
 from ritme.tune_models import run_all_trials
 
 
@@ -233,6 +234,21 @@ def find_best_model_config(
     if tree_phylo is not None:
         tree_phylo = _process_phylogeny(tree_phylo, train_val[ft_col])
 
+    # ! Determine K for cross-validation inside each trial. When the config
+    # does not specify ``k_folds`` we derive a problem-aware default from the
+    # number of independent units (groups when ``group_by_column`` is set,
+    # samples otherwise), capped by the smallest stratum when stratifying.
+    # Setting ``k_folds: 1`` falls back to the original single-split behavior.
+    k_folds = adaptive_k_folds(
+        train_val,
+        group_by_column=config.get("group_by_column"),
+        stratify_by=config.get("stratify_by"),
+        target=config.get("target"),
+        task_type=config.get("task_type", "regression"),
+        requested=config.get("k_folds"),
+    )
+    print(f"K-fold cross-validation inside trainable: k_folds={k_folds}")
+
     # ! Run all experiments in a temporary directory to reduce inode usage.
     # Trial directories and MLflow logs are created here, then only the
     # consolidated outputs (best models, MLflow CSV) are kept in path_exp.
@@ -261,6 +277,7 @@ def find_best_model_config(
                 "optuna_searchspace_sampler", "TPESampler"
             ),
             task_type=config.get("task_type", "regression"),
+            k_folds=k_folds,
         )
 
         # ! Get best models of this experiment

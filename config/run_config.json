@@ -2,6 +2,7 @@
   "experiment_tag": "run_config",
   "fully_reproducible": true,
   "group_by_column": "host_id",
+  "k_folds": 5,
   "ls_model_types": [
     "linreg",
     "trac",

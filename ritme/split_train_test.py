@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 import typer
 from sklearn.model_selection import (
+    GroupKFold,
     GroupShuffleSplit,
+    KFold,
+    StratifiedGroupKFold,
+    StratifiedKFold,
     StratifiedShuffleSplit,
     train_test_split,
 )
@@ -616,6 +620,207 @@ def cli_split_train_test(
     test.to_pickle(os.path.join(output_path, "test.pkl"))
 
     print(f"Train and test splits were saved in {output_path}.")
+
+
+# Default K for cross-validation inside the trainable.
+# K=5 is the sweet spot for ritme's typical regime (small N, high-dim,
+# conditional-categorical search space): roughly 2.2x noise reduction in the
+# selection criterion versus a single train/val split, while keeping per-trial
+# wall time only 5x the single-split cost. K=10 buys diminishing variance
+# reduction at substantially higher compute cost; K=3 captures only the
+# qualitative 1-SE-rule mechanism without much quantitative noise reduction.
+# Users can override per-experiment by setting ``k_folds`` in the config.
+DEFAULT_K_FOLDS = 5
+
+
+@helper_function
+def adaptive_k_folds(
+    data: pd.DataFrame,
+    group_by_column: str | None,
+    stratify_by: Sequence[str] | None,
+    target: str | None = None,
+    task_type: str = "regression",
+    requested: int | None = None,
+) -> int:
+    """Choose K for cross-validation given the dataset and grouping strategy.
+
+    The relevant N is the number of independent units, which when ``group_by_column``
+    is set is the number of distinct groups, not the number of rows. If ``requested``
+    is provided it is honored when feasible (capped to the available groups /
+    smallest stratum).
+
+    Default is :data:`DEFAULT_K_FOLDS` (K=5), capped down by:
+      - the number of unique groups (``GroupKFold`` cannot make more folds
+        than groups),
+      - the smallest stratum *group-count* (when grouping is on) or
+        *row-count* (when grouping is off) when stratification is used
+        (``StratifiedKFold`` needs at least K samples per class, and
+        ``StratifiedGroupKFold`` needs at least K groups per class). For
+        classification tasks the target column itself acts as the implicit
+        stratum if no explicit ``stratify_by`` is supplied.
+
+    Setting ``requested=1`` (or any value <=1) is the single-split escape
+    hatch: it returns ``1`` verbatim so callers can route to the original
+    single train/val split path. The floor of 2 only applies to the
+    automatic schedule, not to an explicit user override.
+
+    When ``group_by_column`` or ``stratify_by`` reference columns missing from
+    ``data``, this helper silently falls back to the row count: the absent
+    columns will produce a clear error later when the K-fold splitter is built
+    inside the trainable, but at config-resolution time we prefer not to break
+    callers that mock the data path.
+    """
+    if requested is not None and int(requested) <= 1:
+        # Explicit single-split override; skip every cap and floor below.
+        return 1
+
+    if group_by_column is not None and group_by_column in data.columns:
+        n_groups = int(data[group_by_column].nunique())
+    else:
+        n_groups = len(data)
+
+    # When grouping is active, the relevant unit for the stratum cap is the
+    # number of distinct GROUPS per class, not the number of rows: the
+    # downstream ``StratifiedGroupKFold`` requires at least K groups per
+    # class. The "stratify labels constant within each group" invariant
+    # enforced by ``_make_kfold_splitter`` means one row per group is
+    # sufficient for counting strata, so we dedupe by group first.
+    grouping_active = group_by_column is not None and group_by_column in data.columns
+    counting_data = (
+        data.drop_duplicates(subset=[group_by_column]) if grouping_active else data
+    )
+
+    smallest_stratum = None
+    if stratify_by:
+        present = [c for c in stratify_by if c in data.columns]
+        if present:
+            labels = counting_data[present].astype(str).agg("__§__".join, axis=1)
+            smallest_stratum = int(labels.value_counts().min())
+    elif (
+        # Only treat the target as an implicit stratum for classification.
+        # For regression, a non-numeric dtype (e.g. month stored as "1", "10")
+        # does not imply class structure and must NOT cap K.
+        task_type == "classification"
+        and target is not None
+        and target in data.columns
+    ):
+        smallest_stratum = int(counting_data[target].value_counts().min())
+
+    if requested is not None:
+        k = int(requested)
+    else:
+        k = DEFAULT_K_FOLDS
+
+    k = min(k, n_groups)
+    if smallest_stratum is not None:
+        k = min(k, smallest_stratum)
+    # If structural constraints (groups or strata) force K below 2, fall back
+    # to the single-split path. Earlier the floor of 2 was applied here, which
+    # produced an unbuildable K=2 that sklearn rejected at trial time.
+    if k < 2:
+        return 1
+    return k
+
+
+@helper_function
+def _make_kfold_splitter(
+    data: pd.DataFrame,
+    group_by_column: str | None,
+    stratify_by: Sequence[str] | None,
+    n_splits: int,
+    seed: int,
+):
+    """Return ``(train_idx, val_idx)`` positional-index pairs for K-fold CV.
+
+    Mirrors the contract of :func:`_split_data_grouped` — every constraint that
+    ``train/test`` honors is also honored across folds:
+
+    - ``group_by_column``: all rows sharing a group value land in the same fold
+      (no group ever spans the train/val boundary of any fold).
+    - ``stratify_by``: the joint distribution of the stratification columns is
+      preserved across folds. When grouping is enabled, stratification is
+      performed at the group level and the columns must be constant within
+      each group (same assertion as ``_split_data_grouped``).
+    - ``seed``: deterministic fold assignment.
+
+    Splitter selection:
+
+    - both → ``StratifiedGroupKFold`` (group-level stratification when labels
+      are constant within group)
+    - group only → ``GroupKFold`` with a seeded row permutation to randomise
+      fold assignment (``GroupKFold`` itself is not seedable across sklearn
+      versions; permuting first is the portable workaround)
+    - stratify only → ``StratifiedKFold(shuffle=True)``
+    - neither → ``KFold(shuffle=True)``
+
+    Returns positional indices into ``data`` (0..len(data)-1).
+    """
+    if stratify_by is not None and len(stratify_by) == 0:
+        stratify_by = None
+
+    n = len(data)
+    indices = np.arange(n)
+
+    groups = None
+    stratify_labels = None
+
+    if group_by_column is not None:
+        if data[group_by_column].nunique() < n_splits:
+            raise ValueError(
+                f"Cannot create {n_splits}-fold split grouped by "
+                f"'{group_by_column}': only {data[group_by_column].nunique()} "
+                f"unique groups are available."
+            )
+        groups = data[group_by_column].to_numpy()
+
+    if stratify_by is not None:
+        missing = [c for c in stratify_by if c not in data.columns]
+        if missing:
+            raise ValueError(
+                "Stratification columns not found in data: " + ", ".join(missing)
+            )
+        # Composite stratification label, consistent with _split_data_grouped.
+        stratify_labels = (
+            data[list(stratify_by)].astype(str).agg("__§__".join, axis=1).to_numpy()
+        )
+
+        if group_by_column is not None:
+            # Mirror _split_data_grouped: enforce a single stratification label
+            # per group. StratifiedGroupKFold does not require this internally,
+            # but we keep the contract identical to the train/test splitter so
+            # users can rely on the same data shape during tuning.
+            grp = data.groupby(group_by_column, sort=False)
+            for gid, sub in grp:
+                sub_labels = (
+                    sub[list(stratify_by)].astype(str).agg("__§__".join, axis=1)
+                )
+                if sub_labels.nunique() != 1:
+                    raise ValueError(
+                        "Stratification columns must be constant within each "
+                        f"group; found multiple values for group '{gid}'."
+                    )
+
+    if groups is not None and stratify_labels is not None:
+        splitter = StratifiedGroupKFold(
+            n_splits=n_splits, shuffle=True, random_state=seed
+        )
+        return list(splitter.split(indices, stratify_labels, groups))
+
+    if groups is not None:
+        rng = np.random.default_rng(seed)
+        perm = rng.permutation(n)
+        splitter = GroupKFold(n_splits=n_splits)
+        return [
+            (perm[tr], perm[va])
+            for tr, va in splitter.split(indices, groups=groups[perm])
+        ]
+
+    if stratify_labels is not None:
+        splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        return list(splitter.split(indices, stratify_labels))
+
+    splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    return list(splitter.split(indices))
 
 
 # ----------------------------------------------------------------------------
