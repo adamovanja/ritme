@@ -1887,8 +1887,8 @@ def _run_kfold_nn(
 
     n_features = int(engineered.X_full.shape[1])
     max_epochs_cfg = int(config["epochs"])
-    patience = int(config.get("early_stopping_patience", 10))
-    min_delta = float(config.get("early_stopping_min_delta", 0.0))
+    patience = int(config["early_stopping_patience"])
+    min_delta = float(config["early_stopping_min_delta"])
     num_workers = max(0, int(cpus_per_trial) - 1)
     accelerator = "gpu" if int(gpus_per_trial) > 0 else "cpu"
 
