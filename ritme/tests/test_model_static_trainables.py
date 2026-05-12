@@ -2451,3 +2451,269 @@ class TestKfoldTrainables(unittest.TestCase):
                 )
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard: ``train_nn_reg(..., k_folds=1)`` must keep the
+        original single-split shape -- bare metric keys only, no
+        ``_mean``/``_std``/``_se`` suffixes and no ``n_folds``. Catches a
+        future regression where the K-fold dispatch accidentally captures
+        ``k_folds=1``.
+
+        Mirrors :meth:`test_train_xgb_single_split_no_kfold_aggregates` but
+        runs the real Lightning loop end-to-end on the 30-row synthetic
+        regression fixture; ``NNTuneReportCheckpointCallback`` emits one
+        ``tune.report`` per validation epoch in the single-split path, so we
+        inspect EVERY reported dict.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_nn_reg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=1,
+            )
+
+            # Single-split callback reports per validation epoch; inspect
+            # every reported metrics dict to ensure none leaks K-fold keys.
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                # NNTuneReportCheckpointCallback calls tune.report
+                # positionally (``tune.report(report_dict)`` or
+                # ``tune.report(report_dict, checkpoint=...)``), but accept
+                # the keyword ``metrics=`` shape too for safety.
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Canonical val key must be present -- proves the single-
+                # split path is actually producing metrics.
+                self.assertIn("rmse_val", reported)
+                # K-fold aggregate keys must NOT be present.
+                for forbidden in (
+                    "rmse_val_mean",
+                    "rmse_val_std",
+                    "rmse_val_se",
+                    "rmse_train_mean",
+                    "r2_val_mean",
+                    "r2_train_mean",
+                    "loss_val_mean",
+                    "loss_train_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_class_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard for ``train_nn_class(..., k_folds=1)``: single-split
+        classification path must emit bare metric keys only, with no K-fold
+        aggregate suffixes or ``n_folds``.
+
+        Mirrors :meth:`test_train_xgb_class_single_split_no_kfold_aggregates`
+        but runs the real Lightning loop end-to-end on the 3-class numeric
+        ``self.y_class`` fixture.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_nn_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=1,
+            )
+
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Canonical val key from _NN_CLASS_METRIC_MAP must be present.
+                self.assertIn("roc_auc_macro_ovr_val", reported)
+                # No K-fold aggregate keys -- guard against future regression
+                # where ``k_folds=1`` accidentally dispatches into the K-fold
+                # branch (which would emit ``_mean``/``_std``/``_se`` keys
+                # plus ``n_folds``).
+                for forbidden in (
+                    "roc_auc_macro_ovr_val_mean",
+                    "roc_auc_macro_ovr_val_std",
+                    "roc_auc_macro_ovr_val_se",
+                    "roc_auc_macro_ovr_train_mean",
+                    "log_loss_val_mean",
+                    "log_loss_train_mean",
+                    "f1_macro_val_mean",
+                    "f1_macro_train_mean",
+                    "balanced_accuracy_val_mean",
+                    "balanced_accuracy_train_mean",
+                    "mcc_val_mean",
+                    "mcc_train_mean",
+                    "loss_val_mean",
+                    "loss_train_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_corn_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard for ``train_nn_corn(..., k_folds=1)``: CORN ordinal
+        single-split path must emit bare classification metric keys only,
+        with no K-fold aggregate suffixes or ``n_folds``.
+
+        CORN runs through the same classification metric set as nn_class
+        (``task_type="classification"``), so the guard mirrors
+        :meth:`test_train_nn_class_single_split_no_kfold_aggregates`.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_corn",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_nn_corn"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_corn(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=1,
+            )
+
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Canonical val key from _NN_CLASS_METRIC_MAP must be present.
+                self.assertIn("roc_auc_macro_ovr_val", reported)
+                # No K-fold aggregate keys.
+                for forbidden in (
+                    "roc_auc_macro_ovr_val_mean",
+                    "roc_auc_macro_ovr_val_std",
+                    "roc_auc_macro_ovr_val_se",
+                    "roc_auc_macro_ovr_train_mean",
+                    "log_loss_val_mean",
+                    "log_loss_train_mean",
+                    "f1_macro_val_mean",
+                    "f1_macro_train_mean",
+                    "balanced_accuracy_val_mean",
+                    "balanced_accuracy_train_mean",
+                    "mcc_val_mean",
+                    "mcc_train_mean",
+                    "loss_val_mean",
+                    "loss_train_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
