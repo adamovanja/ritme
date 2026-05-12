@@ -1175,6 +1175,45 @@ class TestKfoldHelpers(unittest.TestCase):
         self.assertNotAlmostEqual(out["rmse_val_se"], 0.1 / np.sqrt(5), places=6)
         self.assertEqual(out["n_folds"], 5)
 
+    def test_xgb_refit_rounds_fallback_when_any_fold_none(self):
+        self.assertEqual(st._xgb_refit_rounds([None, 5, 8], 100), 100)
+        self.assertEqual(st._xgb_refit_rounds([3, None, 8], 100), 100)
+        self.assertEqual(st._xgb_refit_rounds([None, None, None], 100), 100)
+
+    def test_xgb_refit_rounds_median_plus_one(self):
+        self.assertEqual(st._xgb_refit_rounds([4, 5, 6], 100), 6)
+        # median=3.5 -> int=3, +1 = 4
+        self.assertEqual(st._xgb_refit_rounds([2, 3, 4, 5], 100), 4)
+        # 1-tree refit is legitimate
+        self.assertEqual(st._xgb_refit_rounds([0, 0, 0], 100), 1)
+
+    def test_nn_refit_epochs_fallback_when_any_fold_none(self):
+        self.assertEqual(st._nn_refit_epochs([None, 5, 8], 100), 100)
+        self.assertEqual(st._nn_refit_epochs([None, None, None], 100), 100)
+
+    def test_nn_refit_epochs_median_plus_one(self):
+        self.assertEqual(st._nn_refit_epochs([3, 4, 5], 100), 5)
+        self.assertEqual(st._nn_refit_epochs([2, 3, 4, 5], 100), 4)
+        # I-1 fix: median=0 must NOT fall back to max_epochs_config;
+        # refits for 1 epoch.
+        self.assertEqual(st._nn_refit_epochs([0, 0, 0], 100), 1)
+        # And a single positive value still rounds correctly.
+        self.assertEqual(st._nn_refit_epochs([7], 100), 8)
+
+    def test_extract_best_epoch_returns_none_when_never_fired(self):
+        early_stop = MagicMock(stopped_epoch=0, patience=10)
+        self.assertIsNone(st._extract_best_epoch(early_stop, max_epochs=100))
+
+    def test_extract_best_epoch_clamps_below_zero(self):
+        early_stop = MagicMock(stopped_epoch=3, patience=10)
+        # 3 - 10 = -7, clamps to 0
+        self.assertEqual(st._extract_best_epoch(early_stop, max_epochs=100), 0)
+
+    def test_extract_best_epoch_normal_case(self):
+        early_stop = MagicMock(stopped_epoch=25, patience=10)
+        # 25 - 10 = 15
+        self.assertEqual(st._extract_best_epoch(early_stop, max_epochs=100), 15)
+
 
 class TestKfoldTrainables(unittest.TestCase):
     """End-to-end mocked tests for the K-fold path of each sklearn-style

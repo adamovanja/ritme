@@ -1780,22 +1780,23 @@ def _nn_refit_epochs(
 ) -> int:
     """Resolve full-data refit ``max_epochs`` from the K-fold signal.
 
-    Median of per-fold ``best_epoch + 1``, matching xgb's
-    :func:`_xgb_refit_rounds` semantics. ``best_epoch`` is 0-indexed and
-    Lightning's ``Trainer`` runs epochs ``0..max_epochs-1``, so the refit
-    cap must be ``best_epoch + 1`` to train up to and including the epoch
-    flagged as best. Falls back to ``max_epochs_config`` if any fold's
-    early-stop did not trigger (``best_epoch`` is ``None``). Unlike
-    :func:`_xgb_refit_rounds`, we also fall back to ``max_epochs_config``
-    when the pre-``+1`` median is ``< 1`` because a 1-epoch nn refit is
-    degenerate (a 1-tree booster, in contrast, is a valid xgb model).
+    Returns ``median(per_fold_best_epoch) + 1`` (with a minimum of 1) when
+    every fold's ``EarlyStopping`` triggered. Falls back to
+    ``max_epochs_config`` when any fold's early-stop did not fire
+    (``best_epoch`` is ``None``).
+
+    The ``+ 1`` matches Lightning's ``Trainer(max_epochs=N)`` convention
+    (runs epochs ``0..N-1``), analogous to xgb's :func:`_xgb_refit_rounds`
+    where ``best_iteration`` is 0-indexed. Unlike :func:`_xgb_refit_rounds`,
+    when no fold's early-stop fires we fall back to ``max_epochs_config``
+    rather than the raw median, because a 1-tree booster is a valid xgb
+    model but a 0-epoch nn refit isn't. A legitimate ``best_epoch == 0``
+    across all folds (early-overfit signal) refits for 1 epoch rather than
+    silently inverting to the full epoch budget.
     """
     if any(b is None for b in per_fold_best_epoch):
         return int(max_epochs_config)
-    median = int(np.median(per_fold_best_epoch))
-    if median < 1:
-        return int(max_epochs_config)
-    return median + 1
+    return max(1, int(np.median(per_fold_best_epoch)) + 1)
 
 
 @contextmanager
