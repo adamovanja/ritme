@@ -1227,6 +1227,45 @@ class TestKfoldHelpers(unittest.TestCase):
         # 25 - 10 = 15
         self.assertEqual(st._extract_best_epoch(early_stop, max_epochs=100), 15)
 
+    @patch("ritme.model_space.static_trainables.tune.report")
+    def test_emit_running_fold_aggregate_skips_last_fold(self, mock_report):
+        # The final fold is surfaced by the post-refit final report (which
+        # also carries the deployable checkpoint), so the helper must NOT
+        # emit on ``fold_idx == n_splits - 1``.
+        st._emit_running_fold_aggregate(
+            per_fold_metrics=[{"rmse_val": 0.4}, {"rmse_val": 0.5}, {"rmse_val": 0.6}],
+            nb_features=10,
+            fold_idx=2,
+            n_splits=3,
+        )
+        mock_report.assert_not_called()
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    def test_emit_running_fold_aggregate_emits_growing_aggregate(self, mock_report):
+        # For folds 0..K-2 the helper emits a running aggregate. ``n_folds``
+        # in the payload must equal the count of completed folds (not the
+        # total ``n_splits``), and no ``checkpoint`` kwarg is attached --
+        # the deployable artifact only exists after the post-loop refit.
+        st._emit_running_fold_aggregate(
+            per_fold_metrics=[{"rmse_val": 0.4}],
+            nb_features=10,
+            fold_idx=0,
+            n_splits=3,
+        )
+        st._emit_running_fold_aggregate(
+            per_fold_metrics=[{"rmse_val": 0.4}, {"rmse_val": 0.5}],
+            nb_features=10,
+            fold_idx=1,
+            n_splits=3,
+        )
+        self.assertEqual(mock_report.call_count, 2)
+        for actual_call, expected_n_folds in zip(mock_report.call_args_list, (1, 2)):
+            metrics = actual_call.kwargs["metrics"]
+            self.assertEqual(metrics["n_folds"], expected_n_folds)
+            self.assertEqual(metrics["nb_features"], 10)
+            self.assertIn("rmse_val", metrics)
+            self.assertNotIn("checkpoint", actual_call.kwargs)
+
 
 class TestKfoldTrainables(unittest.TestCase):
     """End-to-end mocked tests for the K-fold path of each sklearn-style
@@ -1531,7 +1570,11 @@ class TestKfoldTrainables(unittest.TestCase):
                 k_folds=3,
             )
 
-            self.assertEqual(mock_report.call_count, 1)
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
             reported = mock_report.call_args.kwargs.get("metrics")
             if reported is None:
                 reported = mock_report.call_args.args[0]
@@ -1547,6 +1590,82 @@ class TestKfoldTrainables(unittest.TestCase):
                 )
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_emits_running_aggregate_per_fold(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold trainables emit a running aggregate after each completed
+        fold (no checkpoint) plus a final aggregate with checkpoint, so
+        ASHA can prune before all K folds finish.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": "variance_threshold",
+            "data_selection_t": 0.0,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_get_context.return_value = MagicMock()
+            mock_get_context.return_value.get_trial_dir.return_value = tmpdir
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            # Exactly K=3 reports: 2 running mid-trial + 1 final.
+            self.assertEqual(mock_report.call_count, 3)
+
+            calls = mock_report.call_args_list
+
+            # Mid-trial reports carry a running aggregate (n_folds grows
+            # 1, 2) and no checkpoint -- the deployable artifact only
+            # exists after the post-loop refit.
+            for fold_idx, expected_n_folds in enumerate((1, 2), start=0):
+                metrics = calls[fold_idx].kwargs.get("metrics")
+                if metrics is None:
+                    metrics = calls[fold_idx].args[0]
+                self.assertEqual(metrics["n_folds"], expected_n_folds)
+                self.assertIn("rmse_val", metrics)
+                self.assertNotIn(
+                    "checkpoint",
+                    calls[fold_idx].kwargs,
+                    "Mid-trial reports must NOT carry a checkpoint",
+                )
+
+            # Final report has the full aggregate AND a checkpoint kwarg
+            # for the deployable refit booster.
+            final = calls[-1]
+            final_metrics = final.kwargs.get("metrics") or final.args[0]
+            self.assertEqual(final_metrics["n_folds"], 3)
+            self.assertIn(
+                "checkpoint",
+                final.kwargs,
+                "Final report must carry the refit checkpoint",
+            )
 
     @patch("ritme.model_space.static_trainables.tune.report")
     @patch("ritme.model_space.static_trainables.ray.tune.get_context")
@@ -1607,7 +1726,11 @@ class TestKfoldTrainables(unittest.TestCase):
                 k_folds=3,
             )
 
-            self.assertEqual(mock_report.call_count, 1)
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
             reported = mock_report.call_args.kwargs.get("metrics")
             if reported is None:
                 reported = mock_report.call_args.args[0]
@@ -1699,10 +1822,10 @@ class TestKfoldTrainables(unittest.TestCase):
                 checkpoint = kwargs.get("checkpoint")
                 if checkpoint is None and len(args) >= 2:
                     checkpoint = args[1]
-                self.assertIsNotNone(
-                    checkpoint,
-                    "K-fold refit must surface a Checkpoint via tune.report",
-                )
+                if checkpoint is None:
+                    # Mid-trial running-aggregate report; no checkpoint
+                    # expected until the final post-refit report.
+                    return
                 # Copy the checkpoint files to a path that outlives the
                 # trainable's temp dir.
                 src = checkpoint.to_directory()
@@ -1729,7 +1852,9 @@ class TestKfoldTrainables(unittest.TestCase):
                 k_folds=3,
             )
 
-            mock_report.assert_called_once()
+            # K-fold trials emit K=3 reports: 2 running-aggregate
+            # mid-trial reports + 1 final with checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
             self.assertTrue(
                 os.path.isfile(os.path.join(stable_ckpt_dir, "checkpoint")),
                 "K-fold refit checkpoint must land at the 'checkpoint' "
@@ -2169,7 +2294,11 @@ class TestKfoldTrainables(unittest.TestCase):
                 k_folds=3,
             )
 
-            self.assertEqual(mock_report.call_count, 1)
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
             reported = mock_report.call_args.kwargs.get("metrics")
             if reported is None:
                 reported = mock_report.call_args.args[0]
@@ -2252,10 +2381,10 @@ class TestKfoldTrainables(unittest.TestCase):
                 checkpoint = kwargs.get("checkpoint")
                 if checkpoint is None and len(args) >= 2:
                     checkpoint = args[1]
-                self.assertIsNotNone(
-                    checkpoint,
-                    "K-fold refit must surface a Checkpoint via tune.report",
-                )
+                if checkpoint is None:
+                    # Mid-trial running-aggregate report; no checkpoint
+                    # expected until the final post-refit report.
+                    return
                 src = checkpoint.to_directory()
                 shutil.copytree(src, stable_ckpt_dir)
 
@@ -2277,7 +2406,9 @@ class TestKfoldTrainables(unittest.TestCase):
                 k_folds=3,
             )
 
-            mock_report.assert_called_once()
+            # K-fold trials emit K=3 reports: 2 running-aggregate
+            # mid-trial reports + 1 final with checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
             self.assertTrue(
                 os.path.isfile(os.path.join(stable_ckpt_dir, "checkpoint")),
                 "K-fold refit checkpoint must land at the 'checkpoint' "
@@ -2388,7 +2519,11 @@ class TestKfoldTrainables(unittest.TestCase):
                 k_folds=3,
             )
 
-            self.assertEqual(mock_report.call_count, 1)
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
             reported = mock_report.call_args.kwargs.get("metrics")
             if reported is None:
                 reported = mock_report.call_args.args[0]
@@ -2483,7 +2618,11 @@ class TestKfoldTrainables(unittest.TestCase):
                 k_folds=3,
             )
 
-            self.assertEqual(mock_report.call_count, 1)
+            # K-fold trials emit K=3 reports total: 2 running-aggregate
+            # mid-trial reports (after folds 1 and 2) + 1 final report
+            # (after fold 3 + refit) carrying the full aggregate and
+            # the deployable checkpoint.
+            self.assertEqual(mock_report.call_count, 3)
             reported = mock_report.call_args.kwargs.get("metrics")
             if reported is None:
                 reported = mock_report.call_args.args[0]

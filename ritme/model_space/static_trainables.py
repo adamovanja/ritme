@@ -107,6 +107,27 @@ def _aggregate_fold_metrics(per_fold_dicts: List[Dict[str, float]]) -> Dict[str,
     return metrics
 
 
+def _emit_running_fold_aggregate(
+    per_fold_metrics: List[Dict[str, float]],
+    nb_features: int,
+    fold_idx: int,
+    n_splits: int,
+) -> None:
+    """Emit a mid-trial ``tune.report`` carrying the running fold aggregate.
+
+    Used by the sequential K-fold paths (``_run_kfold_nn``, ``_run_kfold_xgb``)
+    so ASHA can prune obviously-bad trials before all K folds finish. Fires
+    only for ``fold_idx`` in ``0..n_splits - 2`` -- the last fold's metrics
+    are surfaced by the post-refit final report, which also carries the
+    deployable checkpoint. No checkpoint is attached here.
+    """
+    if fold_idx >= n_splits - 1:
+        return
+    running = _aggregate_fold_metrics(per_fold_metrics)
+    running["nb_features"] = nb_features
+    tune.report(metrics=running)
+
+
 def _allocate_fold_resources(n_splits: int, cpus_per_trial: int) -> tuple[int, int]:
     """Split a trial's CPU budget between parallel folds and the inner model.
 
@@ -1722,9 +1743,11 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
 # fan-out): in K-fold mode all ``cpus_per_trial`` are routed into each fold's
 # PyTorch Lightning Trainer via ``torch.set_num_threads`` + DataLoader
 # workers, so per-fold parallelism inside PyTorch itself absorbs the trial's
-# CPU budget. The trainable still emits exactly one ``tune.report`` at the
-# end, with mean/std/SE aggregated across the folds, and a single refit
-# model persisted as the deployable checkpoint.
+# CPU budget. The trainable emits ``n_splits`` ``tune.report`` calls total:
+# K-1 running-aggregate mid-trial reports (no checkpoint) plus one final
+# report after the full-data refit carrying the full aggregate and the
+# deployable checkpoint. Mid-trial reports let ASHA prune at fold
+# boundaries.
 
 
 def _nn_build_n_units(
@@ -1937,20 +1960,22 @@ def _run_kfold_nn(
 ) -> None:
     """Sequential K-fold + full-data refit for ``train_nn`` and its wrappers.
 
-    One ``tune.report`` at the end with aggregated per-fold metrics, plus a
-    refit on the full design matrix that produces the deployable checkpoint.
-    Refit ``max_epochs`` is resolved from per-fold ``EarlyStopping`` signals
-    via :func:`_nn_refit_epochs` -- median best-epoch when every fold's
-    early-stop fired, otherwise the config's ``epochs`` cap. The refit
-    saves final-epoch weights (no internal monitor split, no per-iteration
-    best-state tracking).
+    One ``tune.report`` after each completed fold carrying the running
+    aggregate over folds-so-far (so ASHA can prune obviously-bad trials
+    without waiting for all K folds), plus a final ``tune.report`` after
+    the full-data refit that carries the full aggregate and the deployable
+    checkpoint. Refit ``max_epochs`` is resolved from per-fold
+    ``EarlyStopping`` signals via :func:`_nn_refit_epochs` -- median
+    best-epoch when every fold's early-stop fired, otherwise the config's
+    ``epochs`` cap. The refit saves final-epoch weights (no internal
+    monitor split, no per-iteration best-state tracking).
 
     Notes:
         ``NNTuneReportCheckpointCallback`` is intentionally NOT used in the
         K-fold path -- it lives on the single-split path so ASHA can prune
-        partial trials. K-fold trials only emit one ``tune.report`` after
-        the full loop completes; mid-trial pruning at fold boundaries is a
-        separate follow-up (see ``issue_grad_dsc.md``).
+        at sub-epoch granularity there. K-fold trials emit ``n_splits``
+        ``tune.report`` calls total (K-1 running-aggregate reports plus one
+        final report with checkpoint); ASHA prunes at fold boundaries.
     """
     # Match single-split determinism setup (seed scope must mirror what
     # ``train_nn`` does inside the single-split body so reruns from the same
@@ -1997,7 +2022,7 @@ def _run_kfold_nn(
 
     per_fold_metrics: List[Dict[str, float]] = []
     per_fold_best_epoch: List[Optional[int]] = []
-    for tr_idx, va_idx in engineered.fold_indices:
+    for fold_idx, (tr_idx, va_idx) in enumerate(engineered.fold_indices):
         X_tr = engineered.X_full[tr_idx]
         y_tr = engineered.y_full[tr_idx]
         X_va = engineered.X_full[va_idx]
@@ -2030,6 +2055,8 @@ def _run_kfold_nn(
             )
         )
         per_fold_best_epoch.append(_extract_best_epoch(early_stop, max_epochs_cfg))
+
+        _emit_running_fold_aggregate(per_fold_metrics, n_features, fold_idx, n_splits)
 
     aggregated = _aggregate_fold_metrics(per_fold_metrics)
     aggregated["nb_features"] = n_features
@@ -2460,9 +2487,11 @@ def custom_xgb_metric(
 # ``train_xgb``. In K-fold mode all ``cpus_per_trial`` are routed into each
 # fold's ``xgb.train`` call (via ``nthread``), so folds are run serially in
 # the trainable's own process -- no Ray-remote fan-out, unlike the sklearn
-# K-fold path. The trainable still emits exactly one ``tune.report`` at the
-# end, with mean/std/SE aggregated across the folds, and a single refit
-# booster persisted as the deployable checkpoint.
+# K-fold path. The trainable emits ``n_splits`` ``tune.report`` calls total:
+# K-1 running-aggregate mid-trial reports (no checkpoint) plus one final
+# report after the full-data refit carrying the full aggregate and the
+# deployable checkpoint. Mid-trial reports let ASHA prune at fold
+# boundaries.
 
 
 def _prepare_xgb_classification_labels(
@@ -2649,13 +2678,17 @@ def _run_kfold_xgb(
     """Sequential K-fold + full-data refit for ``train_xgb`` /
     ``train_xgb_class``.
 
-    One ``tune.report`` at the end with aggregated per-fold metrics, plus a
-    refit on the full design matrix that produces the deployable
-    checkpoint. The K-fold loop is intentionally sequential: in K-fold mode
-    all ``cpus_per_trial`` go to each fold's ``xgb.train`` call via the
-    ``nthread`` slot in ``xgb_params``, so per-fold parallelism inside xgb
-    itself absorbs the trial's CPU budget without an outer Ray-remote
-    fan-out.
+    One ``tune.report`` after each completed fold carrying the running
+    aggregate over folds-so-far (so ASHA can prune obviously-bad trials
+    without waiting for all K folds), plus a final ``tune.report`` after
+    the full-data refit that carries the full aggregate and the deployable
+    checkpoint. ``_RitmeXGBCheckpointCallback`` stays scoped to the
+    single-split path so ASHA can prune at sub-iteration granularity
+    there; K-fold trials emit ``n_splits`` reports total. The K-fold loop
+    is intentionally sequential: in K-fold mode all ``cpus_per_trial`` go
+    to each fold's ``xgb.train`` call via the ``nthread`` slot in
+    ``xgb_params``, so per-fold parallelism inside xgb itself absorbs the
+    trial's CPU budget without an outer Ray-remote fan-out.
 
     For ``task_type == "classification"`` the y returned by
     ``process_train_kfold`` is encoded by ``_encode_target`` (already
@@ -2703,7 +2736,8 @@ def _run_kfold_xgb(
 
     per_fold_metrics: List[Dict[str, float]] = []
     per_fold_best_iter: List[Optional[int]] = []
-    for tr_idx, va_idx in engineered.fold_indices:
+    nb_features = int(engineered.X_full.shape[1])
+    for fold_idx, (tr_idx, va_idx) in enumerate(engineered.fold_indices):
         X_tr, y_tr = engineered.X_full[tr_idx], y_full[tr_idx]
         X_va, y_va = engineered.X_full[va_idx], y_full[va_idx]
         dtrain = xgb.DMatrix(X_tr, label=y_tr)
@@ -2721,8 +2755,10 @@ def _run_kfold_xgb(
         )
         per_fold_best_iter.append(getattr(booster, "best_iteration", None))
 
+        _emit_running_fold_aggregate(per_fold_metrics, nb_features, fold_idx, n_splits)
+
     aggregated = _aggregate_fold_metrics(per_fold_metrics)
-    aggregated["nb_features"] = int(engineered.X_full.shape[1])
+    aggregated["nb_features"] = nb_features
 
     refit_rounds = _xgb_refit_rounds(per_fold_best_iter, n_estimators)
     dfull = xgb.DMatrix(engineered.X_full, label=y_full)
