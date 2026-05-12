@@ -143,6 +143,12 @@ dmypy.json
 # notebooks
 .DS_Store
 
+# Lightning logger output (Trainer default writes lightning_logs/<version_N>/)
+lightning_logs/
+**/lightning_logs/
+*.ckpt
+*.tfevents.*
+
 # MLflow model logs
 **/mlruns/**
 

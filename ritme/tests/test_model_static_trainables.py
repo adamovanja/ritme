@@ -121,6 +121,19 @@ class TestTrainables(unittest.TestCase):
         self.seed_data = 0
         self.seed_model = 0
         self.tax = pd.DataFrame([])
+        # Lightning's default Trainer writes lightning_logs/ to the cwd; redirect
+        # those into a per-test tmpdir so the repo root stays clean and the logs
+        # are removed when the test ends.
+        self._original_cwd = os.getcwd()
+        self._lightning_tmp = tempfile.TemporaryDirectory(
+            prefix="ritme_lightning_logs_"
+        )
+        os.chdir(self._lightning_tmp.name)
+        self.addCleanup(self._restore_cwd_and_cleanup)
+
+    def _restore_cwd_and_cleanup(self):
+        os.chdir(self._original_cwd)
+        self._lightning_tmp.cleanup()
 
     @patch("ritme.model_space.static_trainables.process_train")
     @patch("ritme.model_space.static_trainables.StandardScaler.fit_transform")
@@ -1293,6 +1306,19 @@ class TestKfoldTrainables(unittest.TestCase):
                 "log_loss_train": 0.39,
             },
         ]
+        # Lightning's default Trainer writes lightning_logs/ to the cwd; redirect
+        # those into a per-test tmpdir so the repo root stays clean and the logs
+        # are removed when the test ends.
+        self._original_cwd = os.getcwd()
+        self._lightning_tmp = tempfile.TemporaryDirectory(
+            prefix="ritme_lightning_logs_"
+        )
+        os.chdir(self._lightning_tmp.name)
+        self.addCleanup(self._restore_cwd_and_cleanup)
+
+    def _restore_cwd_and_cleanup(self):
+        os.chdir(self._original_cwd)
+        self._lightning_tmp.cleanup()
 
     def _make_kfold_engineered(self, n_splits=3, classification=False):
         """Build a KFoldEngineered NamedTuple with the synthetic fixture data."""
