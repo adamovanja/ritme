@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import ray
 import skbio
+import torch
 from parameterized import parameterized
 from ray import tune
 from sklearn.base import BaseEstimator
@@ -26,6 +27,7 @@ from ritme.evaluate_models import (
     get_model,
     get_predictions,
     get_taxonomy,
+    load_nn_model,
     load_xgb_model,
 )
 from ritme.feature_space._process_train import KFoldEngineered
@@ -2118,6 +2120,146 @@ class TestKfoldTrainables(unittest.TestCase):
                 )
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_saves_loadable_checkpoint(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold refit NeuralNet is surfaced as a Ray Tune ``Checkpoint`` and
+        is loadable end-to-end through ``load_nn_model`` / ``TunedModel``.
+
+        Mirrors :meth:`test_train_xgb_kfold_saves_loadable_checkpoint` but for
+        the nn_reg path: verifies the K-fold branch wires the deployable
+        Lightning checkpoint through the same ``tune.report(metrics=...,
+        checkpoint=...)`` API the single-split path uses (see
+        :class:`NNTuneReportCheckpointCallback`), so a downstream consumer
+        holding a ``Result`` object can reconstruct the trained NeuralNet via
+        :func:`load_nn_model` and predict on a fresh holdout.
+
+        ``_save_nn_checkpoint`` is a context manager whose temp dir is torn
+        down at the close of the ``with`` block in ``_run_kfold_nn``; the real
+        Ray Tune ``tune.report`` persists the checkpoint contents to durable
+        storage during the call, so the temp dir going away after the report
+        is fine. Under a mocked ``tune.report`` that durable-copy never
+        happens, so we use ``side_effect`` to materialise the checkpoint to a
+        stable directory WHILE the trainable's ``with`` block is still open,
+        then validate the load + predict after the trainable returns.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash in NeuralNet
+            # (squeeze() collapses a 1-element batch to 0-d, breaking
+            # torch.cat in on_validation_epoch_end). Same workaround used in
+            # test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_reg_ckpt"
+            mock_get_context.return_value = mock_ctx
+
+            # Persist the checkpoint contents to a stable directory during
+            # the patched ``tune.report`` call. Ray's ``Checkpoint`` wraps a
+            # temp dir whose lifetime ends with the context manager in
+            # ``_save_nn_checkpoint``, so we must read it now -- not after
+            # the trainable returns. Mirrors what real Ray Tune does during
+            # ``tune.report``: stage the checkpoint to durable storage.
+            stable_ckpt_dir = os.path.join(tmpdir, "persisted_checkpoint")
+
+            def _persist(*args, **kwargs):
+                checkpoint = kwargs.get("checkpoint")
+                if checkpoint is None and len(args) >= 2:
+                    checkpoint = args[1]
+                self.assertIsNotNone(
+                    checkpoint,
+                    "K-fold refit must surface a Checkpoint via tune.report",
+                )
+                src = checkpoint.to_directory()
+                shutil.copytree(src, stable_ckpt_dir)
+
+            mock_report.side_effect = _persist
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            mock_report.assert_called_once()
+            self.assertTrue(
+                os.path.isfile(os.path.join(stable_ckpt_dir, "checkpoint")),
+                "K-fold refit checkpoint must land at the 'checkpoint' "
+                "filename load_nn_model reads via _get_checkpoint_path.",
+            )
+
+            # Exercise the public reload surface. ``load_nn_model`` reads
+            # ``result.checkpoint.to_directory() / 'checkpoint'``; we wrap
+            # the stable directory in a fresh Checkpoint so the stub
+            # ``Result`` mirrors what Ray Tune would hand back.
+            stable_checkpoint = ray.train.Checkpoint.from_directory(stable_ckpt_dir)
+            fake_result = MagicMock()
+            fake_result.checkpoint = stable_checkpoint
+            loaded_nn = load_nn_model(fake_result)
+            self.assertIsInstance(loaded_nn, st.NeuralNet)
+
+            # Wrap in TunedModel so the public reload surface (the way the
+            # orchestrator instantiates it from a Result) is exercised.
+            tuned = TunedModel(
+                model=loaded_nn,
+                data_config={k: v for k, v in config.items() if k.startswith("data_")},
+                tax=self.tax,
+                path=tmpdir,
+                model_type="nn_reg",
+            )
+            self.assertIs(tuned.model, loaded_nn)
+
+            # Smoke-predict on a 5-row holdout using the same feature schema
+            # the refit NeuralNet was trained on (5 F-columns under this
+            # fixture). Mirror what ``TunedModel.predict`` does internally
+            # for the NeuralNet branch (eval mode, no_grad, forward,
+            # _prepare_predictions, flatten) so the assertion catches both a
+            # bad checkpoint and a bad reload.
+            loaded_nn.eval()
+            with torch.no_grad():
+                model_device = next(loaded_nn.parameters()).device
+                X_t = (
+                    torch.tensor(self.X_full[:5], dtype=torch.float32)
+                    .clone()
+                    .detach()
+                    .to(model_device)
+                )
+                raw = loaded_nn(X_t)
+                raw = loaded_nn._prepare_predictions(raw)
+                preds = raw.detach().cpu().numpy().flatten()
+            self.assertEqual(preds.shape, (5,))
+            self.assertTrue(np.all(np.isfinite(preds)))
 
     @patch("ritme.model_space.static_trainables.tune.report")
     @patch("ritme.model_space.static_trainables.ray.tune.get_context")
