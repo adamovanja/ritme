@@ -2043,3 +2043,78 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertGreaterEqual(reported["rmse_val_se"], 0.0)
             # The model was pickled to disk by the trainable.
             self.assertTrue(os.path.exists(reported["model_path"]))
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_nn_reg`` runs the real fold loop and emits
+        one aggregated ``train.report`` call with mean/std/SE per metric.
+
+        Mirrors :meth:`test_train_xgb_kfold_reports_aggregated_metrics` --
+        we do NOT mock Lightning, the model, or ``process_train_kfold``;
+        the real fold loop runs end-to-end on the 30-row synthetic
+        regression fixture.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size chosen to avoid single-sample batches: each host has
+            # 3 rows and groups stay together, so val sizes are multiples of
+            # 3 (6, 9, 12, ...). A batch_size of 3 keeps every batch >=2
+            # samples after the data loader splits the val set.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_reg"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+            )
+
+            self.assertEqual(mock_report.call_count, 1)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            for key in ("rmse_val", "rmse_train", "r2_val", "r2_train"):
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])

@@ -1616,6 +1616,354 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
             tune.report(report_dict, checkpoint=checkpoint)
 
 
+# --- K-fold path for train_nn ---------------------------------------------
+#
+# These helpers implement the sequential K-fold + full-data refit branch of
+# ``train_nn``. The fold loop is intentionally sequential (no Ray-remote
+# fan-out): in K-fold mode all ``cpus_per_trial`` are routed into each fold's
+# PyTorch Lightning Trainer via ``torch.set_num_threads`` + DataLoader
+# workers, so per-fold parallelism inside PyTorch itself absorbs the trial's
+# CPU budget. The trainable still emits exactly one ``tune.report`` at the
+# end, with mean/std/SE aggregated across the folds, and a single refit
+# model persisted as the deployable checkpoint.
+
+
+def _nn_build_n_units(
+    config: Dict[str, Any], n_features: int, nn_type: str, n_classes: Optional[int]
+) -> Tuple[List[int], Optional[List[int]]]:
+    """Compute the per-layer unit sizes for a fresh ``NeuralNet`` instance.
+
+    Mirrors the layer-shape construction inside single-split ``train_nn``:
+    input dim from the design matrix, hidden dims from
+    ``config['n_units_hl{i}']``, output dim from ``nn_type`` (regression: 1,
+    classification: n_classes, ordinal_regression: n_classes - 1).
+    Returns the unit list and (for classification/ordinal) the sorted unique
+    class labels in their original encoding.
+    """
+    n_layers = int(config["n_hidden_layers"])
+    if nn_type == "regression":
+        output_layer = [1]
+    elif nn_type == "classification":
+        output_layer = [int(n_classes)]
+    else:  # ordinal_regression: CORN reduces classes by 1
+        output_layer = [int(n_classes) - 1]
+    n_units = (
+        [int(n_features)]
+        + [int(config[f"n_units_hl{i}"]) for i in range(n_layers)]
+        + output_layer
+    )
+    assert len(n_units) == n_layers + 2
+    return n_units
+
+
+def _nn_classes_from_y(y_full: np.ndarray) -> List[int]:
+    """Sorted unique integer classes from a (possibly float) target column.
+
+    Mirrors the rounding-to-long discipline single-split ``train_nn`` uses
+    to build its ``classes`` list (the K-fold path runs the LabelEncoder
+    upstream of class derivation when the target is non-numeric, so this
+    just rounds the already-encoded floats).
+    """
+    y_tensor = torch.from_numpy(np.asarray(y_full)).float()
+    return sorted(set(torch.round(y_tensor).long().cpu().numpy().tolist()))
+
+
+def _build_neural_net_for_kfold(
+    config: Dict[str, Any],
+    n_features: int,
+    nn_type: str,
+    task_type: str,
+    classes: Optional[List[int]],
+) -> "NeuralNet":
+    """Construct a fresh NeuralNet with the same arg shape as single-split.
+
+    Single source of truth for the NeuralNet constructor in the K-fold
+    path -- the per-fold model and the refit model are both built through
+    this helper so they receive identical hyperparameters.
+    """
+    n_units = _nn_build_n_units(
+        config,
+        n_features,
+        nn_type,
+        n_classes=(len(classes) if classes is not None else None),
+    )
+    return NeuralNet(
+        n_units=n_units,
+        learning_rate=config["learning_rate"],
+        nn_type=nn_type,
+        dropout_rate=config["dropout_rate"],
+        weight_decay=config["weight_decay"],
+        classes=classes,
+        task_type=task_type,
+    )
+
+
+# Lightning metric-name -> ritme metric-name mappings, mirroring the
+# ``nn_metrics`` dict the single-split path passes to
+# ``NNTuneReportCheckpointCallback``. Kept module-level so the K-fold
+# extraction stays symmetric with the single-split report shape.
+_NN_REG_METRIC_MAP: Dict[str, str] = {
+    "rmse": "rmse",
+    "r2": "r2",
+    "loss": "loss",
+}
+_NN_CLASS_METRIC_MAP: Dict[str, str] = {
+    "roc_auc_macro_ovr": "roc_auc_macro_ovr",
+    "log_loss": "log_loss",
+    "f1_macro": "f1_macro",
+    "balanced_accuracy": "balanced_accuracy",
+    "mcc": "mcc",
+    "loss": "loss",
+}
+
+
+def _nn_extract_fold_metrics(
+    trainer: Trainer,
+    model: "NeuralNet",
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    task_type: str,
+) -> Dict[str, float]:
+    """Per-fold metric dict mirroring the single-split nn metric shape.
+
+    Lightning's ``Trainer.validate`` runs the validation-step pipeline on
+    the supplied loader and returns the standard ``val_<name>`` callback
+    metrics. We run it once on the validation loader (yielding the
+    ``*_val`` ritme keys) and once on the training loader (yielding the
+    ``*_train`` ritme keys); this reuses ``on_validation_epoch_end``'s
+    metric computation for both splits, so the keys exactly match what
+    the single-split path reports via ``NNTuneReportCheckpointCallback``.
+    """
+    metric_map = (
+        _NN_REG_METRIC_MAP if task_type == "regression" else _NN_CLASS_METRIC_MAP
+    )
+    val_result = trainer.validate(model, val_loader, verbose=False)[0]
+    train_result = trainer.validate(model, train_loader, verbose=False)[0]
+    out: Dict[str, float] = {}
+    for lt_name, ritme_name in metric_map.items():
+        v_key = f"val_{lt_name}"
+        if v_key in val_result:
+            out[f"{ritme_name}_val"] = float(val_result[v_key])
+        if v_key in train_result:
+            out[f"{ritme_name}_train"] = float(train_result[v_key])
+    return out
+
+
+def _extract_best_epoch(early_stop: EarlyStopping, max_epochs: int) -> Optional[int]:
+    """Return the epoch at which ``EarlyStopping`` thinks the best score was hit.
+
+    Lightning's ``EarlyStopping`` in this codebase doesn't expose a
+    ``best_epoch`` attribute directly. It does set ``stopped_epoch`` to the
+    epoch at which training was stopped when the patience window elapses
+    without improvement; under that contract the last improvement happened
+    ``patience`` epochs earlier (= ``stopped_epoch - patience``). When
+    ``stopped_epoch == 0`` (default) early stopping never fired during this
+    run, so we return ``None`` -- the K-fold refit then falls back to the
+    config's ``epochs`` cap rather than guessing.
+
+    The returned value is clamped to ``[0, max_epochs]`` to avoid emitting a
+    negative epoch from a degenerate stopped_epoch < patience case.
+    """
+    stopped_epoch = int(getattr(early_stop, "stopped_epoch", 0))
+    if stopped_epoch <= 0:
+        return None
+    best_epoch = stopped_epoch - int(early_stop.patience)
+    if best_epoch < 0:
+        best_epoch = 0
+    if best_epoch > int(max_epochs):
+        best_epoch = int(max_epochs)
+    return best_epoch
+
+
+def _nn_refit_epochs(
+    per_fold_best_epoch: List[Optional[int]], max_epochs_config: int
+) -> int:
+    """Resolve full-data refit ``max_epochs`` from the K-fold signal.
+
+    Median of per-fold best-epoch estimates if every fold's early-stop
+    triggered (``best_epoch`` is non-``None``); falls back to
+    ``max_epochs_config`` otherwise. Symmetric with :func:`_xgb_refit_rounds`.
+    The result is at least 1 -- a zero-epoch refit would never update the
+    randomly-initialized weights and is rejected as a degenerate signal in
+    favour of the config fallback.
+    """
+    if any(b is None for b in per_fold_best_epoch):
+        return int(max_epochs_config)
+    median = int(np.median(per_fold_best_epoch))
+    if median < 1:
+        return int(max_epochs_config)
+    return median
+
+
+@contextmanager
+def _save_nn_checkpoint(
+    refit_model: "NeuralNet", refit_trainer: Trainer
+) -> Iterator["ray.train.Checkpoint"]:
+    """Yield a Ray Tune :class:`Checkpoint` containing the refit NeuralNet.
+
+    Mirrors :func:`_save_xgb_checkpoint`: write the Lightning checkpoint to
+    a temp dir under the filename ``"checkpoint"`` so it lands at the exact
+    path :func:`ritme.evaluate_models._get_checkpoint_path` reads
+    (``result.checkpoint.to_directory() / "checkpoint"``), wrap that
+    directory in a :class:`ray.train.Checkpoint`, and yield it for the
+    caller to hand to ``tune.report(metrics=..., checkpoint=...)``.
+
+    The temp dir lives for the duration of the ``with`` block. Ray Tune
+    persists the checkpoint contents to durable storage during the
+    ``tune.report`` call, so it is safe to let the temp dir vanish at exit.
+    """
+    with tempfile.TemporaryDirectory(prefix="ritme_nn_refit_") as tmpdir:
+        refit_trainer.save_checkpoint(os.path.join(tmpdir, "checkpoint"))
+        yield ray.train.Checkpoint.from_directory(tmpdir)
+
+
+def _run_kfold_nn(
+    config: Dict[str, Any],
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    tax: pd.DataFrame,
+    seed_data: int,
+    seed_model: int,
+    stratify_by: List[str] | None,
+    nn_type: str,
+    cpus_per_trial: int,
+    gpus_per_trial: int,
+    task_type: str,
+    n_splits: int,
+) -> None:
+    """Sequential K-fold + full-data refit for ``train_nn`` and its wrappers.
+
+    One ``tune.report`` at the end with aggregated per-fold metrics, plus a
+    refit on the full design matrix that produces the deployable checkpoint.
+    Refit ``max_epochs`` is resolved from per-fold ``EarlyStopping`` signals
+    via :func:`_nn_refit_epochs` -- median best-epoch when every fold's
+    early-stop fired, otherwise the config's ``epochs`` cap. The refit
+    saves final-epoch weights (no internal monitor split, no per-iteration
+    best-state tracking).
+
+    Notes:
+        ``NNTuneReportCheckpointCallback`` is intentionally NOT used in the
+        K-fold path -- it lives on the single-split path so ASHA can prune
+        partial trials. K-fold trials only emit one ``tune.report`` after
+        the full loop completes; mid-trial pruning at fold boundaries is a
+        separate follow-up (see ``issue_grad_dsc.md``).
+    """
+    # Match single-split determinism setup (seed scope must mirror what
+    # ``train_nn`` does inside the single-split body so reruns from the same
+    # ``seed_model`` are reproducible across paths).
+    torch.set_num_threads(max(1, int(cpus_per_trial)))
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    seed_everything(seed_model, workers=True)
+    torch.manual_seed(seed_model)
+    random.seed(seed_model)
+    np.random.seed(seed_model)
+
+    engineered = process_train_kfold(
+        config,
+        train_val,
+        target,
+        host_id,
+        tax,
+        seed_data,
+        n_splits,
+        stratify_by=stratify_by,
+    )
+
+    # Persist the label encoder once at trial level (not per fold) for
+    # classification/ordinal heads so prediction-time inverse transform has
+    # what it needs. ``process_train_kfold`` stashes the encoder on
+    # ``config['_label_encoder']`` for non-numeric targets; numeric targets
+    # leave it absent, in which case ``_save_label_encoder`` is a no-op.
+    if nn_type != "regression":
+        _save_label_encoder(config)
+
+    # Class set for classification / ordinal heads -- derived once from the
+    # full encoded label vector so per-fold models share the same class
+    # universe even when a fold's val split is missing some classes.
+    classes = _nn_classes_from_y(engineered.y_full) if nn_type != "regression" else None
+
+    n_features = int(engineered.X_full.shape[1])
+    max_epochs_cfg = int(config["epochs"])
+    patience = int(config.get("early_stopping_patience", 10))
+    min_delta = float(config.get("early_stopping_min_delta", 0.0))
+    num_workers = max(0, int(cpus_per_trial) - 1)
+    accelerator = "gpu" if int(gpus_per_trial) > 0 else "cpu"
+
+    per_fold_metrics: List[Dict[str, float]] = []
+    per_fold_best_epoch: List[Optional[int]] = []
+    for tr_idx, va_idx in engineered.fold_indices:
+        X_tr = engineered.X_full[tr_idx]
+        y_tr = engineered.y_full[tr_idx]
+        X_va = engineered.X_full[va_idx]
+        y_va = engineered.y_full[va_idx]
+        train_loader, val_loader = load_data(
+            X_tr, y_tr, X_va, y_va, config, seed_model, num_workers=num_workers
+        )
+        model = _build_neural_net_for_kfold(
+            config, n_features, nn_type, task_type, classes
+        )
+        early_stop = EarlyStopping(
+            monitor="val_loss",
+            min_delta=min_delta,
+            patience=patience,
+            mode="min",
+        )
+        trainer = Trainer(
+            max_epochs=max_epochs_cfg,
+            callbacks=[early_stop],
+            enable_checkpointing=False,
+            logger=False,
+            enable_progress_bar=False,
+            deterministic=True,
+            accelerator=accelerator,
+        )
+        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        per_fold_metrics.append(
+            _nn_extract_fold_metrics(
+                trainer, model, train_loader, val_loader, task_type
+            )
+        )
+        per_fold_best_epoch.append(_extract_best_epoch(early_stop, max_epochs_cfg))
+
+    aggregated = _aggregate_fold_metrics(per_fold_metrics)
+    aggregated["nb_features"] = n_features
+
+    # Full-data refit for the deployable checkpoint. Trainer needs a
+    # ``val_dataloaders`` only when its callbacks ask for one; we run with
+    # no callbacks (no EarlyStopping, no checkpointing), so passing only the
+    # training loader is sufficient.
+    refit_epochs = _nn_refit_epochs(per_fold_best_epoch, max_epochs_cfg)
+    full_train_loader, _ = load_data(
+        engineered.X_full,
+        engineered.y_full,
+        engineered.X_full[:0],
+        engineered.y_full[:0],
+        config,
+        seed_model,
+        num_workers=num_workers,
+    )
+    refit_model = _build_neural_net_for_kfold(
+        config, n_features, nn_type, task_type, classes
+    )
+    refit_trainer = Trainer(
+        max_epochs=refit_epochs,
+        callbacks=[],
+        enable_checkpointing=False,
+        logger=False,
+        enable_progress_bar=False,
+        deterministic=True,
+        accelerator=accelerator,
+    )
+    refit_trainer.fit(refit_model, train_dataloaders=full_train_loader)
+
+    _save_taxonomy(tax)
+    with _save_nn_checkpoint(refit_model, refit_trainer) as checkpoint:
+        tune.report(metrics=aggregated, checkpoint=checkpoint)
+
+
 def train_nn(
     config,
     train_val,
@@ -1629,7 +1977,25 @@ def train_nn(
     cpus_per_trial=1,
     gpus_per_trial=0,
     task_type="regression",
+    k_folds: int = 1,
 ):
+    n_splits = int(k_folds or 1)
+    if n_splits > 1:
+        return _run_kfold_nn(
+            config,
+            train_val,
+            target,
+            host_id,
+            tax,
+            seed_data,
+            seed_model,
+            stratify_by,
+            nn_type,
+            cpus_per_trial,
+            gpus_per_trial,
+            task_type,
+            n_splits,
+        )
     # Limit PyTorch threads to Ray-allocated CPUs to avoid oversubscription
     torch.set_num_threads(cpus_per_trial)
 
@@ -1779,8 +2145,6 @@ def train_nn_reg(
     task_type="regression",
     k_folds: int = 1,
 ):
-    # k_folds accepted for signature parity; iterative trainable still uses
-    # single-split inside ritme. K-fold support for nn is Phase 2 work.
     train_nn(
         config,
         train_val,
@@ -1794,6 +2158,7 @@ def train_nn_reg(
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
         task_type=task_type,
+        k_folds=k_folds,
     )
 
 
@@ -1812,8 +2177,6 @@ def train_nn_class(
     task_type="classification",
     k_folds: int = 1,
 ):
-    # k_folds accepted for signature parity; iterative trainable still uses
-    # single-split inside ritme. K-fold support for nn is Phase 2 work.
     train_nn(
         config,
         train_val,
@@ -1827,6 +2190,7 @@ def train_nn_class(
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
         task_type=task_type,
+        k_folds=k_folds,
     )
 
 
@@ -1845,8 +2209,6 @@ def train_nn_corn(
     task_type="classification",
     k_folds: int = 1,
 ):
-    # k_folds accepted for signature parity; iterative trainable still uses
-    # single-split inside ritme. K-fold support for nn is Phase 2 work.
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
     train_nn(
         config,
@@ -1861,6 +2223,7 @@ def train_nn_corn(
         cpus_per_trial=cpus_per_trial,
         gpus_per_trial=gpus_per_trial,
         task_type=task_type,
+        k_folds=k_folds,
     )
 
 
