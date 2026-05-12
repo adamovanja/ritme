@@ -2118,3 +2118,194 @@ class TestKfoldTrainables(unittest.TestCase):
                 )
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_class_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_nn_class`` runs the real fold loop and
+        emits one aggregated ``tune.report`` call with mean/std/SE per
+        classification metric.
+
+        Mirrors :meth:`test_train_nn_reg_kfold_reports_aggregated_metrics`
+        but uses the 3-class numeric target ``self.y_class`` and asserts on
+        every key produced by ``_NN_CLASS_METRIC_MAP`` (val + train
+        variants), so a future shrink of that map will trip this test.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash in NeuralNet
+            # (squeeze() collapses a 1-element batch to 0-d, breaking
+            # torch.cat in on_validation_epoch_end). Same workaround used
+            # in test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=3,
+            )
+
+            self.assertEqual(mock_report.call_count, 1)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            # Mirror EVERY key emitted by _nn_extract_fold_metrics for the
+            # classification path: each entry of _NN_CLASS_METRIC_MAP gets
+            # both a _val and a _train variant.
+            metric_keys = (
+                "roc_auc_macro_ovr_val",
+                "roc_auc_macro_ovr_train",
+                "log_loss_val",
+                "log_loss_train",
+                "f1_macro_val",
+                "f1_macro_train",
+                "balanced_accuracy_val",
+                "balanced_accuracy_train",
+                "mcc_val",
+                "mcc_train",
+                "loss_val",
+                "loss_train",
+            )
+            for key in metric_keys:
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_corn_kfold_reports_aggregated_metrics(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path for ``train_nn_corn`` (CORN ordinal regression) runs
+        the real fold loop and emits one aggregated ``tune.report`` call
+        with mean/std/SE per metric.
+
+        CORN's head is ordinal but the trainable's ``task_type`` is
+        ``"classification"``, so the reported metric set is the same one
+        produced by :data:`_NN_CLASS_METRIC_MAP`. The 3-class numeric
+        ``self.y_class`` (values ``{0.0, 1.0, 2.0}``) supplies the ordinal
+        labels in increasing order.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            # batch_size=3 avoids the 1-sample val batch crash; see comment
+            # in test_train_nn_reg_kfold_reports_aggregated_metrics.
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_corn",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_nn_corn"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_corn(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=3,
+            )
+
+            self.assertEqual(mock_report.call_count, 1)
+            reported = mock_report.call_args.kwargs.get("metrics")
+            if reported is None:
+                reported = mock_report.call_args.args[0]
+            self.assertIsInstance(reported, dict)
+            # CORN runs through the same classification metric extraction as
+            # nn_class (task_type="classification"), so assert the full
+            # _NN_CLASS_METRIC_MAP coverage in both val + train variants.
+            metric_keys = (
+                "roc_auc_macro_ovr_val",
+                "roc_auc_macro_ovr_train",
+                "log_loss_val",
+                "log_loss_train",
+                "f1_macro_val",
+                "f1_macro_train",
+                "balanced_accuracy_val",
+                "balanced_accuracy_train",
+                "mcc_val",
+                "mcc_train",
+                "loss_val",
+                "loss_train",
+            )
+            for key in metric_keys:
+                self.assertIn(key, reported)
+                self.assertIn(f"{key}_mean", reported)
+                self.assertIn(f"{key}_std", reported)
+                self.assertIn(f"{key}_se", reported)
+                # Bare key tracks the mean.
+                self.assertAlmostEqual(
+                    reported[key], reported[f"{key}_mean"], places=12
+                )
+            self.assertEqual(reported["n_folds"], 3)
+            self.assertEqual(reported["nb_features"], self.X_full.shape[1])
