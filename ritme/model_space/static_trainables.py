@@ -1630,15 +1630,15 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
 
 def _nn_build_n_units(
     config: Dict[str, Any], n_features: int, nn_type: str, n_classes: Optional[int]
-) -> Tuple[List[int], Optional[List[int]]]:
+) -> List[int]:
     """Compute the per-layer unit sizes for a fresh ``NeuralNet`` instance.
 
     Mirrors the layer-shape construction inside single-split ``train_nn``:
     input dim from the design matrix, hidden dims from
     ``config['n_units_hl{i}']``, output dim from ``nn_type`` (regression: 1,
     classification: n_classes, ordinal_regression: n_classes - 1).
-    Returns the unit list and (for classification/ordinal) the sorted unique
-    class labels in their original encoding.
+    Returns the unit list. Class labels are derived elsewhere via
+    :func:`_nn_classes_from_y`.
     """
     n_layers = int(config["n_hidden_layers"])
     if nn_type == "regression":
@@ -1780,19 +1780,21 @@ def _nn_refit_epochs(
 ) -> int:
     """Resolve full-data refit ``max_epochs`` from the K-fold signal.
 
-    Median of per-fold best-epoch estimates if every fold's early-stop
-    triggered (``best_epoch`` is non-``None``); falls back to
-    ``max_epochs_config`` otherwise. Symmetric with :func:`_xgb_refit_rounds`.
-    The result is at least 1 -- a zero-epoch refit would never update the
-    randomly-initialized weights and is rejected as a degenerate signal in
-    favour of the config fallback.
+    Median of per-fold ``best_epoch + 1``, matching xgb's
+    :func:`_xgb_refit_rounds` semantics. ``best_epoch`` is 0-indexed and
+    Lightning's ``Trainer`` runs epochs ``0..max_epochs-1``, so the refit
+    cap must be ``best_epoch + 1`` to train up to and including the epoch
+    flagged as best. Falls back to ``max_epochs_config`` if any fold's
+    early-stop did not trigger (``best_epoch`` is ``None``). A degenerate
+    pre-``+1`` median ``< 1`` is also rejected in favour of the config
+    fallback; after the ``+ 1`` the effective floor is 2 refit epochs.
     """
     if any(b is None for b in per_fold_best_epoch):
         return int(max_epochs_config)
     median = int(np.median(per_fold_best_epoch))
     if median < 1:
         return int(max_epochs_config)
-    return median
+    return median + 1
 
 
 @contextmanager
