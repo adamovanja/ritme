@@ -2009,8 +2009,10 @@ def _prepare_xgb_classification_labels(
     ``config["_label_encoder"]`` (non-numeric target), reuse it -- the y
     values are already 0-indexed floats, so we only round + cast. For
     numeric targets the encoder is absent; we fit one here on the rounded
-    ints and stash it on ``config`` so the trailing
-    ``_save_label_encoder(config)`` persists it for prediction time.
+    ints and stash it on ``config`` so the caller can persist it via
+    ``_save_label_encoder(config)`` before xgb param construction (the
+    encoder MUST leave ``config`` before ``xgb.train`` to avoid an
+    "unknown parameter" warning).
 
     Returns the integer-encoded labels and the class count for
     ``num_class`` in xgb params.
@@ -2196,9 +2198,12 @@ def _run_kfold_xgb(
     We mirror the single-split branch of ``train_xgb_class``: if no encoder
     was stashed (numeric target) we fit one here on the rounded ints, then
     transform y_full so xgb sees contiguous 0..K-1 integer labels for
-    ``multi:softprob``. The encoder stays on ``config`` so the trailing
-    ``_save_label_encoder(config)`` persists it for prediction-time
-    inverse transform.
+    ``multi:softprob``. We then call ``_save_label_encoder(config)``
+    immediately -- before building xgb params -- so the encoder is
+    persisted for prediction-time inverse transform AND popped off
+    ``config`` (otherwise it leaks into ``xgb.train`` and xgb logs a
+    "Parameters: { _label_encoder } are not used" warning each fold +
+    at refit).
     """
     np.random.seed(seed_model)
     random.seed(seed_model)
@@ -2218,6 +2223,10 @@ def _run_kfold_xgb(
     num_classes: Optional[int] = None
     if task_type == "classification":
         y_full, num_classes = _prepare_xgb_classification_labels(config, y_full)
+        # Persist + drop the label encoder before building xgb params so it
+        # doesn't leak into ``xgb.train`` (which would log "Parameters: {
+        # _label_encoder } are not used" each fold + at refit).
+        _save_label_encoder(config)
 
     xgb_params = _xgb_params_from_config(
         config, cpus_per_trial, gpus_per_trial, task_type, num_classes=num_classes
@@ -2256,8 +2265,6 @@ def _run_kfold_xgb(
     )
 
     _save_taxonomy(tax)
-    if task_type == "classification":
-        _save_label_encoder(config)
     with _save_xgb_checkpoint(refit) as checkpoint:
         tune.report(metrics=aggregated, checkpoint=checkpoint)
 
