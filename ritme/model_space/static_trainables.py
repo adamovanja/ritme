@@ -7,6 +7,7 @@ import random
 import shutil
 import tempfile
 from contextlib import contextmanager
+from functools import partial
 from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Tuple, Union
 
 import joblib
@@ -124,11 +125,10 @@ def _allocate_fold_resources(n_splits: int, cpus_per_trial: int) -> tuple[int, i
 # Module-level estimator builders
 # --------------------------------------------------------------------------
 # Each ``_build_<model>`` is a top-level factory that returns a fresh,
-# unfitted estimator from explicit hyperparameter arguments. They replace the
-# previous nested ``_make`` closures (which captured ``config`` from the
-# trainable scope) so that Ray dispatches estimator construction by function
-# reference plus a small explicit kwargs dict — not by cloudpickling an
-# enclosing closure together with the full ``config``. Each builder accepts
+# unfitted estimator from explicit hyperparameter arguments. Module-level
+# definitions let Ray dispatch estimator construction by function reference
+# plus an explicit kwargs dict, rather than cloudpickling a closure together
+# with whatever ``config`` happened to be in scope. Each builder accepts
 # ``seed_model`` and ``n_jobs`` for uniform invocation by the fold workers;
 # models that don't consume them absorb them via the keyword signature.
 
@@ -491,10 +491,10 @@ def _fit_full_data_sklearn(
     ``y_full`` arrive as materialized numpy arrays (zero-copy view of the
     Ray plasma object). The estimator is built from the same module-level
     builder + kwargs pair used by the fold tasks. Seeds are reset at function
-    entry so the refit is deterministic and mirrors the previous in-process
-    refit. For ``classification=True`` the targets are rounded to integers
-    (matching the per-fold classification path). Returns the fitted
-    estimator, which the caller pickles to disk as the deployable checkpoint.
+    entry so the refit is deterministic. For ``classification=True`` the
+    targets are rounded to integers (matching the per-fold classification
+    path). Returns the fitted estimator, which the caller pickles to disk
+    as the deployable checkpoint.
     """
     np.random.seed(seed_model)
     random.seed(seed_model)
@@ -522,13 +522,10 @@ def _dispatch_folds_then_refit(
     in submission order, and only after every fold has returned does it
     submit the refit task. This bounds the peak per-node thread count to
     roughly ``n_workers * cpus_per_fold`` during the fold phase and to
-    ``cpus_per_trial`` during the refit -- assuming the caller built the
-    submit callables with those per-task CPU budgets.
-
-    Earlier the K folds and the refit fanned out simultaneously with
-    ``num_cpus=0`` on every task, which let the actual thread count on the
-    parent's node climb to ~``K * cpus_per_fold + cpus_per_trial`` (~2x the
-    trial's reservation) and silently oversubscribed the CPU budget.
+    ``cpus_per_trial`` during the refit, keeping actual usage within the
+    trial's CPU reservation -- which would otherwise be ~2x oversubscribed
+    if all K fold tasks plus the refit ran simultaneously with
+    ``num_cpus=0``.
     """
     fold_results: List[Any] = [None] * n_folds
     in_flight: Dict[Any, int] = {}
@@ -545,6 +542,57 @@ def _dispatch_folds_then_refit(
             fold_results[idx] = ray.get(ref)
     refit_result = ray.get(submit_refit())
     return fold_results, refit_result
+
+
+def _submit_sklearn_fold(
+    i: int,
+    *,
+    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
+    remote_fold_fn: Any,
+    strategy: NodeAffinitySchedulingStrategy,
+    X_ref: Any,
+    y_ref: Any,
+    estimator_builder: Callable[..., Any],
+    builder_kwargs: Dict[str, Any],
+    seed_model: int,
+    cpus_per_fold: int,
+) -> Any:
+    """Submit one sklearn-style K-fold task to Ray."""
+    tr_idx, va_idx = folds_idx[i]
+    return remote_fold_fn.options(scheduling_strategy=strategy).remote(
+        X_ref,
+        y_ref,
+        tr_idx,
+        va_idx,
+        estimator_builder,
+        builder_kwargs,
+        seed_model,
+        cpus_per_fold,
+    )
+
+
+def _submit_sklearn_refit(
+    *,
+    remote_refit_fn: Any,
+    strategy: NodeAffinitySchedulingStrategy,
+    X_ref: Any,
+    y_ref: Any,
+    estimator_builder: Callable[..., Any],
+    builder_kwargs: Dict[str, Any],
+    seed_model: int,
+    cpus_per_trial: int,
+    classification: bool,
+) -> Any:
+    """Submit the sklearn-style refit-on-full-data task to Ray."""
+    return remote_refit_fn.options(scheduling_strategy=strategy).remote(
+        X_ref,
+        y_ref,
+        estimator_builder,
+        builder_kwargs,
+        seed_model,
+        cpus_per_trial,
+        classification,
+    )
 
 
 def _dispatch_kfold_and_refit_sklearn(
@@ -596,29 +644,30 @@ def _dispatch_kfold_and_refit_sklearn(
     remote_fold_fn = ray.remote(num_cpus=0)(fold_fn)
     remote_refit_fn = ray.remote(num_cpus=0)(_fit_full_data_sklearn)
 
-    def submit_fold(i: int) -> Any:
-        tr_idx, va_idx = folds_idx[i]
-        return remote_fold_fn.options(scheduling_strategy=strategy).remote(
-            X_ref,
-            y_ref,
-            tr_idx,
-            va_idx,
-            estimator_builder,
-            builder_kwargs,
-            seed_model,
-            cpus_per_fold,
-        )
-
-    def submit_refit() -> Any:
-        return remote_refit_fn.options(scheduling_strategy=strategy).remote(
-            X_ref,
-            y_ref,
-            estimator_builder,
-            builder_kwargs,
-            seed_model,
-            cpus_per_trial,
-            classification,
-        )
+    submit_fold = partial(
+        _submit_sklearn_fold,
+        folds_idx=folds_idx,
+        remote_fold_fn=remote_fold_fn,
+        strategy=strategy,
+        X_ref=X_ref,
+        y_ref=y_ref,
+        estimator_builder=estimator_builder,
+        builder_kwargs=builder_kwargs,
+        seed_model=seed_model,
+        cpus_per_fold=cpus_per_fold,
+    )
+    submit_refit = partial(
+        _submit_sklearn_refit,
+        remote_refit_fn=remote_refit_fn,
+        strategy=strategy,
+        X_ref=X_ref,
+        y_ref=y_ref,
+        estimator_builder=estimator_builder,
+        builder_kwargs=builder_kwargs,
+        seed_model=seed_model,
+        cpus_per_trial=cpus_per_trial,
+        classification=classification,
+    )
 
     return _dispatch_folds_then_refit(
         submit_fold, len(folds_idx), submit_refit, n_workers
@@ -923,6 +972,55 @@ def _fit_full_data_trac(
     return _fit_trac_single(log_geom_full, nleaves, y_full, a_df, lam, seed)
 
 
+def _submit_trac_fold(
+    i: int,
+    *,
+    folds_idx: List[Tuple[np.ndarray, np.ndarray]],
+    remote_fold_fn: Any,
+    strategy: NodeAffinitySchedulingStrategy,
+    lg_ref: Any,
+    y_ref: Any,
+    nleaves: np.ndarray,
+    a_df_ref: Any,
+    lam: float,
+    seed_model: int,
+) -> Any:
+    """Submit one TRAC K-fold task to Ray."""
+    tr_idx, va_idx = folds_idx[i]
+    return remote_fold_fn.options(scheduling_strategy=strategy).remote(
+        lg_ref,
+        y_ref,
+        tr_idx,
+        va_idx,
+        nleaves,
+        a_df_ref,
+        lam,
+        seed_model,
+    )
+
+
+def _submit_trac_refit(
+    *,
+    remote_refit_fn: Any,
+    strategy: NodeAffinitySchedulingStrategy,
+    lg_ref: Any,
+    nleaves: np.ndarray,
+    y_ref: Any,
+    a_df_ref: Any,
+    lam: float,
+    seed_model: int,
+) -> Any:
+    """Submit the TRAC refit-on-full-data task to Ray."""
+    return remote_refit_fn.options(scheduling_strategy=strategy).remote(
+        lg_ref,
+        nleaves,
+        y_ref,
+        a_df_ref,
+        lam,
+        seed_model,
+    )
+
+
 def _dispatch_kfold_and_refit_trac(
     folds_idx: List[Tuple[np.ndarray, np.ndarray]],
     log_geom_full: np.ndarray,
@@ -949,28 +1047,29 @@ def _dispatch_kfold_and_refit_trac(
     remote_fold_fn = ray.remote(num_cpus=0)(_fit_one_fold_trac)
     remote_refit_fn = ray.remote(num_cpus=0)(_fit_full_data_trac)
 
-    def submit_fold(i: int) -> Any:
-        tr_idx, va_idx = folds_idx[i]
-        return remote_fold_fn.options(scheduling_strategy=strategy).remote(
-            lg_ref,
-            y_ref,
-            tr_idx,
-            va_idx,
-            nleaves,
-            a_df_ref,
-            lam,
-            seed_model,
-        )
-
-    def submit_refit() -> Any:
-        return remote_refit_fn.options(scheduling_strategy=strategy).remote(
-            lg_ref,
-            nleaves,
-            y_ref,
-            a_df_ref,
-            lam,
-            seed_model,
-        )
+    submit_fold = partial(
+        _submit_trac_fold,
+        folds_idx=folds_idx,
+        remote_fold_fn=remote_fold_fn,
+        strategy=strategy,
+        lg_ref=lg_ref,
+        y_ref=y_ref,
+        nleaves=nleaves,
+        a_df_ref=a_df_ref,
+        lam=lam,
+        seed_model=seed_model,
+    )
+    submit_refit = partial(
+        _submit_trac_refit,
+        remote_refit_fn=remote_refit_fn,
+        strategy=strategy,
+        lg_ref=lg_ref,
+        nleaves=nleaves,
+        y_ref=y_ref,
+        a_df_ref=a_df_ref,
+        lam=lam,
+        seed_model=seed_model,
+    )
 
     return _dispatch_folds_then_refit(
         submit_fold, len(folds_idx), submit_refit, n_workers

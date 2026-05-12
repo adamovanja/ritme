@@ -45,15 +45,6 @@ MODEL_TRAINABLES = {
 REGRESSION_MODELS = {"xgb", "nn_reg", "linreg", "rf", "trac"}
 CLASSIFICATION_MODELS = {"xgb_class", "nn_class", "nn_corn", "logreg", "rf_class"}
 
-# Trainables in this set respect the ``k_folds`` parameter and report
-# cross-validated metrics (e.g. ``rmse_val_mean`` with ``rmse_val_se``).
-# Trainables NOT in this set (xgb, xgb_class, nn_reg, nn_class, nn_corn)
-# accept ``k_folds`` for signature parity but currently use a single
-# train/val split and report single-split metrics. Adding K-fold support to
-# a new trainable means adding it to this set AND removing the
-# "k_folds accepted for signature parity" comment from the trainable body.
-K_FOLD_AWARE_TRAINABLES = frozenset({"linreg", "logreg", "rf", "rf_class", "trac"})
-
 TASK_METRICS = {
     "regression": ("rmse_val", "min"),
     "classification": ("roc_auc_macro_ovr_val", "max"),

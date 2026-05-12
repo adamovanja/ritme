@@ -3,7 +3,6 @@ import json
 import os
 import tempfile
 import unittest
-import warnings
 from io import StringIO
 from unittest.mock import ANY, MagicMock, patch
 
@@ -269,80 +268,6 @@ class TestFindBestModelConfig(unittest.TestCase):
             self.assertNotEqual(args[9], path_exp)
             # Verify MLflow extraction was called
             mock_extract_mlflow.assert_called_once()
-
-    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
-    @patch("ritme.find_best_model_config.run_all_trials")
-    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
-    def test_find_best_model_config_warns_on_iterative_with_kfold(
-        self,
-        mock_retrieve_n_init_best_models,
-        mock_run_all_trials,
-        mock_extract_mlflow,
-    ):
-        # Build a config that triggers k_folds > 1 and mixes iterative
-        # (xgb) with a non-iterative trainable (linreg).
-        config_mixed = self.config.copy()
-        config_mixed["ls_model_types"] = ["linreg", "xgb"]
-        config_mixed["k_folds"] = 3
-        # Remove group_by_column to allow adaptive_k_folds to return >1
-        config_mixed["group_by_column"] = None
-
-        mock_run_all_trials.return_value = {
-            "linreg": "result1",
-            "xgb": "result2",
-        }
-        mock_retrieve_n_init_best_models.return_value = {
-            "linreg": MagicMock(),
-            "xgb": MagicMock(),
-        }
-
-        with tempfile.TemporaryDirectory() as temp_dir_mixed:
-            with self.assertWarns(UserWarning) as cm:
-                find_best_model_config(
-                    config_mixed,
-                    self.train_val,
-                    path_store_model_logs=temp_dir_mixed,
-                )
-            self.assertIn("xgb", str(cm.warning))
-            self.assertIn("K-FOLD METRIC INCONSISTENCY", str(cm.warning))
-
-        # Now verify NO warning fires when only non-iterative trainables are
-        # listed (k_folds > 1 with linreg + rf only).
-        config_non_iter = self.config.copy()
-        config_non_iter["ls_model_types"] = ["linreg", "rf"]
-        config_non_iter["k_folds"] = 3
-        config_non_iter["group_by_column"] = None
-        config_non_iter["experiment_tag"] = "test_experiment_non_iter"
-
-        mock_run_all_trials.return_value = {
-            "linreg": "result1",
-            "rf": "result2",
-        }
-        mock_retrieve_n_init_best_models.return_value = {
-            "linreg": MagicMock(),
-            "rf": MagicMock(),
-        }
-
-        with tempfile.TemporaryDirectory() as temp_dir_non_iter:
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                find_best_model_config(
-                    config_non_iter,
-                    self.train_val,
-                    path_store_model_logs=temp_dir_non_iter,
-                )
-            inconsistency_warnings = [
-                w
-                for w in caught
-                if issubclass(w.category, UserWarning)
-                and "K-FOLD METRIC INCONSISTENCY" in str(w.message)
-            ]
-            self.assertEqual(
-                len(inconsistency_warnings),
-                0,
-                "Did not expect K-fold inconsistency warning for non-iterative "
-                "trainables only.",
-            )
 
     @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")

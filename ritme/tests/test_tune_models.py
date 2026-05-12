@@ -17,7 +17,6 @@ from ray.tune.search.optuna import OptunaSearch
 
 from ritme.model_space import static_searchspace as ss
 from ritme.tune_models import (
-    K_FOLD_AWARE_TRAINABLES,
     MODEL_TRAINABLES,
     OPTUNA_SAMPLER_CLASSES,
     _adaptive_n_startup_trials,
@@ -994,31 +993,6 @@ class TestRecordingTrialSteering(unittest.TestCase):
             model_hyperparameters={},
         )
         self.assertEqual(set(trial.params.keys()), {"lambda"})
-
-
-class TestKFoldAwareTrainables(unittest.TestCase):
-    """The ``K_FOLD_AWARE_TRAINABLES`` registry partitions ``MODEL_TRAINABLES``
-    into trainables that respect ``k_folds`` (report cross-validated metrics
-    with ``<metric>_se``) vs. those that accept ``k_folds`` only for signature
-    parity. Drift between this registry and ``MODEL_TRAINABLES`` causes silent
-    bugs in the one-standard-error rule (single-split trials get treated as
-    K-fold and vice versa). These tests catch any such drift.
-    """
-
-    def test_k_fold_aware_trainables_matches_model_trainables_minus_iterative(self):
-        # Every K-fold-aware trainable must be a registered model trainable.
-        self.assertTrue(K_FOLD_AWARE_TRAINABLES.issubset(set(MODEL_TRAINABLES.keys())))
-        # The complement (trainables in MODEL_TRAINABLES but NOT in
-        # K_FOLD_AWARE_TRAINABLES) is exactly the iterative trainables that
-        # accept k_folds only for signature parity (xgb*, nn_*). If a new
-        # model is added to MODEL_TRAINABLES without being categorised
-        # (either added to K_FOLD_AWARE_TRAINABLES or to this expected
-        # iterative set), this test fires.
-        iterative_only = set(MODEL_TRAINABLES.keys()) - K_FOLD_AWARE_TRAINABLES
-        self.assertEqual(
-            iterative_only,
-            {"xgb", "xgb_class", "nn_reg", "nn_class", "nn_corn"},
-        )
 
 
 if __name__ == "__main__":
