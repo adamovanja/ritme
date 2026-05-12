@@ -886,6 +886,139 @@ class TestOneStandardErrorRule(unittest.TestCase):
                     ),
                 )
 
+    def test_one_se_rule_iterative_trainables_picks_simplest_in_band(self):
+        """1-SE selection must work for iterative-trainable result grids
+        (xgb / xgb_class / nn_reg / nn_class / nn_corn) once their K-fold path
+        reports ``<metric>_mean`` + ``<metric>_se``. Trial A has the best mean
+        but a maximally complex config; Trial B is within one SE of A and is
+        strictly simpler on every knob in ``_MODEL_SIMPLICITY_KNOBS``. The
+        rule must pick B. ``rmse_val`` is used as the metric name for all
+        model types because ``_select_best_with_one_se`` reads
+        ``f"{metric}_mean"`` / ``f"{metric}_se"`` verbatim and is otherwise
+        metric-agnostic; this exercises the same code path classification
+        trainables hit at runtime with their own metric names.
+        """
+        # Complex / simple configs per model_type. Both trials share the same
+        # ``nb_features`` so the primary axis of ``_trial_simplicity_key``
+        # ties and the per-model knob tiebreak from ``_MODEL_SIMPLICITY_KNOBS``
+        # must do the actual work of picking the simpler trial.
+        complex_simple_configs = {
+            "xgb": (
+                {
+                    "n_estimators": 1000,
+                    "max_depth": 20,
+                    "gamma": 0.0,
+                    "reg_alpha": 0.0,
+                    "reg_lambda": 0.0,
+                },
+                {
+                    "n_estimators": 50,
+                    "max_depth": 3,
+                    "gamma": 1.0,
+                    "reg_alpha": 0.5,
+                    "reg_lambda": 2.0,
+                },
+            ),
+            "xgb_class": (
+                {
+                    "n_estimators": 1000,
+                    "max_depth": 20,
+                    "gamma": 0.0,
+                    "reg_alpha": 0.0,
+                    "reg_lambda": 0.0,
+                },
+                {
+                    "n_estimators": 50,
+                    "max_depth": 3,
+                    "gamma": 1.0,
+                    "reg_alpha": 0.5,
+                    "reg_lambda": 2.0,
+                },
+            ),
+            "nn_reg": (
+                {
+                    "n_hidden_layers": 10,
+                    "dropout_rate": 0.0,
+                    "weight_decay": 1e-8,
+                },
+                {
+                    "n_hidden_layers": 1,
+                    "dropout_rate": 0.5,
+                    "weight_decay": 1e-2,
+                },
+            ),
+            "nn_class": (
+                {
+                    "n_hidden_layers": 10,
+                    "dropout_rate": 0.0,
+                    "weight_decay": 1e-8,
+                },
+                {
+                    "n_hidden_layers": 1,
+                    "dropout_rate": 0.5,
+                    "weight_decay": 1e-2,
+                },
+            ),
+            "nn_corn": (
+                {
+                    "n_hidden_layers": 10,
+                    "dropout_rate": 0.0,
+                    "weight_decay": 1e-8,
+                },
+                {
+                    "n_hidden_layers": 1,
+                    "dropout_rate": 0.5,
+                    "weight_decay": 1e-2,
+                },
+            ),
+        }
+
+        # Sanity guard: every iterative trainable in _MODEL_SIMPLICITY_KNOBS
+        # has a config pair in this test. Catches a future regression where a
+        # new iterative trainable is added to the knobs table but skipped here.
+        self.assertEqual(
+            set(complex_simple_configs.keys()),
+            {"xgb", "xgb_class", "nn_reg", "nn_class", "nn_corn"},
+        )
+
+        for model_type, (complex_cfg, simple_cfg) in complex_simple_configs.items():
+            with self.subTest(model_type=model_type):
+                # Trial A: best mean (1.0) but high SE so the band reaches 1.5.
+                trial_complex = _make_mock_result(
+                    {
+                        "rmse_val_mean": 1.0,
+                        "rmse_val_se": 0.5,
+                        "nb_features": 100,
+                    },
+                    complex_cfg,
+                )
+                # Trial B: within the 1-SE band (1.4 <= 1.0 + 0.5) with a
+                # strictly simpler config on every knob.
+                trial_simple = _make_mock_result(
+                    {
+                        "rmse_val_mean": 1.4,
+                        "rmse_val_se": 0.5,
+                        "nb_features": 100,
+                    },
+                    simple_cfg,
+                )
+                rg = MagicMock()
+                rg.__iter__ = lambda self, _a=trial_complex, _b=trial_simple: iter(
+                    [_a, _b]
+                )
+                rg.get_best_result.side_effect = AssertionError(
+                    "must not fall through to get_best_result when SE is finite"
+                )
+                chosen = _select_best_with_one_se(rg, "rmse_val", "min", model_type)
+                self.assertIs(
+                    chosen,
+                    trial_simple,
+                    msg=(
+                        f"1-SE rule for {model_type!r} should pick the simpler "
+                        f"config within the band, got the complex one instead."
+                    ),
+                )
+
     def test_trial_simplicity_key_missing_knob_sorts_last_for_negative_sign(self):
         """Missing/non-numeric knob values must sort LAST regardless of the
         knob's sign convention. For knobs with ``sign=-1`` (most entries in
