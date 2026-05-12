@@ -1701,6 +1701,151 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(preds.shape, (5,))
             self.assertTrue(np.all(np.isfinite(preds)))
 
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard: ``train_xgb(..., k_folds=1)`` must keep the original
+        single-split shape -- bare metric keys only, no ``_mean``/``_std``/
+        ``_se`` suffixes and no ``n_folds``. Catches a future regression
+        where the K-fold dispatch accidentally captures ``k_folds=1``.
+        """
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_xgb"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=1,
+            )
+
+            # Single-split path reports many times (per boost iter); inspect
+            # every reported metrics dict to ensure none leaks K-fold keys.
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Bare metric keys must be present (at least val-side ones --
+                # ``_RitmeXGBCheckpointCallback`` may emit a final fallback
+                # dict from postprocessing alone when early reports are
+                # skipped, so guard on the canonical val key).
+                self.assertIn("rmse_val", reported)
+                # K-fold aggregate keys must NOT be present.
+                for forbidden in (
+                    "rmse_val_mean",
+                    "rmse_val_std",
+                    "rmse_val_se",
+                    "r2_val_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_class_single_split_no_kfold_aggregates(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """Parity guard for ``train_xgb_class(..., k_folds=1)``: classification
+        single-split path must emit bare metric keys only, with no K-fold
+        aggregate suffixes or ``n_folds``.
+        """
+        train_val = self.train_val.copy()
+        train_val["target"] = self.y_class
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb_class",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_single_xgb_class"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_xgb_class(
+                config,
+                train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=1,
+            )
+
+            self.assertGreater(mock_report.call_count, 0)
+            for call_obj in mock_report.call_args_list:
+                reported = call_obj.kwargs.get("metrics")
+                if reported is None:
+                    reported = call_obj.args[0]
+                self.assertIsInstance(reported, dict)
+                # Bare classification val key must be present.
+                self.assertIn("roc_auc_macro_ovr_val", reported)
+                # No K-fold aggregate keys -- guard against future regression
+                # where ``k_folds=1`` accidentally dispatches into the K-fold
+                # branch (which would emit ``_mean``/``_std``/``_se`` keys
+                # plus ``n_folds``).
+                for forbidden in (
+                    "roc_auc_macro_ovr_val_mean",
+                    "roc_auc_macro_ovr_val_std",
+                    "roc_auc_macro_ovr_val_se",
+                    "log_loss_val_mean",
+                    "f1_macro_val_mean",
+                    "n_folds",
+                ):
+                    self.assertNotIn(forbidden, reported)
+
     @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
     @patch("ritme.model_space.static_trainables.process_train_kfold")
     @patch("ritme.model_space.static_trainables.tune.report")
