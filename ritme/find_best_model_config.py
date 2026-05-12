@@ -14,7 +14,7 @@ from ritme.evaluate_models import (
 )
 from ritme.feature_space.utils import _PAST_SUFFIX_RE
 from ritme.split_train_test import adaptive_k_folds
-from ritme.tune_models import run_all_trials
+from ritme.tune_models import DEFAULT_NN_CORN_MAX_LEVELS, run_all_trials
 
 
 # ----------------------------------------------------------------------------
@@ -278,6 +278,9 @@ def find_best_model_config(
             ),
             task_type=config.get("task_type", "regression"),
             k_folds=k_folds,
+            nn_corn_max_levels=config.get(
+                "nn_corn_max_levels", DEFAULT_NN_CORN_MAX_LEVELS
+            ),
         )
 
         # ! Get best models of this experiment

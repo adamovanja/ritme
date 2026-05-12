@@ -68,6 +68,12 @@ from ritme.feature_space._process_trac_specific import (
 from ritme.feature_space._process_train import process_train, process_train_kfold
 from ritme.model_space._model_trac_calc import min_least_squares_solution
 
+# Refuse nn_corn runs when the rounded target has more discrete levels than
+# this: CORN cannot predict outside the train+val rounded unique set, so a
+# continuous target degenerates into an ordinal classifier with no
+# extrapolation.
+DEFAULT_NN_CORN_MAX_LEVELS = 20
+
 
 def _aggregate_fold_metrics(per_fold_dicts: List[Dict[str, float]]) -> Dict[str, float]:
     """Aggregate per-fold metric dicts into mean/std/standard-error fields.
@@ -824,6 +830,7 @@ def train_linreg(
     gpus_per_trial: int = 0,
     task_type: str = "regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     """
     Train a linear regression model and report the results to Ray Tune.
@@ -1126,6 +1133,7 @@ def train_trac(
     gpus_per_trial: int = 0,
     task_type: str = "regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     """
     Train a trac model and report the results to Ray Tune.
@@ -1231,6 +1239,7 @@ def train_rf(
     gpus_per_trial: int = 0,
     task_type: str = "regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     """
     Train a random forest model and report the results to Ray Tune.
@@ -1305,6 +1314,7 @@ def train_logreg(
     gpus_per_trial: int = 0,
     task_type: str = "classification",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     n_splits = int(k_folds or 1)
 
@@ -1362,6 +1372,7 @@ def train_rf_class(
     gpus_per_trial: int = 0,
     task_type: str = "classification",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     n_splits = int(k_folds or 1)
     builder_kwargs: Dict[str, Any] = {
@@ -1772,6 +1783,37 @@ class NNTuneReportCheckpointCallback(TuneReportCheckpointCallback):
 # boundaries.
 
 
+def _check_nn_corn_levels(n_levels: int, nn_corn_max_levels: int) -> None:
+    """Validate that the rounded ``nn_corn`` target has at most
+    ``nn_corn_max_levels`` discrete levels.
+
+    Raises ``ValueError`` naming ``nn_corn_max_levels`` so the user can lift
+    the cap via the experiment config. Also rejects nonsensical cap values
+    (anything but an ``int`` >= 2): CORN's output head is ``n_levels - 1``
+    and a cap below 2 yields a degenerate model.
+    """
+    if not isinstance(nn_corn_max_levels, int) or isinstance(nn_corn_max_levels, bool):
+        raise ValueError(
+            f"nn_corn_max_levels must be a positive int (got "
+            f"{nn_corn_max_levels!r} of type "
+            f"{type(nn_corn_max_levels).__name__})."
+        )
+    if nn_corn_max_levels < 2:
+        raise ValueError(
+            f"nn_corn_max_levels must be >= 2 (got {nn_corn_max_levels}); "
+            f"CORN's head is n_levels - 1 and a cap below 2 yields a "
+            f"degenerate model."
+        )
+    if n_levels > nn_corn_max_levels:
+        raise ValueError(
+            f"nn_corn requires a target with few discrete rounded levels "
+            f"(got {n_levels}, max nn_corn_max_levels={nn_corn_max_levels}). "
+            f"Use nn_reg / xgb / linreg for continuous regression targets, "
+            f"or raise the cap explicitly in the experiment config if you "
+            f"know what you are doing."
+        )
+
+
 def _nn_build_n_units(
     config: Dict[str, Any], n_features: int, nn_type: str, n_classes: Optional[int]
 ) -> List[int]:
@@ -1979,6 +2021,7 @@ def _run_kfold_nn(
     gpus_per_trial: int,
     task_type: str,
     n_splits: int,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     """Sequential K-fold + full-data refit for ``train_nn`` and its wrappers.
 
@@ -2036,6 +2079,9 @@ def _run_kfold_nn(
     classes = (
         _nn_classes_from_y(engineered.y_refit) if nn_type != "regression" else None
     )
+
+    if nn_type == "ordinal_regression":
+        _check_nn_corn_levels(len(classes), nn_corn_max_levels)
 
     n_features = int(engineered.X_refit.shape[1])
     max_epochs_cfg = int(config["epochs"])
@@ -2128,6 +2174,7 @@ def train_nn(
     gpus_per_trial=0,
     task_type="regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ):
     n_splits = int(k_folds or 1)
     if n_splits > 1:
@@ -2145,6 +2192,7 @@ def train_nn(
             gpus_per_trial,
             task_type,
             n_splits,
+            nn_corn_max_levels=nn_corn_max_levels,
         )
     # Limit PyTorch threads to Ray-allocated CPUs to avoid oversubscription
     torch.set_num_threads(cpus_per_trial)
@@ -2190,6 +2238,9 @@ def train_nn(
         classes_train = torch.round(y_tr_t).long().unique().cpu().numpy()
         classes_val = torch.round(y_val_t).long().unique().cpu().numpy()
         classes = sorted(set(classes_train) | set(classes_val))
+
+        if nn_type == "ordinal_regression":
+            _check_nn_corn_levels(len(classes), nn_corn_max_levels)
 
         if nn_type == "classification":
             output_layer = [len(classes)]
@@ -2294,6 +2345,7 @@ def train_nn_reg(
     gpus_per_trial=0,
     task_type="regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ):
     train_nn(
         config,
@@ -2309,6 +2361,7 @@ def train_nn_reg(
         gpus_per_trial=gpus_per_trial,
         task_type=task_type,
         k_folds=k_folds,
+        nn_corn_max_levels=nn_corn_max_levels,
     )
 
 
@@ -2326,6 +2379,7 @@ def train_nn_class(
     gpus_per_trial=0,
     task_type="classification",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ):
     train_nn(
         config,
@@ -2341,6 +2395,7 @@ def train_nn_class(
         gpus_per_trial=gpus_per_trial,
         task_type=task_type,
         k_folds=k_folds,
+        nn_corn_max_levels=nn_corn_max_levels,
     )
 
 
@@ -2356,10 +2411,21 @@ def train_nn_corn(
     tree_phylo,
     cpus_per_trial=1,
     gpus_per_trial=0,
-    task_type="classification",
+    task_type="regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ):
     # corn model from https://github.com/Raschka-research-group/coral-pytorch
+    # Hard-assert the relabel: nn_corn is regression-only. A stale caller
+    # passing the old default would otherwise produce an ordinal model that
+    # silently reports classification metrics.
+    if task_type != "regression":
+        raise ValueError(
+            f"train_nn_corn is regression-only after the relabel "
+            f"(got task_type={task_type!r}). nn_corn was previously "
+            f"dual-task; any caller still passing 'classification' must "
+            f"be updated."
+        )
     train_nn(
         config,
         train_val,
@@ -2374,6 +2440,7 @@ def train_nn_corn(
         gpus_per_trial=gpus_per_trial,
         task_type=task_type,
         k_folds=k_folds,
+        nn_corn_max_levels=nn_corn_max_levels,
     )
 
 
@@ -2834,6 +2901,7 @@ def train_xgb(
     gpus_per_trial: int = 0,
     task_type: str = "regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     """
     Train an XGBoost model and report the results to Ray Tune.
@@ -2948,6 +3016,7 @@ def train_xgb_class(
     gpus_per_trial: int = 0,
     task_type: str = "classification",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> None:
     n_splits = int(k_folds or 1)
     if n_splits > 1:

@@ -31,28 +31,42 @@ from ritme.tune_models import CLASSIFICATION_MODELS, REGRESSION_MODELS, TASK_MET
 
 class TestTaskTypeConstants(unittest.TestCase):
     def test_regression_models_defined(self):
-        self.assertEqual(REGRESSION_MODELS, {"xgb", "nn_reg", "linreg", "rf", "trac"})
+        self.assertEqual(
+            REGRESSION_MODELS,
+            {"xgb", "nn_reg", "linreg", "rf", "trac", "nn_corn"},
+        )
 
     def test_classification_models_defined(self):
         self.assertEqual(
             CLASSIFICATION_MODELS,
-            {"xgb_class", "nn_class", "nn_corn", "logreg", "rf_class"},
+            {"xgb_class", "nn_class", "logreg", "rf_class"},
         )
 
     def test_no_overlap_between_task_models(self):
         self.assertEqual(len(REGRESSION_MODELS & CLASSIFICATION_MODELS), 0)
 
-    def test_nn_class_nn_corn_allowed_for_both_task_types(self):
-        # nn_class and nn_corn should be in CLASSIFICATION_MODELS
+    def test_nn_class_allowed_for_both_task_types(self):
+        # nn_class is the only dual-task neural-net trainable: registered under
+        # CLASSIFICATION_MODELS but also permitted for regression via the
+        # dual-task allow-list in run_all_trials. nn_corn is regression-only
+        # (CORN is ordinal regression), so it is not in this dual-task set.
         self.assertIn("nn_class", CLASSIFICATION_MODELS)
-        self.assertIn("nn_corn", CLASSIFICATION_MODELS)
-        # but also allowed for regression (validated in run_all_trials)
+        self.assertNotIn("nn_corn", CLASSIFICATION_MODELS)
+        self.assertIn("nn_corn", REGRESSION_MODELS)
 
     def test_task_metrics(self):
         self.assertEqual(TASK_METRICS["regression"], ("rmse_val", "min"))
         self.assertEqual(
             TASK_METRICS["classification"], ("roc_auc_macro_ovr_val", "max")
         )
+
+    def test_default_nn_corn_max_levels_is_20(self):
+        # Locks the documented default (README) against drift between
+        # ``static_trainables`` and any caller importing it via ``tune_models``.
+        from ritme.tune_models import DEFAULT_NN_CORN_MAX_LEVELS
+
+        self.assertEqual(DEFAULT_NN_CORN_MAX_LEVELS, 20)
+        self.assertEqual(st.DEFAULT_NN_CORN_MAX_LEVELS, 20)
 
 
 class TestClassificationHelpers(unittest.TestCase):
@@ -438,13 +452,14 @@ class TestRunAllTrialsTaskTypeValidation(unittest.TestCase):
             )
 
     @patch("ritme.tune_models.run_trials")
-    def test_nn_class_nn_corn_allowed_for_regression(self, mock_run_trials):
+    def test_nn_class_allowed_for_regression(self, mock_run_trials):
         from ritme.tune_models import run_all_trials
 
         mock_run_trials.return_value = MagicMock(spec=ResultGrid)
         train_val = pd.DataFrame({"F1": [0.1, 0.2], "t": [1.0, 2.0], "h": ["a", "b"]})
 
-        # Should NOT raise ValueError for nn_class/nn_corn with regression
+        # nn_class is dual-task: registered under CLASSIFICATION_MODELS but
+        # also permitted with task_type="regression" via the dual-task allow-list.
         results = run_all_trials(
             train_val=train_val,
             target="t",
@@ -459,11 +474,38 @@ class TestRunAllTrialsTaskTypeValidation(unittest.TestCase):
             time_budget_s=10,
             max_concurrent_trials=1,
             experiment_tag="test_experiment",
-            model_types=["nn_class", "nn_corn"],
+            model_types=["nn_class"],
             task_type="regression",
         )
         self.assertIn("nn_class", results)
-        self.assertIn("nn_corn", results)
+
+    @patch("ritme.tune_models.run_trials")
+    def test_nn_corn_with_classification_task_type_raises(self, mock_run_trials):
+        from ritme.tune_models import run_all_trials
+
+        train_val = pd.DataFrame({"F1": [0.1, 0.2], "t": [1.0, 2.0], "h": ["a", "b"]})
+
+        # nn_corn is regression-only after the relabeling: requesting it under
+        # task_type="classification" must be rejected up-front.
+        with self.assertRaisesRegex(ValueError, "not compatible with task_type"):
+            run_all_trials(
+                train_val=train_val,
+                target="t",
+                host_id="h",
+                stratify_by=None,
+                seed_data=0,
+                seed_model=0,
+                tax=None,
+                tree_phylo=None,
+                mlflow_uri="mlruns",
+                path_exp="/tmp/exp",
+                time_budget_s=10,
+                max_concurrent_trials=1,
+                experiment_tag="test_experiment",
+                model_types=["nn_corn"],
+                task_type="classification",
+            )
+        mock_run_trials.assert_not_called()
 
 
 class TestXgbClassMetric(unittest.TestCase):

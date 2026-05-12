@@ -723,6 +723,98 @@ class TestEnrichFeatures(unittest.TestCase):
         assert_frame_equal(exp_df, obs_df)
         self.assertEqual(["shannon_entropy", "md2"], obs_other_ft_ls)
 
+    def test_enrich_features_uses_frozen_categorical_universe(self):
+        """When ``config["_enrich_categories"]`` carries the full-data
+        category universe, dummies are produced for every universe value
+        regardless of which subset appears in this slice. Without this
+        contract, slice-by-slice ``pd.get_dummies(drop_first=True)`` makes
+        the dummy column set depend on which categories happen to be in
+        the slice -- the root cause of the K-fold ``KeyError`` documented
+        in ``issue_kfold.md``.
+        """
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        config = {
+            "data_enrich": "metadata_only",
+            "data_enrich_with": ["md1"],
+            "_enrich_categories": {"md1": ["a", "b", "c", "d"]},
+        }
+
+        # Slice with only {"a", "b"} -- categories "c" and "d" missing.
+        slice_subset_idx = ["SR1", "SR2"]
+        slice_raw = self.train_val.loc[slice_subset_idx]
+        slice_t = self.train_val_t.loc[slice_subset_idx]
+
+        obs_other_ft_ls, obs_df = enrich_features(
+            slice_raw, microbial_fts, slice_t, config
+        )
+
+        # All three non-reference universe columns are present (drop_first
+        # drops "a" as the alphabetical-first). Rows from the subset only
+        # land in the column matching their value; the absent universe
+        # categories ("c", "d") get all-zero columns.
+        self.assertEqual(obs_other_ft_ls, ["md1_b", "md1_c", "md1_d"])
+        for col in ("md1_b", "md1_c", "md1_d"):
+            self.assertIn(col, obs_df.columns)
+        # SR1's md1="a" -> reference (dropped); SR2's md1="b" -> md1_b=1.
+        self.assertListEqual(obs_df["md1_b"].tolist(), [0.0, 1.0])
+        self.assertListEqual(obs_df["md1_c"].tolist(), [0.0, 0.0])
+        self.assertListEqual(obs_df["md1_d"].tolist(), [0.0, 0.0])
+
+    def test_enrich_features_frozen_universe_aligns_disjoint_slices(self):
+        """Two slices with disjoint category subsets produce identical
+        dummy column sets when the universe is frozen. This is the
+        property that prevents the K-fold ``KeyError`` -- without the
+        frozen universe, train and val produce different dummy column
+        sets and ``val_engineered[fold_ft_ls]`` crashes.
+        """
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        # Train_val with a categorical column that has 4 levels.
+        train_val = pd.DataFrame(
+            {
+                "md_cat": ["a", "b", "c", "d"],
+                "F1": [0.1, 0.0, 0.1, 0.2],
+                "F2": [0.2, 0.0, 0.1, 0.1],
+                "F3": [0.2, 0.6, 0.5, 0.3],
+                "F4": [0.5, 0.4, 0.3, 0.4],
+                "target": [1, 2, 1, 2],
+            },
+            index=["SR1", "SR2", "SR3", "SR4"],
+        )
+        train_val_t = train_val.copy()
+
+        config = {
+            "data_enrich": "metadata_only",
+            "data_enrich_with": ["md_cat"],
+            "_enrich_categories": {"md_cat": ["a", "b", "c", "d"]},
+        }
+
+        # Slice "train" has {"a", "b"}; slice "val" has {"c", "d"}.
+        train_idx = ["SR1", "SR2"]
+        val_idx = ["SR3", "SR4"]
+        _, train_out = enrich_features(
+            train_val.loc[train_idx],
+            microbial_fts,
+            train_val_t.loc[train_idx],
+            config,
+        )
+        _, val_out = enrich_features(
+            train_val.loc[val_idx],
+            microbial_fts,
+            train_val_t.loc[val_idx],
+            config,
+        )
+
+        # Identical dummy column set across the two disjoint slices.
+        train_dummy_cols = [c for c in train_out.columns if c.startswith("md_cat_")]
+        val_dummy_cols = [c for c in val_out.columns if c.startswith("md_cat_")]
+        self.assertEqual(train_dummy_cols, val_dummy_cols)
+        # And the val slice's "a"/"b" columns (which val doesn't contain)
+        # are all-zero, not raised.
+        self.assertNotIn("md_cat_a", val_dummy_cols)  # reference, dropped
+        self.assertListEqual(val_out["md_cat_b"].tolist(), [0.0, 0.0])
+        self.assertListEqual(val_out["md_cat_c"].tolist(), [1.0, 0.0])
+        self.assertListEqual(val_out["md_cat_d"].tolist(), [0.0, 1.0])
+
 
 class TestProcessTrain(unittest.TestCase):
     def setUp(self):
@@ -1171,6 +1263,63 @@ class TestProcessTrainKFold(unittest.TestCase):
             "ft_ls_used column count must match X_refit column count under "
             "data-dependent feature selection",
         )
+
+    def test_kfold_with_categorical_enrich_no_keyerror_on_disjoint_categories(
+        self,
+    ):
+        """Regression test for ``issue_kfold.md``: a K-fold split whose train
+        and val slices have disjoint subsets of a categorical
+        ``data_enrich_with`` column used to raise ``KeyError`` at the
+        per-fold column alignment step. The fix derives a full-data
+        category universe in ``_process_train`` and reuses it in
+        ``enrich_features`` so all slices produce aligned dummy columns.
+
+        Fixture: 4 hosts x 3 rows; each host has a single distinct
+        ``body-site`` category. With ``n_splits=4`` group-K-fold, each
+        fold's val contains exactly one category and the train contains
+        the other three -- the worst-case disjoint scenario.
+        """
+        host_ids = np.repeat(np.arange(4), 3)
+        body_sites = np.repeat(["gut", "left palm", "right palm", "tongue"], 3)
+        rng = np.random.default_rng(0)
+        df = pd.DataFrame(
+            {
+                "host_id": host_ids,
+                "body-site": body_sites,
+                "target": rng.uniform(size=12),
+                "F0": rng.uniform(size=12),
+                "F1": rng.uniform(size=12),
+                "F2": rng.uniform(size=12),
+            },
+            index=[f"SR{i}" for i in range(12)],
+        )
+        cfg = {
+            "data_transform": None,
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_i": None,
+            "data_selection_q": None,
+            "data_selection_t": None,
+            "data_enrich": "metadata_only",
+            "data_enrich_with": ["body-site"],
+        }
+
+        out = process_train_kfold(
+            cfg.copy(),
+            df,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=0,
+            n_splits=4,
+        )
+
+        # Every fold's X_tr and X_va must have identical column counts; the
+        # ``KeyError`` from the original bug would have aborted the call
+        # before we got here.
+        for X_tr, _, X_va, _ in out.folds:
+            self.assertEqual(X_tr.shape[1], X_va.shape[1])
+            self.assertEqual(X_tr.shape[1], len(out.ft_ls_used))
 
 
 class TestEngineeringFitApplyLeakFree(unittest.TestCase):

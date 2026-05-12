@@ -6,7 +6,6 @@
     "logreg",
     "xgb_class",
     "nn_class",
-    "nn_corn",
     "rf_class"
   ],
   "max_cuncurrent_trials": 5,
