@@ -547,8 +547,10 @@ def _select_best_with_one_se(
 
     if not candidates:
         # No reliable K-fold trials -> defer to Ray Tune's single-best lookup,
-        # preserving the pre-K-fold behavior.
-        return result_grid.get_best_result(scope="all")
+        # preserving the pre-K-fold behavior. ``metric`` / ``mode`` are passed
+        # explicitly because ``TuneConfig`` no longer carries them (the
+        # scheduler owns them; Ray Tune disallows both -- see tune_models.py).
+        return result_grid.get_best_result(metric=metric, mode=mode, scope="all")
 
     # Best by sign-adjusted mean (lower-is-better -> sign=+1, etc.).
     best_result, best_mean, best_se = min(candidates, key=lambda x: sign * x[1])

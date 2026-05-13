@@ -81,7 +81,7 @@ class TestHelpersTuneModels(unittest.TestCase):
     def test_define_scheduler_not_fully_reproducible(self):
         scheduler_max_t = 100
 
-        scheduler = _define_scheduler(False, 10, scheduler_max_t)
+        scheduler = _define_scheduler(False, 10, scheduler_max_t, "rmse_val", "min", 1)
 
         self.assertIsInstance(scheduler, AsyncHyperBandScheduler)
         self.assertEqual(scheduler._max_t, scheduler_max_t)
@@ -89,10 +89,24 @@ class TestHelpersTuneModels(unittest.TestCase):
     def test_define_scheduler_fully_reproducible(self):
         scheduler_max_t = 100
 
-        scheduler = _define_scheduler(True, 10, scheduler_max_t)
+        scheduler = _define_scheduler(True, 10, scheduler_max_t, "rmse_val", "min", 1)
 
         self.assertIsInstance(scheduler, HyperBandScheduler)
         self.assertEqual(scheduler._max_t_attr, scheduler_max_t)
+
+    def test_define_scheduler_uses_mean_suffix_when_kfold(self):
+        # K-fold (k_folds > 1) must point the scheduler at ``<metric>_mean``
+        # since the running aggregate strips the bare ``<metric>`` key (see
+        # issue_eval_class.md).
+        scheduler = _define_scheduler(False, 10, 100, "rmse_val", "min", 5)
+        self.assertEqual(scheduler._metric, "rmse_val_mean")
+        self.assertEqual(scheduler._mode, "min")
+
+    def test_define_scheduler_uses_bare_metric_when_single_split(self):
+        # k_folds == 1 keeps the bare ``<metric>`` because the single-split
+        # callbacks emit it every epoch.
+        scheduler = _define_scheduler(False, 10, 100, "rmse_val", "min", 1)
+        self.assertEqual(scheduler._metric, "rmse_val")
 
     @parameterized.expand(
         [
@@ -603,11 +617,19 @@ class TestMainTuneModels(unittest.TestCase):
             task_type="classification",
         )
 
-        # Verify Tuner was configured with classification metric/mode
+        # Verify the scheduler -- which now owns metric/mode (Tuner-level
+        # metric/mode is intentionally None to avoid Ray Tune's "metric set
+        # in both scheduler and Tuner" guard, see issue_eval_class.md) --
+        # was configured with the classification metric.
         tuner_call_kwargs = mock_tuner_class.call_args
         tune_config = tuner_call_kwargs.kwargs["tune_config"]
-        self.assertEqual(tune_config.metric, "roc_auc_macro_ovr_val")
-        self.assertEqual(tune_config.mode, "max")
+        self.assertIsNone(tune_config.metric)
+        self.assertIsNone(tune_config.mode)
+        # K-fold mode reads ``<metric>_mean``; single-split reads ``<metric>``.
+        # ``k_folds`` defaults to 1 in ``run_trials`` so this assertion
+        # tracks the single-split branch.
+        self.assertEqual(tune_config.scheduler._metric, "roc_auc_macro_ovr_val")
+        self.assertEqual(tune_config.scheduler._mode, "max")
 
         # Verify checkpoint config also uses classification metric
         run_config = tuner_call_kwargs.kwargs["run_config"]

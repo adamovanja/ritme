@@ -1242,6 +1242,13 @@ class TestKfoldHelpers(unittest.TestCase):
         # in the payload must equal the count of completed folds (not the
         # total ``n_splits``), and no ``checkpoint`` kwarg is attached --
         # the deployable artifact only exists after the post-loop refit.
+        #
+        # Bare metric keys (``rmse_val``) are STRIPPED from running
+        # aggregates; only the suffixed variants (``_mean`` / ``_std`` /
+        # ``_se``) plus bookkeeping (``n_folds`` / ``nb_features``) survive.
+        # This isolates the bare keys to the final post-refit report so
+        # Ray Tune's ``get_best_result(metric=<metric>)`` cannot land on a
+        # checkpoint-less row (see ``issue_eval_class.md``).
         st._emit_running_fold_aggregate(
             per_fold_metrics=[{"rmse_val": 0.4}],
             nb_features=10,
@@ -1259,7 +1266,10 @@ class TestKfoldHelpers(unittest.TestCase):
             metrics = actual_call.kwargs["metrics"]
             self.assertEqual(metrics["n_folds"], expected_n_folds)
             self.assertEqual(metrics["nb_features"], 10)
-            self.assertIn("rmse_val", metrics)
+            self.assertNotIn("rmse_val", metrics)
+            self.assertIn("rmse_val_mean", metrics)
+            self.assertIn("rmse_val_std", metrics)
+            self.assertIn("rmse_val_se", metrics)
             self.assertNotIn("checkpoint", actual_call.kwargs)
 
 
@@ -1651,13 +1661,16 @@ class TestKfoldTrainables(unittest.TestCase):
 
             # Mid-trial reports carry a running aggregate (n_folds grows
             # 1, 2) and no checkpoint -- the deployable artifact only
-            # exists after the post-loop refit.
+            # exists after the post-loop refit. Bare metric keys are
+            # stripped from running aggregates (see issue_eval_class.md);
+            # only the suffixed variants survive.
             for fold_idx, expected_n_folds in enumerate((1, 2), start=0):
                 metrics = calls[fold_idx].kwargs.get("metrics")
                 if metrics is None:
                     metrics = calls[fold_idx].args[0]
                 self.assertEqual(metrics["n_folds"], expected_n_folds)
-                self.assertIn("rmse_val", metrics)
+                self.assertNotIn("rmse_val", metrics)
+                self.assertIn("rmse_val_mean", metrics)
                 self.assertNotIn(
                     "checkpoint",
                     calls[fold_idx].kwargs,

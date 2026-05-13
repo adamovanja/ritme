@@ -659,7 +659,9 @@ class TestOneStandardErrorRule(unittest.TestCase):
             ]
         )
         chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
-        rg.get_best_result.assert_called_once_with(scope="all")
+        rg.get_best_result.assert_called_once_with(
+            metric="rmse_val", mode="min", scope="all"
+        )
         self.assertIs(chosen, sentinel)
 
     def test_picks_simplest_within_band_for_min_metric(self):
@@ -842,7 +844,9 @@ class TestOneStandardErrorRule(unittest.TestCase):
         rg.get_best_result.return_value = sentinel
         rg.__iter__ = lambda self: iter([a, b])
         chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
-        rg.get_best_result.assert_called_once_with(scope="all")
+        rg.get_best_result.assert_called_once_with(
+            metric="rmse_val", mode="min", scope="all"
+        )
         self.assertIs(chosen, sentinel)
 
     def test_simplicity_knobs_match_actual_search_space(self):
