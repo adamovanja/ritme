@@ -2083,7 +2083,16 @@ def _run_kfold_nn(
     if nn_type == "ordinal_regression":
         _check_nn_corn_levels(len(classes), nn_corn_max_levels)
 
-    n_features = int(engineered.X_refit.shape[1])
+    # ``refit_n_features`` describes the deployable model's column space
+    # (the matrix that ``_save_nn_checkpoint`` ships). Per-fold matrices
+    # can have different widths -- see ``process_train_kfold``'s contract:
+    # under data-dependent ``data_selection`` (variance / abundance /
+    # quantile / ith / topi), per-fold microbial survivors differ from
+    # the full-data refit set. The per-fold model must therefore be
+    # built against its own fold's matrix width, otherwise
+    # ``NeuralNet.input_norm`` (BatchNorm1d) crashes with
+    # ``running_mean should contain X elements not Y``.
+    refit_n_features = int(engineered.X_refit.shape[1])
     max_epochs_cfg = int(config["epochs"])
     patience = int(config["early_stopping_patience"])
     min_delta = float(config["early_stopping_min_delta"])
@@ -2093,11 +2102,12 @@ def _run_kfold_nn(
     per_fold_metrics: List[Dict[str, float]] = []
     per_fold_best_epoch: List[Optional[int]] = []
     for fold_idx, (X_tr, y_tr, X_va, y_va) in enumerate(engineered.folds):
+        fold_n_features = int(X_tr.shape[1])
         train_loader, val_loader = load_data(
             X_tr, y_tr, X_va, y_va, config, seed_model, num_workers=num_workers
         )
         model = _build_neural_net_for_kfold(
-            config, n_features, nn_type, task_type, classes
+            config, fold_n_features, nn_type, task_type, classes
         )
         early_stop = EarlyStopping(
             monitor="val_loss",
@@ -2122,10 +2132,15 @@ def _run_kfold_nn(
         )
         per_fold_best_epoch.append(_extract_best_epoch(early_stop, max_epochs_cfg))
 
-        _emit_running_fold_aggregate(per_fold_metrics, n_features, fold_idx, n_splits)
+        # Running aggregate uses the deployable feature count -- it is the
+        # number a downstream evaluator (and the reported best-model row)
+        # will see, not the per-fold survivor count.
+        _emit_running_fold_aggregate(
+            per_fold_metrics, refit_n_features, fold_idx, n_splits
+        )
 
     aggregated = _aggregate_fold_metrics(per_fold_metrics)
-    aggregated["nb_features"] = n_features
+    aggregated["nb_features"] = refit_n_features
 
     # Full-data refit for the deployable checkpoint. Trainer needs a
     # ``val_dataloaders`` only when its callbacks ask for one; we run with
@@ -2142,7 +2157,7 @@ def _run_kfold_nn(
         num_workers=num_workers,
     )
     refit_model = _build_neural_net_for_kfold(
-        config, n_features, nn_type, task_type, classes
+        config, refit_n_features, nn_type, task_type, classes
     )
     refit_trainer = Trainer(
         max_epochs=refit_epochs,

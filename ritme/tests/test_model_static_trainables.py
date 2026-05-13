@@ -2323,6 +2323,111 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
 
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_handles_per_fold_feature_count_drift(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+    ):
+        """Regression test for the K-fold + per-fold-feature-count drift bug
+        documented in ``issue_kfold.md``: when ``data_selection`` modes
+        produce data-dependent microbial-feature survivors,
+        ``process_train_kfold`` returns folds whose ``X_tr.shape[1]``
+        differs from ``X_refit.shape[1]``. Pre-fix, ``_run_kfold_nn`` built
+        every fold model with ``engineered.X_refit.shape[1]`` for
+        ``n_features`` and crashed in ``NeuralNet.input_norm`` (BatchNorm1d)
+        with ``running_mean should contain X elements not Y`` as soon as a
+        fold's matrix was fed to that model. Post-fix the per-fold model is
+        built against ``X_tr.shape[1]`` and the fold loop runs end-to-end.
+        """
+        rng = np.random.default_rng(0)
+        n_rows = 12
+        # Refit matrix is the widest set; fold 0 drops the last column, fold
+        # 1 drops the first column. Both per-fold widths differ from the
+        # refit width by 1, triggering the original BatchNorm crash if the
+        # per-fold n_features is taken from the refit matrix.
+        X_refit = rng.uniform(size=(n_rows, 5))
+        y_refit = rng.uniform(size=n_rows)
+        per_fold_size = n_rows // 2
+        train_idx_0 = np.arange(per_fold_size, n_rows)
+        val_idx_0 = np.arange(0, per_fold_size)
+        train_idx_1 = np.arange(0, per_fold_size)
+        val_idx_1 = np.arange(per_fold_size, n_rows)
+        folds = [
+            (
+                X_refit[train_idx_0][:, :4],  # fold 0 keeps cols 0..3
+                y_refit[train_idx_0],
+                X_refit[val_idx_0][:, :4],
+                y_refit[val_idx_0],
+            ),
+            (
+                X_refit[train_idx_1][:, 1:],  # fold 1 keeps cols 1..4
+                y_refit[train_idx_1],
+                X_refit[val_idx_1][:, 1:],
+                y_refit[val_idx_1],
+            ),
+        ]
+        mock_process_train_kfold.return_value = KFoldEngineered(
+            folds=folds,
+            X_refit=X_refit,
+            y_refit=y_refit,
+            ft_ls_used=[f"F{i}" for i in range(X_refit.shape[1])],
+        )
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 2,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_fcount_drift"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=2,
+            )
+
+            # Pre-fix this call never reached the final ``tune.report`` --
+            # the BatchNorm crash aborted the fold loop. Post-fix the final
+            # aggregated report carries ``nb_features`` = the deployable
+            # (refit) column count, not a fold's narrower survivor count.
+            self.assertGreater(mock_report.call_count, 0)
+            final = mock_report.call_args.kwargs.get("metrics")
+            if final is None:
+                final = mock_report.call_args.args[0]
+            self.assertEqual(final["nb_features"], X_refit.shape[1])
+            self.assertEqual(final["n_folds"], 2)
+
     @patch("ritme.model_space.static_trainables.tune.report")
     @patch("ritme.model_space.static_trainables.ray.tune.get_context")
     def test_train_nn_reg_kfold_saves_loadable_checkpoint(
