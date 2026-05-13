@@ -216,8 +216,23 @@ def _get_resources(max_concurrent_trials: int) -> dict:
 
 
 def _define_scheduler(
-    fully_reproducible: bool, scheduler_grace_period: int, scheduler_max_t: int
+    fully_reproducible: bool,
+    scheduler_grace_period: int,
+    scheduler_max_t: int,
+    metric: str,
+    mode: str,
+    k_folds: int,
 ):
+    # In K-fold mode the running aggregate reports strip the bare ``<metric>``
+    # key (see ``_emit_running_fold_aggregate`` / ``issue_eval_class.md``) so
+    # that Ray Tune's ``get_best_result(metric=<metric>)`` cannot land on a
+    # checkpoint-less row. The scheduler must therefore monitor a key that
+    # survives in the running aggregates -- ``<metric>_mean`` -- otherwise it
+    # would see no metric mid-trial and never prune. In single-split mode the
+    # callbacks emit ``<metric>`` per epoch, so the scheduler reads it
+    # directly.
+    sched_metric = f"{metric}_mean" if int(k_folds or 1) > 1 else metric
+
     # Note: Both schedulers might decide to run more trials than allocated
     if not fully_reproducible:
         # AsyncHyperBand enables aggressive early stopping of bad trials.
@@ -225,6 +240,8 @@ def _define_scheduler(
         # ! not fully reproducible with seeds (caused by system load, network
         # ! communication and other factors in env) due to asynchronous mode only
         return AsyncHyperBandScheduler(
+            metric=sched_metric,
+            mode=mode,
             # Stop trials at least this old in time (measured in training iteration)
             grace_period=scheduler_grace_period,
             # Stopping trials after max_t iterations have passed
@@ -234,7 +251,7 @@ def _define_scheduler(
         # ! HyperBandScheduler slower BUT
         # ! improves the reproducibility of experiments by ensuring that all trials
         # ! are evaluated in the same order.
-        return HyperBandScheduler(max_t=scheduler_max_t)
+        return HyperBandScheduler(metric=sched_metric, mode=mode, max_t=scheduler_max_t)
 
 
 def _define_search_algo(
@@ -431,9 +448,23 @@ def run_trials(
     # Define metric and mode to optimize
     metric, mode = TASK_METRICS[task_type]
 
+    # In K-fold mode the running aggregate reports strip the bare ``<metric>``
+    # key (see ``_emit_running_fold_aggregate`` / ``issue_eval_class.md``) so
+    # that ``get_best_result(metric=<metric>)`` cannot land on a checkpoint-
+    # less row. Both the scheduler and the search algorithm must therefore
+    # monitor a key that appears in EVERY report (running + final);
+    # ``<metric>_mean`` fits. Ray Tune's strict metric validator also enforces
+    # the search algo's metric to be present on every report.
+    runtime_metric = f"{metric}_mean" if int(k_folds or 1) > 1 else metric
+
     # Define schedulers
     scheduler = _define_scheduler(
-        fully_reproducible, scheduler_grace_period, scheduler_max_t
+        fully_reproducible,
+        scheduler_grace_period,
+        scheduler_max_t,
+        metric,
+        mode,
+        k_folds,
     )
 
     # Define search algorithm with search space
@@ -445,7 +476,7 @@ def run_trials(
         model_hyperparameters,
         optuna_searchspace_sampler,
         seed_model,
-        metric,
+        runtime_metric,
         mode,
     )
 
@@ -500,9 +531,13 @@ def run_trials(
             callbacks=callbacks,
         ),
         tune_config=tune.TuneConfig(
-            metric=metric,
-            mode=mode,
-            # Define the scheduler
+            # ``metric`` / ``mode`` are intentionally NOT set here: the
+            # scheduler holds them (so K-fold can read ``<metric>_mean``
+            # while single-split reads ``<metric>``), and Ray Tune raises
+            # if both Tuner and scheduler specify them. ``search_alg`` and
+            # ``scheduler`` already carry the values they need; downstream
+            # ``get_best_result`` calls must pass ``metric`` / ``mode``
+            # explicitly (see ``_select_best_with_one_se``).
             scheduler=scheduler,
             # Number of trials to run - schedulers might decide to run more trials
             num_samples=-1,

@@ -137,11 +137,26 @@ def _emit_running_fold_aggregate(
     only for ``fold_idx`` in ``0..n_splits - 2`` -- the last fold's metrics
     are surfaced by the post-refit final report, which also carries the
     deployable checkpoint. No checkpoint is attached here.
+
+    Bare metric keys (``<metric>``) are stripped from the running report; only
+    the suffixed variants (``<metric>_mean`` / ``_std`` / ``_se``) plus
+    ``n_folds`` / ``nb_features`` survive. This isolates the bare keys to the
+    final post-refit report, so Ray Tune's ``get_best_result(metric=<metric>)``
+    can only land on a row that carries the deployable checkpoint -- see
+    ``issue_eval_class.md`` for the no-checkpoint crash this fix prevents.
+    The K-fold scheduler is configured to monitor ``<metric>_mean`` instead
+    of ``<metric>`` so ASHA pruning still fires at fold boundaries.
     """
     if fold_idx >= n_splits - 1:
         return
     running = _aggregate_fold_metrics(per_fold_metrics)
     running["nb_features"] = nb_features
+    # Strip bare metric keys; keep only suffixed variants + bookkeeping.
+    _KEEP_BARE = {"n_folds", "nb_features"}
+    _SUFFIXES = ("_mean", "_std", "_se")
+    running = {
+        k: v for k, v in running.items() if k in _KEEP_BARE or k.endswith(_SUFFIXES)
+    }
     tune.report(metrics=running)
 
 
