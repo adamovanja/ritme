@@ -42,8 +42,12 @@ MODEL_TRAINABLES = {
     "trac": st.train_trac,
 }
 
-REGRESSION_MODELS = {"xgb", "nn_reg", "linreg", "rf", "trac"}
-CLASSIFICATION_MODELS = {"xgb_class", "nn_class", "nn_corn", "logreg", "rf_class"}
+REGRESSION_MODELS = {"xgb", "nn_reg", "linreg", "rf", "trac", "nn_corn"}
+CLASSIFICATION_MODELS = {"xgb_class", "nn_class", "logreg", "rf_class"}
+
+# Re-export so callers can keep importing the cap constant from ``tune_models``
+# without learning about its physical home in ``static_trainables``.
+DEFAULT_NN_CORN_MAX_LEVELS = st.DEFAULT_NN_CORN_MAX_LEVELS
 
 TASK_METRICS = {
     "regression": ("rmse_val", "min"),
@@ -386,6 +390,7 @@ def run_trials(
     resources: dict = None,
     task_type: str = "regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> ResultGrid:
     if model_hyperparameters is None:
         model_hyperparameters = {}
@@ -469,6 +474,7 @@ def run_trials(
                 gpus_per_trial=gpus_per_trial,
                 task_type=task_type,
                 k_folds=k_folds,
+                nn_corn_max_levels=nn_corn_max_levels,
             ),
             resources,
         ),
@@ -545,6 +551,7 @@ def run_all_trials(
     optuna_searchspace_sampler: str = "TPESampler",
     task_type: str = "regression",
     k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
 ) -> dict[str, ResultGrid]:
     results_all = {}
 
@@ -556,16 +563,39 @@ def run_all_trials(
         )
 
     # Validate model types against task_type
-    # nn_class and nn_corn are dual-task: they use classification/ordinal nn_type
-    # internally but report metrics matching the overall task_type
+    # nn_class is dual-task: it uses a classification nn_type internally but
+    # reports metrics matching the overall task_type. nn_corn lives only in
+    # REGRESSION_MODELS (CORN's rounded-target path is regression-style).
     allowed = REGRESSION_MODELS if task_type == "regression" else CLASSIFICATION_MODELS
-    allowed = allowed | {"nn_class", "nn_corn"}
+    allowed = allowed | {"nn_class"}
     invalid = set(model_types) - allowed
     if invalid:
         raise ValueError(
             f"Model types {sorted(invalid)} are not compatible with task_type "
             f"'{task_type}'. Allowed models: {sorted(allowed)}."
         )
+
+    # Cap is checked here against the full target before splitting --
+    # the trainable only sees per-fold subsets.
+    if "nn_corn" in model_types:
+        target_series = train_val[target]
+        if not pd.api.types.is_numeric_dtype(target_series):
+            raise ValueError(
+                f"nn_corn requires a numeric target; column '{target}' has "
+                f"dtype {target_series.dtype}. nn_corn is regression-only -- "
+                f"use logreg / rf_class / xgb_class / nn_class for "
+                f"categorical targets."
+            )
+        n_nan = int(target_series.isna().sum())
+        if n_nan > 0:
+            raise ValueError(
+                f"nn_corn target column '{target}' contains {n_nan} NaN "
+                f"values. Drop or impute them before the run; otherwise "
+                f"nn_corn_max_levels would be evaluated against a corrupted "
+                f"level set."
+            )
+        rounded_unique = np.unique(np.round(target_series.to_numpy()).astype(int))
+        st._check_nn_corn_levels(int(rounded_unique.size), nn_corn_max_levels)
 
     # First apply snapshot-related constraints for models
     model_types = model_types.copy()
@@ -659,6 +689,7 @@ def run_all_trials(
             optuna_searchspace_sampler=optuna_searchspace_sampler,
             task_type=task_type,
             k_folds=k_folds,
+            nn_corn_max_levels=nn_corn_max_levels,
         )
         results_all[model] = result
     return results_all

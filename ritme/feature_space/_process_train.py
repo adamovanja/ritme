@@ -220,6 +220,35 @@ def _engineer_features(
     return train_val_accum, ft_ls_used, captured_params
 
 
+def _stash_enrich_categories(config: dict, train_val: pd.DataFrame) -> None:
+    """Record the full-data categorical universe for each ``data_enrich_with`` feat.
+
+    Stashes ``config["_enrich_categories"] = {feat: sorted_unique_values}`` so
+    every downstream call to :func:`enrich_features` (per-fold train, per-fold
+    val, full-data refit, predict-time test) sees the same set of categories
+    and produces aligned dummy columns with a stable reference category.
+    Without this, ``pd.get_dummies(drop_first=True)`` derives the column set
+    per slice, and small or imbalanced data can produce a train-fold dummy
+    column that the val fold does not have -- which raises ``KeyError`` at
+    column alignment time (see ``issue_kfold.md``).
+
+    Numeric features in ``data_enrich_with`` are skipped (they don't produce
+    dummies). The stash is a no-op when ``data_enrich_with`` is None / empty.
+    """
+    feats = config.get("data_enrich_with")
+    if not feats:
+        return
+    universes: Dict[str, List[Any]] = {}
+    for feat in feats:
+        if feat not in train_val.columns:
+            continue
+        col = train_val[feat]
+        if isinstance(col.dtype, pd.CategoricalDtype) or col.dtype == object:
+            universes[feat] = sorted(col.dropna().unique().tolist())
+    if universes:
+        config["_enrich_categories"] = universes
+
+
 def _encode_target(
     config, train_val: pd.DataFrame, target: str, target_subset: pd.Series
 ) -> np.ndarray:
@@ -258,6 +287,8 @@ def process_train(
     downstream model persistence) share the same label-to-int map. The
     trainable's ``_save_label_encoder`` consumes and removes this entry.
     """
+    _stash_enrich_categories(config, train_val)
+
     train_raw, val_raw = _split_data_grouped(
         train_val,
         host_id,
@@ -327,6 +358,8 @@ def process_train_kfold(
           alignment is preserved by the engineering itself and does not
           depend on ``ft_ls_used``.
     """
+    _stash_enrich_categories(config, train_val)
+
     fold_indices = list(
         _make_kfold_splitter(
             train_val,

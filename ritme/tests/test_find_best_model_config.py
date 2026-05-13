@@ -262,12 +262,41 @@ class TestFindBestModelConfig(unittest.TestCase):
                 optuna_searchspace_sampler="TPESampler",
                 task_type="regression",
                 k_folds=ANY,
+                nn_corn_max_levels=20,
             )
             # Verify temp storage paths are NOT under path_exp
             self.assertNotEqual(args[8], os.path.join(path_exp, "mlruns"))
             self.assertNotEqual(args[9], path_exp)
             # Verify MLflow extraction was called
             mock_extract_mlflow.assert_called_once()
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_forwards_custom_nn_corn_max_levels(
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        """A non-default ``nn_corn_max_levels`` value in the experiment
+        config must be forwarded to ``run_all_trials``. Guards against the
+        ``config.get(...)`` line silently degrading to a hardcoded default.
+        """
+        mock_run_all_trials.return_value = {"model1": MagicMock()}
+        mock_retrieve_n_init_best_models.return_value = {"model1": MagicMock()}
+
+        config = self.config.copy()
+        config["nn_corn_max_levels"] = 7
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            find_best_model_config(
+                config, self.train_val, self.tax, tree_phylo, temp_dir
+            )
+
+        forwarded = mock_run_all_trials.call_args.kwargs["nn_corn_max_levels"]
+        self.assertEqual(forwarded, 7)
 
     @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")

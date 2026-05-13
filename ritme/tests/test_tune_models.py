@@ -452,6 +452,7 @@ class TestMainTuneModels(unittest.TestCase):
             optuna_searchspace_sampler="TPESampler",
             task_type="regression",
             k_folds=1,
+            nn_corn_max_levels=20,
         )
 
     @patch("ritme.tune_models.run_trials")
@@ -801,6 +802,279 @@ class TestMainTuneModels(unittest.TestCase):
         passed_hparams = call_kwargs.kwargs.get("model_hyperparameters", fallback)
         self.assertIn("n_estimators", passed_hparams)
         self.assertEqual(passed_hparams["n_estimators"], {"min": 50, "max": 500})
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nn_corn_level_cap_rejects_wide_target(
+        self, mock_run_trials
+    ):
+        """``run_all_trials`` validates the ``nn_corn`` level cap up-front by
+        rounding the full ``train_val[target]`` before any trial is launched.
+        With 30 distinct rounded levels and a cap of 5 the cap check must
+        raise ``ValueError`` and ``run_trials`` must never be invoked.
+        """
+        n_rows = 30
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, n_rows),
+                "F1": np.linspace(1.0, 2.0, n_rows),
+                self.target: np.arange(n_rows, dtype=float),
+                self.host_id: [f"h{i}" for i in range(n_rows)],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, r"nn_corn_max_levels"):
+            run_all_trials(
+                train_val=train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                mlflow_uri=self.mlflow_uri,
+                path_exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                model_types=["nn_corn"],
+                model_hyperparameters=self.model_hyperparameters,
+                nn_corn_max_levels=5,
+            )
+        mock_run_trials.assert_not_called()
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nn_corn_level_cap_allows_narrow_target(
+        self, mock_run_trials
+    ):
+        """When the rounded-target level count is at or below
+        ``nn_corn_max_levels`` the up-front check passes and the trial is
+        launched as usual.
+        """
+        mock_run_trials.return_value = MagicMock(spec=ResultGrid)
+        n_rows = 30
+        # 3 distinct rounded levels well below the cap of 5.
+        narrow_target = np.tile([0.0, 1.0, 2.0], n_rows // 3)[:n_rows]
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, n_rows),
+                "F1": np.linspace(1.0, 2.0, n_rows),
+                self.target: narrow_target,
+                self.host_id: [f"h{i}" for i in range(n_rows)],
+            }
+        )
+
+        results = run_all_trials(
+            train_val=train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            model_types=["nn_corn"],
+            model_hyperparameters=self.model_hyperparameters,
+            nn_corn_max_levels=5,
+        )
+        self.assertIn("nn_corn", results)
+        # nn_corn_max_levels must be forwarded to run_trials so the trainable
+        # safety net inside train_nn sees the same cap as the up-front check.
+        forwarded = mock_run_trials.call_args.kwargs.get("nn_corn_max_levels")
+        self.assertEqual(forwarded, 5)
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nn_corn_level_cap_boundary_exactly_at_cap(
+        self, mock_run_trials
+    ):
+        """Boundary: ``n_levels == nn_corn_max_levels`` must pass (`>` check,
+        not `>=`). 5 distinct rounded levels with cap 5 should launch.
+        """
+        mock_run_trials.return_value = MagicMock(spec=ResultGrid)
+        n_rows = 30
+        # 5 distinct rounded levels exactly equal to the cap.
+        target = np.tile([0.0, 1.0, 2.0, 3.0, 4.0], n_rows // 5)[:n_rows]
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, n_rows),
+                "F1": np.linspace(1.0, 2.0, n_rows),
+                self.target: target,
+                self.host_id: [f"h{i}" for i in range(n_rows)],
+            }
+        )
+
+        run_all_trials(
+            train_val=train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            model_types=["nn_corn"],
+            model_hyperparameters=self.model_hyperparameters,
+            nn_corn_max_levels=5,
+        )
+        mock_run_trials.assert_called_once()
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nn_corn_level_cap_boundary_one_over_cap(
+        self, mock_run_trials
+    ):
+        """Boundary: ``n_levels == nn_corn_max_levels + 1`` must raise."""
+        n_rows = 30
+        # 6 distinct rounded levels, one over the cap of 5.
+        target = np.tile([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], n_rows // 6)[:n_rows]
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, n_rows),
+                "F1": np.linspace(1.0, 2.0, n_rows),
+                self.target: target,
+                self.host_id: [f"h{i}" for i in range(n_rows)],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, r"nn_corn_max_levels"):
+            run_all_trials(
+                train_val=train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                mlflow_uri=self.mlflow_uri,
+                path_exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                model_types=["nn_corn"],
+                model_hyperparameters=self.model_hyperparameters,
+                nn_corn_max_levels=5,
+            )
+        mock_run_trials.assert_not_called()
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nn_corn_rejects_non_numeric_target(self, mock_run_trials):
+        """Non-numeric target must raise a clear ``ValueError`` instead of a
+        cryptic ``TypeError`` from ``np.round`` on an object array.
+        """
+        n_rows = 12
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, n_rows),
+                "F1": np.linspace(1.0, 2.0, n_rows),
+                self.target: ["low", "medium", "high"] * (n_rows // 3),
+                self.host_id: [f"h{i}" for i in range(n_rows)],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, r"numeric target"):
+            run_all_trials(
+                train_val=train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                mlflow_uri=self.mlflow_uri,
+                path_exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                model_types=["nn_corn"],
+                model_hyperparameters=self.model_hyperparameters,
+            )
+        mock_run_trials.assert_not_called()
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_nn_corn_rejects_nan_target(self, mock_run_trials):
+        """NaN-bearing target must raise rather than silently coerce NaN to 0
+        via ``np.round(...).astype(int)``.
+        """
+        n_rows = 12
+        target = np.array([0.0, 1.0, np.nan, 2.0] * (n_rows // 4), dtype=float)
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, n_rows),
+                "F1": np.linspace(1.0, 2.0, n_rows),
+                self.target: target,
+                self.host_id: [f"h{i}" for i in range(n_rows)],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, r"NaN"):
+            run_all_trials(
+                train_val=train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                mlflow_uri=self.mlflow_uri,
+                path_exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                model_types=["nn_corn"],
+                model_hyperparameters=self.model_hyperparameters,
+            )
+        mock_run_trials.assert_not_called()
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_rejects_invalid_cap_values(self, mock_run_trials):
+        """``nn_corn_max_levels`` must be an ``int`` >= 2. Garbage values
+        (zero, negative, string) raise a clear ``ValueError`` rather than
+        silently disabling the guard or rejecting every run.
+        """
+        n_rows = 12
+        train_val = pd.DataFrame(
+            {
+                "F0": np.linspace(0.0, 1.0, n_rows),
+                "F1": np.linspace(1.0, 2.0, n_rows),
+                self.target: [0.0, 1.0, 2.0] * (n_rows // 3),
+                self.host_id: [f"h{i}" for i in range(n_rows)],
+            }
+        )
+
+        for invalid_cap in (0, 1, -5, "20", None, 1.5):
+            with self.subTest(invalid_cap=invalid_cap):
+                with self.assertRaises(ValueError):
+                    run_all_trials(
+                        train_val=train_val,
+                        target=self.target,
+                        host_id=self.host_id,
+                        stratify_by=None,
+                        seed_data=self.seed_data,
+                        seed_model=self.seed_model,
+                        tax=self.tax,
+                        tree_phylo=self.tree_phylo,
+                        mlflow_uri=self.mlflow_uri,
+                        path_exp=self.path2exp,
+                        time_budget_s=self.time_budget_s,
+                        max_concurrent_trials=self.max_concurrent_trials,
+                        experiment_tag=self.experiment_tag,
+                        model_types=["nn_corn"],
+                        model_hyperparameters=self.model_hyperparameters,
+                        nn_corn_max_levels=invalid_cap,
+                    )
+        mock_run_trials.assert_not_called()
 
 
 class TestAdaptiveNStartupTrials(unittest.TestCase):

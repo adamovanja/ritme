@@ -2323,6 +2323,111 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
 
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_handles_per_fold_feature_count_drift(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+    ):
+        """Regression test for the K-fold + per-fold-feature-count drift bug
+        documented in ``issue_kfold.md``: when ``data_selection`` modes
+        produce data-dependent microbial-feature survivors,
+        ``process_train_kfold`` returns folds whose ``X_tr.shape[1]``
+        differs from ``X_refit.shape[1]``. Pre-fix, ``_run_kfold_nn`` built
+        every fold model with ``engineered.X_refit.shape[1]`` for
+        ``n_features`` and crashed in ``NeuralNet.input_norm`` (BatchNorm1d)
+        with ``running_mean should contain X elements not Y`` as soon as a
+        fold's matrix was fed to that model. Post-fix the per-fold model is
+        built against ``X_tr.shape[1]`` and the fold loop runs end-to-end.
+        """
+        rng = np.random.default_rng(0)
+        n_rows = 12
+        # Refit matrix is the widest set; fold 0 drops the last column, fold
+        # 1 drops the first column. Both per-fold widths differ from the
+        # refit width by 1, triggering the original BatchNorm crash if the
+        # per-fold n_features is taken from the refit matrix.
+        X_refit = rng.uniform(size=(n_rows, 5))
+        y_refit = rng.uniform(size=n_rows)
+        per_fold_size = n_rows // 2
+        train_idx_0 = np.arange(per_fold_size, n_rows)
+        val_idx_0 = np.arange(0, per_fold_size)
+        train_idx_1 = np.arange(0, per_fold_size)
+        val_idx_1 = np.arange(per_fold_size, n_rows)
+        folds = [
+            (
+                X_refit[train_idx_0][:, :4],  # fold 0 keeps cols 0..3
+                y_refit[train_idx_0],
+                X_refit[val_idx_0][:, :4],
+                y_refit[val_idx_0],
+            ),
+            (
+                X_refit[train_idx_1][:, 1:],  # fold 1 keeps cols 1..4
+                y_refit[train_idx_1],
+                X_refit[val_idx_1][:, 1:],
+                y_refit[val_idx_1],
+            ),
+        ]
+        mock_process_train_kfold.return_value = KFoldEngineered(
+            folds=folds,
+            X_refit=X_refit,
+            y_refit=y_refit,
+            ft_ls_used=[f"F{i}" for i in range(X_refit.shape[1])],
+        )
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 2,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_kfold_fcount_drift"
+            mock_get_context.return_value = mock_ctx
+
+            st.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=2,
+            )
+
+            # Pre-fix this call never reached the final ``tune.report`` --
+            # the BatchNorm crash aborted the fold loop. Post-fix the final
+            # aggregated report carries ``nb_features`` = the deployable
+            # (refit) column count, not a fold's narrower survivor count.
+            self.assertGreater(mock_report.call_count, 0)
+            final = mock_report.call_args.kwargs.get("metrics")
+            if final is None:
+                final = mock_report.call_args.args[0]
+            self.assertEqual(final["nb_features"], X_refit.shape[1])
+            self.assertEqual(final["n_folds"], 2)
+
     @patch("ritme.model_space.static_trainables.tune.report")
     @patch("ritme.model_space.static_trainables.ray.tune.get_context")
     def test_train_nn_reg_kfold_saves_loadable_checkpoint(
@@ -2576,11 +2681,13 @@ class TestKfoldTrainables(unittest.TestCase):
         the real fold loop and emits one aggregated ``tune.report`` call
         with mean/std/SE per metric.
 
-        CORN's head is ordinal but the trainable's ``task_type`` is
-        ``"classification"``, so the reported metric set is the same one
-        produced by :data:`_NN_CLASS_METRIC_MAP`. The 3-class numeric
-        ``self.y_class`` (values ``{0.0, 1.0, 2.0}``) supplies the ordinal
-        labels in increasing order.
+        CORN is registered as a regression trainable (``task_type="regression"``)
+        because its rounded-target ordinal framing is a regression-style data
+        path that competes apples-to-apples with ``nn_reg``. The reported
+        metric set is therefore the regression set produced by
+        :data:`_NN_REG_METRIC_MAP`. The 3-class numeric ``self.y_class``
+        (values ``{0.0, 1.0, 2.0}``) stays well below the ``nn_corn_max_levels``
+        cap.
         """
         train_val = self.train_val.copy()
         train_val["target"] = self.y_class
@@ -2622,7 +2729,7 @@ class TestKfoldTrainables(unittest.TestCase):
                 self.tree_phylo,
                 cpus_per_trial=1,
                 gpus_per_trial=0,
-                task_type="classification",
+                task_type="regression",
                 k_folds=3,
             )
 
@@ -2635,20 +2742,13 @@ class TestKfoldTrainables(unittest.TestCase):
             if reported is None:
                 reported = mock_report.call_args.args[0]
             self.assertIsInstance(reported, dict)
-            # CORN runs through the same classification metric extraction as
-            # nn_class (task_type="classification"), so assert the full
-            # _NN_CLASS_METRIC_MAP coverage in both val + train variants.
+            # CORN with task_type="regression" runs through the regression
+            # metric extraction (rmse, r2, loss) in both val + train variants.
             metric_keys = (
-                "roc_auc_macro_ovr_val",
-                "roc_auc_macro_ovr_train",
-                "log_loss_val",
-                "log_loss_train",
-                "f1_macro_val",
-                "f1_macro_train",
-                "balanced_accuracy_val",
-                "balanced_accuracy_train",
-                "mcc_val",
-                "mcc_train",
+                "rmse_val",
+                "rmse_train",
+                "r2_val",
+                "r2_train",
                 "loss_val",
                 "loss_train",
             )
@@ -2851,12 +2951,12 @@ class TestKfoldTrainables(unittest.TestCase):
         mock_report,
     ):
         """Parity guard for ``train_nn_corn(..., k_folds=1)``: CORN ordinal
-        single-split path must emit bare classification metric keys only,
-        with no K-fold aggregate suffixes or ``n_folds``.
+        single-split path must emit bare regression metric keys only, with
+        no K-fold aggregate suffixes or ``n_folds``.
 
-        CORN runs through the same classification metric set as nn_class
-        (``task_type="classification"``), so the guard mirrors
-        :meth:`test_train_nn_class_single_split_no_kfold_aggregates`.
+        CORN is regression-only (``task_type="regression"``) so the reported
+        metric set is :data:`_NN_REG_METRIC_MAP`. Mirrors
+        :meth:`test_train_nn_reg_single_split_no_kfold_aggregates`.
         """
         train_val = self.train_val.copy()
         train_val["target"] = self.y_class
@@ -2898,7 +2998,7 @@ class TestKfoldTrainables(unittest.TestCase):
                 self.tree_phylo,
                 cpus_per_trial=1,
                 gpus_per_trial=0,
-                task_type="classification",
+                task_type="regression",
                 k_folds=1,
             )
 
@@ -2908,24 +3008,189 @@ class TestKfoldTrainables(unittest.TestCase):
                 if reported is None:
                     reported = call_obj.args[0]
                 self.assertIsInstance(reported, dict)
-                # Canonical val key from _NN_CLASS_METRIC_MAP must be present.
-                self.assertIn("roc_auc_macro_ovr_val", reported)
+                # Canonical val key from _NN_REG_METRIC_MAP must be present.
+                self.assertIn("rmse_val", reported)
                 # No K-fold aggregate keys.
                 for forbidden in (
-                    "roc_auc_macro_ovr_val_mean",
-                    "roc_auc_macro_ovr_val_std",
-                    "roc_auc_macro_ovr_val_se",
-                    "roc_auc_macro_ovr_train_mean",
-                    "log_loss_val_mean",
-                    "log_loss_train_mean",
-                    "f1_macro_val_mean",
-                    "f1_macro_train_mean",
-                    "balanced_accuracy_val_mean",
-                    "balanced_accuracy_train_mean",
-                    "mcc_val_mean",
-                    "mcc_train_mean",
+                    "rmse_val_mean",
+                    "rmse_val_std",
+                    "rmse_val_se",
+                    "rmse_train_mean",
+                    "r2_val_mean",
+                    "r2_train_mean",
                     "loss_val_mean",
                     "loss_train_mean",
                     "n_folds",
                 ):
                     self.assertNotIn(forbidden, reported)
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_corn_raises_when_levels_exceed_cap_single_split(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """``train_nn_corn`` must reject a target whose rounded-level count
+        exceeds ``nn_corn_max_levels`` before any model is built. The error
+        message must name the cap so the user knows which knob to turn.
+        """
+        # 30 distinct rounded levels (0..29). Cap of 5 is well below.
+        n_rows = len(self.train_val)
+        wide_target = np.arange(n_rows, dtype=float)
+        train_val = self.train_val.copy()
+        train_val["target"] = wide_target
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_corn",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_cap_violation"
+            mock_get_context.return_value = mock_ctx
+
+            with self.assertRaisesRegex(ValueError, r"nn_corn_max_levels"):
+                st.train_nn_corn(
+                    config,
+                    train_val,
+                    self.target,
+                    self.host_id,
+                    None,
+                    self.seed_data,
+                    self.seed_model,
+                    self.tax,
+                    self.tree_phylo,
+                    cpus_per_trial=1,
+                    gpus_per_trial=0,
+                    task_type="regression",
+                    k_folds=1,
+                    nn_corn_max_levels=5,
+                )
+            # The cap check fires before training, so no metrics are reported.
+            mock_report.assert_not_called()
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_nn_corn_raises_when_levels_exceed_cap_kfold(
+        self,
+        mock_get_context,
+        mock_report,
+    ):
+        """K-fold path of ``train_nn_corn`` enforces ``nn_corn_max_levels``
+        as a per-trial safety net: the up-front check in ``run_all_trials``
+        catches violations using the full ``train_val[target]``, and this
+        guards the trainable itself in case the trainable is invoked
+        directly (e.g. by another caller or a future code path that bypasses
+        the up-front check).
+        """
+        n_rows = len(self.train_val)
+        wide_target = np.arange(n_rows, dtype=float)
+        train_val = self.train_val.copy()
+        train_val["target"] = wide_target
+
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_corn",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_trial_id.return_value = "trial_cap_violation_kfold"
+            mock_get_context.return_value = mock_ctx
+
+            with self.assertRaisesRegex(ValueError, r"nn_corn_max_levels"):
+                st.train_nn_corn(
+                    config,
+                    train_val,
+                    self.target,
+                    self.host_id,
+                    None,
+                    self.seed_data,
+                    self.seed_model,
+                    self.tax,
+                    self.tree_phylo,
+                    cpus_per_trial=1,
+                    gpus_per_trial=0,
+                    task_type="regression",
+                    k_folds=3,
+                    nn_corn_max_levels=5,
+                )
+            mock_report.assert_not_called()
+
+    def test_train_nn_corn_rejects_classification_task_type(self):
+        """``train_nn_corn`` is regression-only after the relabel. A stale
+        caller that still passes ``task_type="classification"`` must raise --
+        otherwise the trainable would silently emit classification metrics
+        from an ordinal model and defeat the relabel.
+        """
+        with self.assertRaisesRegex(ValueError, r"regression-only"):
+            st.train_nn_corn(
+                {},
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="classification",
+                k_folds=1,
+            )
+
+
+class TestCheckNnCornLevels(unittest.TestCase):
+    """Unit tests for ``_check_nn_corn_levels``: cap-value validation
+    (must be ``int`` >= 2) and the level-count boundary (``>`` not ``>=``)."""
+
+    def test_passes_when_levels_equal_cap(self):
+        # ``n_levels == cap`` is permitted; the cap is an upper bound.
+        st._check_nn_corn_levels(n_levels=5, nn_corn_max_levels=5)
+
+    def test_raises_when_levels_one_over_cap(self):
+        with self.assertRaisesRegex(ValueError, r"nn_corn_max_levels=5"):
+            st._check_nn_corn_levels(n_levels=6, nn_corn_max_levels=5)
+
+    def test_rejects_cap_below_two(self):
+        for invalid in (0, 1, -3):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, r">= 2"):
+                    st._check_nn_corn_levels(n_levels=3, nn_corn_max_levels=invalid)
+
+    def test_rejects_non_int_cap(self):
+        # bool is a subclass of int in Python; the helper rejects it
+        # explicitly so callers do not silently pass ``True``/``False``.
+        for invalid in ("20", None, 1.5, True, False):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, r"positive int"):
+                    st._check_nn_corn_levels(n_levels=3, nn_corn_max_levels=invalid)

@@ -52,10 +52,22 @@ def enrich_features(
             )
         else:
             # hot encode if config["data_enrich_with"] is a categorical else
-            # just append to list of features to use for modelling
+            # just append to list of features to use for modelling.
+            #
+            # Categorical dummies use the full-data category universe stashed
+            # at ``config["_enrich_categories"]`` (see issue_kfold.md): every
+            # slice (train fold, val fold, refit, predict-time test) then
+            # produces the same dummy column set with the same reference
+            # category. Falling back to a per-slice ``pd.get_dummies`` -- the
+            # historical behaviour -- when the universe is absent keeps
+            # unit-test callers working without forcing them to pre-compute.
+            universes = config.get("_enrich_categories") or {}
             for feat in config["data_enrich_with"]:
                 col = train_val_raw[feat]
                 if isinstance(col.dtype, pd.CategoricalDtype) or col.dtype == object:
+                    categories = universes.get(feat)
+                    if categories is not None:
+                        col = col.astype(pd.CategoricalDtype(categories=categories))
                     dummies = pd.get_dummies(
                         col, prefix=feat, drop_first=True, dtype=float
                     )
