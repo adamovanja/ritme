@@ -117,6 +117,62 @@ ritme evaluate-tuned-models --help
 ### Testing
 - All new functionality must have corresponding tests in `ritme/tests/`.
 
+### Smoke tests
+Unit tests live in `ritme/tests/`; the smoke runs below exercise the
+full end-to-end pipeline (`split_train_test` -> `find_best_model_config`
+-> evaluation / SHAP) under different tracking sinks and data shapes.
+They are not part of CI -- run them locally after any change that
+touches Ray Tune integration (`tune_models.py`), feature engineering
+(`_process_train.py`, `enrich_features.py`), trainables
+(`model_space/`), or the CLI / shell scripts.
+
+**Always force a clean re-run** (the shell scripts skip steps when
+their outputs already exist):
+
+1. Delete the relevant data splits and log dirs:
+   ```bash
+   rm -rf experiments/data_splits_{mlflow,mlflow_class,wandb,snapshot}
+   rm -rf experiments/ritme_example_logs/{trials_mlflow,trials_mlflow_class,trials_wandb,trials_snapshot}
+   rm -rf experiments/ritme_example_logs/{example_linreg,example_linreg_py,example_logreg,example_logreg_py}
+   ```
+2. Lower the per-model time budget in the relevant config(s) so the
+   smoke finishes in minutes rather than hours -- e.g. set
+   `time_budget_s` to 60-180 in `config/trials_*.json`. Restore the
+   original value when done.
+3. Run the smoke (see table below).
+4. Verify the run actually executed -- check that the log dir was
+   created in this session:
+   ```bash
+   ls -la experiments/ritme_example_logs/<exp_tag>/   # mtime should be now
+   wc -l experiments/ritme_example_logs/<exp_tag>/mlflow_logs.csv
+   ```
+   A non-empty `mlflow_logs.csv` (or `wandb_logs.csv`) with a fresh
+   mtime confirms training actually ran. An empty / missing log file
+   means the shell script's "skip if non-empty" guard fired against
+   stale state -- repeat step 1 and retry.
+
+| Smoke | Command (from `experiments/`) | Covers | ETA at recommended budget |
+|-------|-------------------------------|--------|----------------------------|
+| Python API + CLI examples | execute `ritme_example_usage.ipynb` via `jupyter nbconvert --to notebook --execute ... --allow-errors` | `find_best_model_config` Python API + CLI, single-model linreg/logreg | ~9 min |
+| MLflow regression sweep | `./run_experiment_mlflow.sh` (default `regression`) followed by executing `evaluate_trials_mlflow.ipynb` | all 7 regression trainables incl. `nn_corn`, MLflow tracking, SHAP | ~20 min (`time_budget_s=180`/model) |
+| MLflow classification sweep | edit `task_type = "classification"` in `evaluate_trials_mlflow.ipynb` (or copy to a scratch ipynb) + run | `logreg`, `xgb_class`, `nn_class`, `rf_class`, K-fold `get_best_result` post-processing | ~12 min (`time_budget_s=180`/model) |
+| WandB regression sweep | `./run_experiment_wandb.sh` | `WandbLoggerCallback`, same `run_trials` / scheduler / metric plumbing as MLflow but the wandb tracking sink | ~10 min (`time_budget_s=60`/model) |
+| Snapshot / temporal mode | `./run_experiment_snapshot.sh` | `split_train_test` with `--time-col` / `--host-col` / `--n-prev`, the dynamic-mode `__t-N` column suffixing, K-fold + categorical-enrich on snapshot data | ~5 min (`time_budget_s=60`/model) |
+
+When a change is scoped to a specific path, the minimum required smoke is:
+
+- Ray Tune scheduler / metric / `get_best_result` plumbing
+  (`tune_models.py`, `evaluate_models.py`): MLflow classification +
+  WandB (different tracking sinks share the same plumbing).
+- Feature engineering (`feature_space/`): MLflow regression (small N,
+  `data_enrich_with` exercises the categorical-universe path) +
+  snapshot (temporal column suffixing).
+- Trainables (`model_space/static_trainables.py`): MLflow regression
+  (covers all 7 regression trainables) +
+  `ritme_example_usage.ipynb` (single-split path on linreg/logreg).
+- CLI wrappers (`split_train_test.py::cli_*`, `find_best_model_config.py::cli_*`,
+  etc.): `ritme_example_usage.ipynb` (CLI section runs each command).
+
 ### Formatting
 - Ensure all code is formatted according to the pre-commit hooks in this repos.
 

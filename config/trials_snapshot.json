@@ -1,0 +1,21 @@
+{
+  "experiment_tag": "trials_snapshot",
+  "fully_reproducible": true,
+  "group_by_column": "host_id",
+  "ls_model_types": [
+    "linreg",
+    "xgb"
+  ],
+  "max_cuncurrent_trials": 2,
+  "model_hyperparameters": {
+    "data_enrich_with": [
+      "body-site"
+    ]
+  },
+  "optuna_searchspace_sampler": "TPESampler",
+  "seed_data": 12,
+  "seed_model": 12,
+  "target": "target",
+  "time_budget_s": 60,
+  "tracking_uri": "mlruns"
+}

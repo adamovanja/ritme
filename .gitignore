@@ -157,6 +157,9 @@ lightning_logs/
 
 # Sequence and metadata
 **/experiments/data/**
+# Re-allow the snapshot-mode dummy-data generator (deterministic, seeded;
+# regenerates ``{md,ft}_dummy_snapshot.tsv`` for the snapshot smoke test).
+!**/experiments/data/generate_dummy_snapshot_data.py
 
 # Any callgraphs
 **.svg
@@ -183,6 +186,7 @@ experiments/data_splits_mlflow
 experiments/data_splits_mlflow_class
 experiments/data_splits_wandb
 experiments/data_splits_ma2
+experiments/data_splits_snapshot
 experiments/best_models
 experiments/ritme_example_usage_all.ipynb
 experiments/ritme_example_usage_nn.ipynb
@@ -197,6 +201,7 @@ experiments/ritme_example_usage_nn.ipynb
 !trials_mlflow.json
 !trials_mlflow_class.json
 !trials_wandb.json
+!trials_snapshot.json
 
 # GHA secrets
 .secrets
