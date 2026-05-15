@@ -14,9 +14,13 @@ from numpy.testing import assert_allclose
 from ritme.evaluate_models import TunedModel
 from ritme.explain_features import (
     _build_explainer,
+    _extract_coefficients,
     _get_predict_fn,
+    _is_coef_model,
     cli_explain_features,
+    compute_feature_importance,
     compute_shap_values,
+    plot_feature_importance_bar,
     plot_shap_bar,
     plot_shap_summary,
 )
@@ -403,28 +407,453 @@ class TestCliExplainFeatures(unittest.TestCase):
             )
         plt.close("all")
 
-    @patch("ritme.explain_features.compute_shap_values")
     @patch("ritme.explain_features.load_best_model")
     @patch("pandas.read_pickle")
-    def test_cli_trac_raises(
+    def test_cli_trac_writes_coefficient_csv(
         self,
         mock_read_pickle,
         mock_load_best_model,
-        mock_compute_shap_values,
     ):
+        """For TRAC (a coefficient-bearing model), the CLI must skip SHAP and
+        emit ``feature_importance_<model_type>.csv`` instead. The real
+        coefficient-extraction path is exercised end-to-end on a realistic
+        TRAC bundle (no patching of ``compute_feature_importance``)."""
         train_val = pd.DataFrame({"F1": [1, 2]})
         test = pd.DataFrame({"F1": [3, 4]})
         mock_read_pickle.side_effect = [train_val, test]
 
         mock_tmodel = MagicMock(spec=TunedModel)
-        mock_tmodel.model = {"matrix_a": pd.DataFrame(), "model": pd.DataFrame()}
+        a_df = pd.DataFrame({"n1": [1, 0], "n2": [0, 1]}, index=["F1", "F2"])
+        alpha_df = pd.DataFrame(
+            {"alpha": [0.1, 0.5, -0.3]}, index=["intercept", "n1", "n2"]
+        )
+        mock_tmodel.model = {"model": alpha_df, "matrix_a": a_df}
         mock_load_best_model.return_value = mock_tmodel
 
-        mock_compute_shap_values.side_effect = TypeError("TRAC")
+        with tempfile.TemporaryDirectory() as path_to_exp:
+            cli_explain_features(path_to_exp, "trac", "train.pkl", "test.pkl")
+
+            csv_path = os.path.join(path_to_exp, "feature_importance_trac.csv")
+            bar_path = os.path.join(path_to_exp, "feature_importance_bar_trac.png")
+            self.assertTrue(os.path.exists(csv_path))
+            self.assertTrue(os.path.exists(bar_path))
+            # No SHAP outputs should be created for a coefficient-bearing model.
+            for shap_name in (
+                "shap_values_trac.pkl",
+                "shap_summary_trac.png",
+                "shap_bar_trac.png",
+            ):
+                self.assertFalse(os.path.exists(os.path.join(path_to_exp, shap_name)))
+
+            written = pd.read_csv(csv_path)
+            self.assertEqual(
+                sorted(written.columns),
+                sorted(["feature", "coefficient", "abs_coefficient"]),
+            )
+            # End-to-end: the real ``_extract_coefficients`` path drops
+            # ``intercept`` and surfaces only the log-contrast nodes.
+            self.assertEqual(sorted(written["feature"].tolist()), ["n1", "n2"])
+            self.assertNotIn("intercept", written["feature"].values)
+            assert_allclose(
+                sorted(written["coefficient"].tolist()), sorted([0.5, -0.3])
+            )
+        plt.close("all")
+
+
+class TestIsCoefModel(unittest.TestCase):
+    """``_is_coef_model`` must distinguish coefficient-bearing trainables
+    (linreg / logreg / trac) from SHAP-only trainables (rf / xgb / nn_*)."""
+
+    def test_trac_dict_is_coef_model(self):
+        model = {"matrix_a": pd.DataFrame(), "model": pd.DataFrame()}
+        self.assertTrue(_is_coef_model(model))
+
+    def test_linreg_pipeline_is_coef_model(self):
+        from sklearn.linear_model import ElasticNet
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        X = np.array([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]])
+        y = np.array([0.0, 1.0, 1.0, 0.0])
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("linreg", ElasticNet(alpha=0.1))]
+        ).fit(X, y)
+        self.assertTrue(_is_coef_model(pipeline))
+
+    def test_logreg_pipeline_is_coef_model(self):
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        X = np.array([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]])
+        y = np.array([0, 1, 1, 0])
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("logreg", LogisticRegression())]
+        ).fit(X, y)
+        self.assertTrue(_is_coef_model(pipeline))
+
+    def test_random_forest_is_not_coef_model(self):
+        from sklearn.ensemble import RandomForestRegressor
+
+        rf = RandomForestRegressor(n_estimators=2).fit(
+            np.array([[0.0], [1.0]]), np.array([0.0, 1.0])
+        )
+        self.assertFalse(_is_coef_model(rf))
+
+    def test_xgb_booster_is_not_coef_model(self):
+        dtrain = xgb.DMatrix(np.array([[0.0], [1.0]]), label=np.array([0.0, 1.0]))
+        booster = xgb.train({"max_depth": 1, "verbosity": 0}, dtrain, num_boost_round=1)
+        self.assertFalse(_is_coef_model(booster))
+
+    def test_partial_trac_dict_is_not_coef_model(self):
+        """A dict missing one of ``matrix_a`` or ``model`` is not a TRAC bundle
+        and must fall through to ``False`` rather than being mis-routed."""
+        self.assertFalse(_is_coef_model({"model": pd.DataFrame()}))
+        self.assertFalse(_is_coef_model({"matrix_a": pd.DataFrame()}))
+        self.assertFalse(_is_coef_model({}))
+
+
+class TestExtractCoefficients(unittest.TestCase):
+    """``_extract_coefficients`` produces a per-feature long-form DataFrame."""
+
+    def test_linreg_pipeline_returns_one_row_per_feature(self):
+        from sklearn.linear_model import ElasticNet
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        rng = np.random.RandomState(0)
+        X = rng.randn(20, 3)
+        y = X[:, 0] - 2 * X[:, 1]
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("linreg", ElasticNet(alpha=0.01))]
+        ).fit(X, y)
+
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = pipeline
+        tmodel.label_encoder = None
+        df = _extract_coefficients(tmodel, ["F1", "F2", "F3"])
+
+        self.assertEqual(list(df["feature"]), ["F1", "F2", "F3"])
+        self.assertEqual(
+            sorted(df.columns),
+            sorted(["feature", "coefficient", "abs_coefficient"]),
+        )
+        assert_allclose(df["abs_coefficient"], np.abs(df["coefficient"]))
+
+    def test_logreg_binary_pipeline_returns_one_row_per_feature(self):
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        rng = np.random.RandomState(1)
+        X = rng.randn(30, 3)
+        y = (X[:, 0] > 0).astype(int)
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("logreg", LogisticRegression())]
+        ).fit(X, y)
+
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = pipeline
+        tmodel.label_encoder = None
+        df = _extract_coefficients(tmodel, ["F1", "F2", "F3"])
+
+        # Binary logreg has a single row of coefficients — long form should
+        # have exactly one row per feature, no `class` column.
+        self.assertEqual(len(df), 3)
+        self.assertNotIn("class", df.columns)
+        self.assertEqual(list(df["feature"]), ["F1", "F2", "F3"])
+
+    def test_logreg_multiclass_pipeline_returns_per_class_rows(self):
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        rng = np.random.RandomState(2)
+        X = rng.randn(60, 3)
+        y = rng.randint(0, 3, size=60)
+        pipeline = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("logreg", LogisticRegression(max_iter=500)),
+            ]
+        ).fit(X, y)
+
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = pipeline
+        tmodel.label_encoder = None
+        df = _extract_coefficients(tmodel, ["F1", "F2", "F3"])
+
+        self.assertEqual(len(df), 3 * 3)
+        self.assertIn("class", df.columns)
+        self.assertEqual(sorted(df["feature"].unique()), ["F1", "F2", "F3"])
+
+    def test_raises_when_coef_length_mismatches_feature_names(self):
+        """Mismatched coefficient/feature-name lengths must raise — this guard
+        is what catches future drift between ``build_design_matrix`` and the
+        fitted estimator."""
+
+        class _FakeEstimator:
+            coef_ = np.array([0.1, 0.2])
+
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = _FakeEstimator()
+        tmodel.label_encoder = None
+        with self.assertRaisesRegex(ValueError, "Number of coefficients"):
+            _extract_coefficients(tmodel, ["F1"])
+
+    def test_raises_when_multiclass_coef_columns_mismatch(self):
+        class _FakeMulticlassEstimator:
+            coef_ = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+            classes_ = np.array([0, 1])
+
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = _FakeMulticlassEstimator()
+        tmodel.label_encoder = None
+        with self.assertRaisesRegex(ValueError, "Number of coefficient columns"):
+            _extract_coefficients(tmodel, ["F1"])
+
+    def test_trac_dict_drops_intercept_and_uses_matrix_a_labels(self):
+        a_df = pd.DataFrame({"node_1": [1, 0], "node_2": [0, 1]}, index=["F1", "F2"])
+        alpha_df = pd.DataFrame(
+            {"alpha": [0.1, 0.7, -0.4]},
+            index=["intercept", "node_1", "node_2"],
+        )
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = {"model": alpha_df, "matrix_a": a_df}
+        df = _extract_coefficients(tmodel, ["F1", "F2"])
+
+        self.assertEqual(list(df["feature"]), ["node_1", "node_2"])
+        self.assertNotIn("intercept", df["feature"].values)
+        assert_allclose(df["coefficient"], [0.7, -0.4])
+        assert_allclose(df["abs_coefficient"], [0.7, 0.4])
+
+
+class TestComputeFeatureImportance(unittest.TestCase):
+    def setUp(self):
+        current_dir = os.path.dirname(__file__)
+        self.data = pd.read_csv(
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        self.tax_df = pd.read_csv(
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        self.data_config = {
+            "data_aggregation": None,
+            "data_transform": None,
+            "data_selection": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+
+    def _make_tmodel_with_linreg(self):
+        from sklearn.linear_model import ElasticNet
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("linreg", ElasticNet(alpha=0.01))]
+        )
+        tmodel = TunedModel(
+            model=pipeline,
+            data_config=self.data_config,
+            tax=self.tax_df,
+            path="",
+            model_type="linreg",
+        )
+        X = tmodel.build_design_matrix(self.data, split="train")
+        y = np.arange(X.shape[0], dtype=float)
+        tmodel.model.fit(X.values, y)
+        return tmodel, X
+
+    def test_compute_feature_importance_linreg(self):
+        tmodel, X = self._make_tmodel_with_linreg()
+        df = compute_feature_importance(tmodel, self.data)
+        self.assertEqual(len(df), X.shape[1])
+        self.assertEqual(sorted(df["feature"]), sorted(X.columns.tolist()))
+
+    def test_compute_feature_importance_rejects_rf(self):
+        from sklearn.ensemble import RandomForestRegressor
+
+        tmodel = TunedModel(
+            model=RandomForestRegressor(n_estimators=2),
+            data_config=self.data_config,
+            tax=self.tax_df,
+            path="",
+            model_type="rf",
+        )
+        X = tmodel.build_design_matrix(self.data, split="train")
+        tmodel.model.fit(X.values, np.arange(X.shape[0], dtype=float))
+        with self.assertRaisesRegex(TypeError, "coefficient"):
+            compute_feature_importance(tmodel, self.data)
+
+
+class TestPlotFeatureImportanceBar(unittest.TestCase):
+    def test_single_class_returns_figure(self):
+        df = pd.DataFrame(
+            {
+                "feature": ["F1", "F2", "F3"],
+                "coefficient": [0.5, -0.3, 0.1],
+                "abs_coefficient": [0.5, 0.3, 0.1],
+            }
+        )
+        fig = plot_feature_importance_bar(df, show=False)
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_multiclass_renders_one_subplot_per_class(self):
+        df = pd.DataFrame(
+            {
+                "feature": ["F1", "F2"] * 3,
+                "class": ["a", "a", "b", "b", "c", "c"],
+                "coefficient": [0.5, -0.3, 0.1, 0.2, -0.7, 0.4],
+                "abs_coefficient": [0.5, 0.3, 0.1, 0.2, 0.7, 0.4],
+            }
+        )
+        fig = plot_feature_importance_bar(df, show=False)
+        self.assertIsInstance(fig, plt.Figure)
+        titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
+        self.assertIn("Class: a", titles)
+        self.assertIn("Class: b", titles)
+        self.assertIn("Class: c", titles)
+        plt.close(fig)
+
+
+class TestCliExplainFeaturesCoefDispatch(unittest.TestCase):
+    """The CLI must dispatch to the coefficient path for linreg/logreg/trac
+    and write ``feature_importance_<model_type>.csv`` instead of SHAP files."""
+
+    @patch("ritme.explain_features.compute_shap_values")
+    @patch("ritme.explain_features.load_best_model")
+    @patch("pandas.read_pickle")
+    def test_cli_linreg_skips_shap_and_writes_csv(
+        self,
+        mock_read_pickle,
+        mock_load_best_model,
+        mock_compute_shap_values,
+    ):
+        from sklearn.linear_model import ElasticNet
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        current_dir = os.path.dirname(__file__)
+        data = pd.read_csv(
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        tax_df = pd.read_csv(
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        mock_read_pickle.side_effect = [data, data]
+
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("linreg", ElasticNet(alpha=0.01))]
+        )
+        tmodel = TunedModel(
+            model=pipeline,
+            data_config={
+                "data_aggregation": None,
+                "data_transform": None,
+                "data_selection": None,
+                "data_enrich": None,
+                "data_enrich_with": None,
+            },
+            tax=tax_df,
+            path="",
+            model_type="linreg",
+        )
+        X = tmodel.build_design_matrix(data, split="train")
+        tmodel.model.fit(X.values, np.arange(X.shape[0], dtype=float))
+        mock_load_best_model.return_value = tmodel
 
         with tempfile.TemporaryDirectory() as path_to_exp:
-            with self.assertRaises(TypeError):
-                cli_explain_features(path_to_exp, "trac", "train.pkl", "test.pkl")
+            cli_explain_features(path_to_exp, "linreg", "train.pkl", "test.pkl")
+            csv_path = os.path.join(path_to_exp, "feature_importance_linreg.csv")
+            bar_path = os.path.join(path_to_exp, "feature_importance_bar_linreg.png")
+            self.assertTrue(os.path.exists(csv_path))
+            self.assertTrue(os.path.exists(bar_path))
+            for shap_name in (
+                "shap_values_linreg.pkl",
+                "shap_summary_linreg.png",
+                "shap_bar_linreg.png",
+            ):
+                self.assertFalse(os.path.exists(os.path.join(path_to_exp, shap_name)))
+
+        mock_compute_shap_values.assert_not_called()
+        plt.close("all")
+
+    @patch("ritme.explain_features.compute_shap_values")
+    @patch("ritme.explain_features.load_best_model")
+    @patch("pandas.read_pickle")
+    def test_cli_logreg_skips_shap_and_writes_csv(
+        self,
+        mock_read_pickle,
+        mock_load_best_model,
+        mock_compute_shap_values,
+    ):
+        """End-to-end CLI dispatch for binary logreg: confirms the coefficient
+        path writes a CSV (no ``class`` column for binary) and never reaches
+        SHAP."""
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        current_dir = os.path.dirname(__file__)
+        data = pd.read_csv(
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        tax_df = pd.read_csv(
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        mock_read_pickle.side_effect = [data, data]
+
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("logreg", LogisticRegression())]
+        )
+        tmodel = TunedModel(
+            model=pipeline,
+            data_config={
+                "data_aggregation": None,
+                "data_transform": None,
+                "data_selection": None,
+                "data_enrich": None,
+                "data_enrich_with": None,
+            },
+            tax=tax_df,
+            path="",
+            model_type="logreg",
+        )
+        X = tmodel.build_design_matrix(data, split="train")
+        y = np.array([0, 1] * (X.shape[0] // 2) + [0] * (X.shape[0] % 2))
+        tmodel.model.fit(X.values, y)
+        mock_load_best_model.return_value = tmodel
+
+        with tempfile.TemporaryDirectory() as path_to_exp:
+            cli_explain_features(path_to_exp, "logreg", "train.pkl", "test.pkl")
+            csv_path = os.path.join(path_to_exp, "feature_importance_logreg.csv")
+            self.assertTrue(os.path.exists(csv_path))
+            self.assertTrue(
+                os.path.exists(
+                    os.path.join(path_to_exp, "feature_importance_bar_logreg.png")
+                )
+            )
+            written = pd.read_csv(csv_path)
+            # Binary logreg collapses (1, F) coef to one row per feature.
+            self.assertNotIn("class", written.columns)
+            self.assertEqual(len(written), X.shape[1])
+
+        mock_compute_shap_values.assert_not_called()
+        plt.close("all")
 
 
 if __name__ == "__main__":

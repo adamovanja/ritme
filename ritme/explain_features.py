@@ -10,6 +10,7 @@ import torch
 import typer
 import xgboost as xgb
 from matplotlib.figure import Figure
+from sklearn.pipeline import Pipeline
 
 from ritme._decorators import helper_function, main_function
 from ritme.evaluate_models import TunedModel, load_best_model
@@ -87,6 +88,188 @@ def _build_explainer(tmodel: TunedModel, X_background: pd.DataFrame) -> shap.Exp
     except Exception:
         predict_fn = _get_predict_fn(tmodel)
         return shap.KernelExplainer(predict_fn, X_background.values)
+
+
+@helper_function
+def _is_trac_model(model) -> bool:
+    return isinstance(model, dict) and "matrix_a" in model and "model" in model
+
+
+@helper_function
+def _is_coef_model(model) -> bool:
+    """Return True for trainables whose feature importance is fully captured
+    by their fitted coefficients (TRAC dict or sklearn ``Pipeline`` whose
+    final step has a ``coef_`` attribute)."""
+    if _is_trac_model(model):
+        return True
+    if isinstance(model, Pipeline):
+        final = model.steps[-1][1]
+        return hasattr(final, "coef_")
+    return False
+
+
+@helper_function
+def _extract_coefficients(tmodel: TunedModel, feature_names: List[str]) -> pd.DataFrame:
+    """Return a long-form per-feature coefficient table for a
+    coefficient-bearing model.
+
+    For binary / regression linear models the returned DataFrame has columns
+    ``feature``, ``coefficient``, ``abs_coefficient``. For multi-class
+    classifiers a ``class`` column is added and rows are repeated per class.
+    For TRAC models the labels come from the ``alpha`` DataFrame's index
+    (the log-contrast names installed by ``_bundle_trac_model``, with the
+    ``intercept`` row dropped) rather than from ``feature_names``.
+    """
+    model = tmodel.model
+    if _is_trac_model(model):
+        alpha = model["model"]["alpha"]
+        if "intercept" in alpha.index:
+            alpha = alpha.drop("intercept")
+        values = alpha.values.astype(float)
+        return pd.DataFrame(
+            {
+                "feature": alpha.index.tolist(),
+                "coefficient": values,
+                "abs_coefficient": np.abs(values),
+            }
+        )
+
+    estimator = model.steps[-1][1] if isinstance(model, Pipeline) else model
+    coef = np.asarray(estimator.coef_)
+    # sklearn LogisticRegression stores binary coefficients as shape (1, F).
+    # Collapse the singleton class axis so binary classifiers produce the
+    # same one-row-per-feature table as a regressor.
+    if coef.ndim == 2 and coef.shape[0] == 1:
+        coef = coef.ravel()
+
+    if coef.ndim == 1:
+        if len(coef) != len(feature_names):
+            raise ValueError(
+                f"Number of coefficients ({len(coef)}) does not match number "
+                f"of feature names ({len(feature_names)})."
+            )
+        return pd.DataFrame(
+            {
+                "feature": list(feature_names),
+                "coefficient": coef,
+                "abs_coefficient": np.abs(coef),
+            }
+        )
+
+    # Multi-class: one row per (class, feature).
+    if coef.shape[1] != len(feature_names):
+        raise ValueError(
+            f"Number of coefficient columns ({coef.shape[1]}) does not match "
+            f"number of feature names ({len(feature_names)})."
+        )
+    class_names = _classification_class_names(tmodel)
+    if class_names is None or len(class_names) != coef.shape[0]:
+        class_names = [f"class_{i}" for i in range(coef.shape[0])]
+    records = []
+    for ci, cls in enumerate(class_names):
+        for fi, fname in enumerate(feature_names):
+            records.append(
+                {
+                    "feature": fname,
+                    "class": cls,
+                    "coefficient": float(coef[ci, fi]),
+                    "abs_coefficient": float(abs(coef[ci, fi])),
+                }
+            )
+    return pd.DataFrame.from_records(records)
+
+
+@main_function
+def compute_feature_importance(
+    tmodel: TunedModel,
+    train_val: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return a per-feature coefficient table for coefficient-bearing
+    trainables (``linreg``, ``logreg``, ``trac``).
+
+    Args:
+        tmodel: A fitted TunedModel whose underlying model exposes
+            coefficients directly (sklearn ``Pipeline`` with a final step
+            that has ``coef_``, or a TRAC dict with ``"model"`` / ``"matrix_a"``).
+        train_val: Training data used to recover the design-matrix column
+            order (and hence the feature labels) the model was fit on.
+
+    Returns:
+        A long-form DataFrame with columns ``feature``, ``coefficient``,
+        ``abs_coefficient`` (plus ``class`` for multi-class classifiers).
+
+    Raises:
+        TypeError: If ``tmodel.model`` is not a coefficient-bearing model.
+    """
+    if not _is_coef_model(tmodel.model):
+        raise TypeError(
+            "compute_feature_importance only supports coefficient-bearing "
+            "models (linreg / logreg / trac). Use compute_shap_values for "
+            "tree- and neural-network-based trainables."
+        )
+    X_train = tmodel.build_design_matrix(train_val, split="train")
+    return _extract_coefficients(tmodel, X_train.columns.tolist())
+
+
+@helper_function
+def _draw_importance_bar(ax, sub: pd.DataFrame, max_display: int) -> None:
+    """Render a horizontal bar of the ``max_display`` most-important features
+    onto ``ax``, ordered with the largest ``|coefficient|`` at the top."""
+    top = (
+        sub.sort_values("abs_coefficient", ascending=False)
+        .head(max_display)
+        .sort_values("abs_coefficient", ascending=True)
+    )
+    ax.barh(top["feature"], top["coefficient"])
+    ax.set_xlabel("coefficient")
+
+
+@main_function
+def plot_feature_importance_bar(
+    importance: pd.DataFrame,
+    max_display: int = 20,
+    show: bool = True,
+) -> Optional[Figure]:
+    """Bar plot of feature importances ranked by ``abs_coefficient``.
+
+    Args:
+        importance: DataFrame produced by :func:`compute_feature_importance`.
+        max_display: Maximum number of features to display — per class for
+            multi-class importances, otherwise overall.
+        show: When True, render via ``plt.show()`` and return ``None``.
+            When False, return the Figure for further manipulation.
+
+    Returns:
+        The matplotlib Figure, or ``None`` when ``show=True``.
+    """
+    if "class" in importance.columns:
+        class_names = importance["class"].unique().tolist()
+        per_class_height = max(4, max_display * 0.35)
+        fig, axes = plt.subplots(
+            len(class_names), 1, figsize=(10, per_class_height * len(class_names))
+        )
+        if len(class_names) == 1:
+            axes = [axes]
+        for ax, name in zip(axes, class_names):
+            _draw_importance_bar(
+                ax, importance[importance["class"] == name], max_display
+            )
+            ax.set_title(f"Class: {name}")
+        plt.tight_layout()
+        if show:
+            plt.show()
+            plt.close(fig)
+            return None
+        return fig
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, max(4, max_display * 0.35)))
+    _draw_importance_bar(ax, importance, max_display)
+    plt.tight_layout()
+    if show:
+        plt.show()
+        plt.close(fig)
+        return None
+    return fig
 
 
 @main_function
@@ -306,7 +489,11 @@ def cli_explain_features(
     max_display: int = 20,
     max_background_samples: Optional[int] = None,
 ) -> None:
-    """Compute SHAP feature importance for a single best tuned model.
+    """Compute feature importance for a single best tuned model.
+
+    For coefficient-bearing trainables (``linreg``, ``logreg``, ``trac``) the
+    coefficients themselves are emitted; SHAP is skipped entirely. For
+    tree- and neural-network-based trainables SHAP is computed as before.
 
     Args:
         path_to_exp: Path to the experiment directory containing
@@ -316,10 +503,14 @@ def cli_explain_features(
         path_to_test: Path to the pickled test DataFrame.
         max_display: Maximum number of features shown in plots.
         max_background_samples: If set, subsample the SHAP background to this
-            many rows. By default the full training set is used.
+            many rows. By default the full training set is used. Ignored for
+            coefficient-bearing models.
 
     Side Effects:
-        Writes into path_to_exp:
+        For coefficient-bearing models, writes into path_to_exp:
+            ``feature_importance_<model_type>.csv``,
+            ``feature_importance_bar_<model_type>.png``.
+        Otherwise writes:
             ``shap_values_<model_type>.pkl``,
             ``shap_summary_<model_type>.png``,
             ``shap_bar_<model_type>.png``.
@@ -328,6 +519,22 @@ def cli_explain_features(
     test = pd.read_pickle(path_to_test)
 
     tmodel = load_best_model(model_type, path_to_exp)
+
+    if _is_coef_model(tmodel.model):
+        importance = compute_feature_importance(tmodel, train_val)
+        csv_path = os.path.join(path_to_exp, f"feature_importance_{model_type}.csv")
+        importance.to_csv(csv_path, index=False)
+        print(f"Feature importance (coefficients) saved in {csv_path}.")
+
+        fig_bar = plot_feature_importance_bar(
+            importance, max_display=max_display, show=False
+        )
+        assert fig_bar is not None  # show=False guarantees a Figure
+        bar_path = os.path.join(path_to_exp, f"feature_importance_bar_{model_type}.png")
+        fig_bar.savefig(bar_path, bbox_inches="tight")
+        plt.close(fig_bar)
+        print(f"Feature importance bar plot saved in {bar_path}.")
+        return
 
     explanation = compute_shap_values(
         tmodel,
