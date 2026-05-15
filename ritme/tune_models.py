@@ -1,5 +1,6 @@
 import os
 import random
+import warnings
 from functools import partial
 from typing import Any, Callable, Dict
 
@@ -48,6 +49,11 @@ CLASSIFICATION_MODELS = {"xgb_class", "nn_class", "logreg", "rf_class"}
 # Re-export so callers can keep importing the cap constant from ``tune_models``
 # without learning about its physical home in ``static_trainables``.
 DEFAULT_NN_CORN_MAX_LEVELS = st.DEFAULT_NN_CORN_MAX_LEVELS
+
+# Failure-rate threshold for the trial-error policy
+# (see issue_m_strict_abort_policy.md). 0.5% surfaces flaky trials as a
+# warning while preserving the existing abort for systemic failures.
+DEFAULT_MAX_TRIAL_FAILURE_RATE = 0.005
 
 TASK_METRICS = {
     "regression": ("rmse_val", "min"),
@@ -196,12 +202,147 @@ def _get_slurm_resource(resource_name: str, default_value: int = 0) -> int:
         return default_value
 
 
-def _check_for_errors_in_trials(result: ResultGrid) -> None:
-    """Check if any trials encountered errors and raise an exception if so."""
-    if result.num_errors > 0:
+def _check_for_errors_in_trials(
+    result: ResultGrid,
+    max_trial_failure_rate: float = DEFAULT_MAX_TRIAL_FAILURE_RATE,
+) -> dict:
+    """Inspect a finished search for trial errors and apply the failure-rate
+    policy.
+
+    Raises ``RuntimeError`` when more than ``max_trial_failure_rate`` of
+    trials errored, or when the search produced zero trials at all
+    (typically a misconfigured ``time_budget_s`` or empty search space).
+    Below the threshold, emits a ``RuntimeWarning`` AND prints the
+    breakdown -- the print survives the default Python warnings filter
+    that dedupes repeats by message+lineno in long-lived processes.
+
+    Returns a breakdown dict (``num_trials``, ``num_errors``,
+    ``failure_rate``, ``error_classes``).
+    """
+    num_trials = len(result)
+    num_errors = int(result.num_errors)
+    error_classes = sorted({type(err).__name__ for err in (result.errors or [])})
+
+    breakdown = {
+        "num_trials": num_trials,
+        "num_errors": num_errors,
+        "failure_rate": ((num_errors / num_trials) if num_trials > 0 else float("nan")),
+        "error_classes": error_classes,
+    }
+
+    if num_trials == 0:
+        # A successful Ray Tune run always yields at least one trial.
+        # Zero means the search aborted before launching anything -- a
+        # too-short time_budget_s, empty search space, or scheduler
+        # mis-configuration. Silently returning here would hide a real
+        # campaign failure (issue_m_strict_abort_policy.md).
         raise RuntimeError(
-            "Some trials encountered errors. See above for reported Ray Tune errors."
+            "Ray Tune produced 0 trials -- check time_budget_s, search "
+            f"space, and scheduler configuration. (Pre-launch errors: "
+            f"{num_errors}, classes: {error_classes}.)"
         )
+
+    failure_rate = breakdown["failure_rate"]
+    if failure_rate > max_trial_failure_rate:
+        raise RuntimeError(
+            f"Trial failure rate {failure_rate:.4f} exceeds "
+            f"max_trial_failure_rate={max_trial_failure_rate} "
+            f"({num_errors}/{num_trials} trials errored: {error_classes}). "
+            f"See Ray Tune logs above for details."
+        )
+    if num_errors > 0:
+        msg = (
+            f"{num_errors}/{num_trials} trials errored "
+            f"(failure_rate={failure_rate:.4f} <= "
+            f"max_trial_failure_rate={max_trial_failure_rate}); proceeding "
+            f"with surviving trials. Ray Tune error classes: {error_classes}."
+        )
+        # Print as well as warn: Python's default warnings filter dedupes
+        # repeats by (message, module, lineno) so a long-lived process
+        # could silently swallow subsequent surfacings.
+        print(f"WARNING: {msg}")
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
+    return breakdown
+
+
+def _validate_run_inputs(
+    model_types: list[str],
+    task_type: str,
+    target: str,
+    train_val: pd.DataFrame,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
+) -> None:
+    """Cheap pre-flight validation shared by ``find_best_model_config`` and
+    ``run_all_trials``.
+
+    Runs every check that can fire before any Ray Tune work starts:
+    ``task_type`` validity, model-type / task-type compatibility, the
+    ``nn_corn`` target shape check, and the snapshot + NaN gate. Calling
+    this *before* ``_define_experiment_path`` keeps a config-rejection
+    failure from leaving a stub experiment directory on disk
+    (issue_m_existing_dir.md).
+    """
+    if task_type not in TASK_METRICS:
+        raise ValueError(
+            f"Invalid task_type '{task_type}'. Must be one of: "
+            f"{list(TASK_METRICS.keys())}."
+        )
+
+    # nn_class is dual-task: it uses a classification nn_type internally but
+    # reports metrics matching the overall task_type. nn_corn lives only in
+    # REGRESSION_MODELS (CORN's rounded-target path is regression-style).
+    task_allowed = (
+        REGRESSION_MODELS if task_type == "regression" else CLASSIFICATION_MODELS
+    )
+    task_allowed = task_allowed | {"nn_class"}
+    invalid = set(model_types) - task_allowed
+    if invalid:
+        raise ValueError(
+            f"Model types {sorted(invalid)} are not compatible with task_type "
+            f"'{task_type}'. Allowed models: {sorted(task_allowed)}."
+        )
+
+    # Cap is checked against the full target before splitting -- the
+    # trainable only sees per-fold subsets.
+    if "nn_corn" in model_types:
+        target_series = train_val[target]
+        if not pd.api.types.is_numeric_dtype(target_series):
+            raise ValueError(
+                f"nn_corn requires a numeric target; column '{target}' has "
+                f"dtype {target_series.dtype}. nn_corn is regression-only -- "
+                f"use logreg / rf_class / xgb_class / nn_class for "
+                f"categorical targets."
+            )
+        n_nan = int(target_series.isna().sum())
+        if n_nan > 0:
+            raise ValueError(
+                f"nn_corn target column '{target}' contains {n_nan} NaN "
+                f"values. Drop or impute them before the run; otherwise "
+                f"nn_corn_max_levels would be evaluated against a corrupted "
+                f"level set."
+            )
+        rounded_unique = np.unique(np.round(target_series.to_numpy()).astype(int))
+        st._check_nn_corn_levels(int(rounded_unique.size), nn_corn_max_levels)
+
+    has_snapshots = any(_PAST_SUFFIX_RE.search(col) for col in train_val.columns)
+    all_micro = [c for c in train_val.columns if c.startswith("F")]
+    has_snapshot_nans = (
+        (pd.isna(train_val[all_micro]).values.any() if all_micro else False)
+        if has_snapshots
+        else False
+    )
+    if has_snapshots and has_snapshot_nans:
+        # Only xgb/xgb_class support native NaN handling; reject any other request
+        xgb_model = "xgb_class" if task_type == "classification" else "xgb"
+        incompatible = sorted(set(model_types) - {xgb_model})
+        if incompatible:
+            raise ValueError(
+                f"NaNs in snapshot features detected (missing_mode='nan'); only "
+                f"'{xgb_model}' supports native NaN handling. Requested model "
+                f"types {incompatible} are incompatible. Either set "
+                f"missing_mode='exclude' in split_train_test or restrict "
+                f"ls_model_types to ['{xgb_model}']."
+            )
 
 
 def _get_resources(max_concurrent_trials: int) -> dict:
@@ -408,6 +549,7 @@ def run_trials(
     task_type: str = "regression",
     k_folds: int = 1,
     nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
+    max_trial_failure_rate: float = DEFAULT_MAX_TRIAL_FAILURE_RATE,
 ) -> ResultGrid:
     if model_hyperparameters is None:
         model_hyperparameters = {}
@@ -552,8 +694,8 @@ def run_trials(
     # ResultGrid output
     result = analysis.fit()
 
-    # Check all trials & check for error status
-    _check_for_errors_in_trials(result)
+    # Check all trials & apply failure-rate policy
+    _check_for_errors_in_trials(result, max_trial_failure_rate=max_trial_failure_rate)
 
     return result
 
@@ -587,74 +729,26 @@ def run_all_trials(
     task_type: str = "regression",
     k_folds: int = 1,
     nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
+    max_trial_failure_rate: float = DEFAULT_MAX_TRIAL_FAILURE_RATE,
 ) -> dict[str, ResultGrid]:
     results_all = {}
 
-    # Validate task_type
-    if task_type not in TASK_METRICS:
-        raise ValueError(
-            f"Invalid task_type '{task_type}'. Must be one of: "
-            f"{list(TASK_METRICS.keys())}."
-        )
-
-    # Validate model types against task_type
-    # nn_class is dual-task: it uses a classification nn_type internally but
-    # reports metrics matching the overall task_type. nn_corn lives only in
-    # REGRESSION_MODELS (CORN's rounded-target path is regression-style).
-    allowed = REGRESSION_MODELS if task_type == "regression" else CLASSIFICATION_MODELS
-    allowed = allowed | {"nn_class"}
-    invalid = set(model_types) - allowed
-    if invalid:
-        raise ValueError(
-            f"Model types {sorted(invalid)} are not compatible with task_type "
-            f"'{task_type}'. Allowed models: {sorted(allowed)}."
-        )
-
-    # Cap is checked here against the full target before splitting --
-    # the trainable only sees per-fold subsets.
-    if "nn_corn" in model_types:
-        target_series = train_val[target]
-        if not pd.api.types.is_numeric_dtype(target_series):
-            raise ValueError(
-                f"nn_corn requires a numeric target; column '{target}' has "
-                f"dtype {target_series.dtype}. nn_corn is regression-only -- "
-                f"use logreg / rf_class / xgb_class / nn_class for "
-                f"categorical targets."
-            )
-        n_nan = int(target_series.isna().sum())
-        if n_nan > 0:
-            raise ValueError(
-                f"nn_corn target column '{target}' contains {n_nan} NaN "
-                f"values. Drop or impute them before the run; otherwise "
-                f"nn_corn_max_levels would be evaluated against a corrupted "
-                f"level set."
-            )
-        rounded_unique = np.unique(np.round(target_series.to_numpy()).astype(int))
-        st._check_nn_corn_levels(int(rounded_unique.size), nn_corn_max_levels)
+    # Defensive: pre-flight checks may already have run in
+    # ``find_best_model_config`` (issue_m_existing_dir.md), but this entry
+    # point is also tested / called standalone, so re-run them here.
+    _validate_run_inputs(
+        model_types=model_types,
+        task_type=task_type,
+        target=target,
+        train_val=train_val,
+        nn_corn_max_levels=nn_corn_max_levels,
+    )
 
     # First apply snapshot-related constraints for models
     model_types = model_types.copy()
 
     has_snapshots = any(_PAST_SUFFIX_RE.search(col) for col in train_val.columns)
-    all_micro = [c for c in train_val.columns if c.startswith("F")]
-    has_snapshot_nans = (
-        (pd.isna(train_val[all_micro]).values.any() if all_micro else False)
-        if has_snapshots
-        else False
-    )
-    if has_snapshots and has_snapshot_nans:
-        # Only xgb/xgb_class support native NaN handling; reject any other request
-        xgb_model = "xgb_class" if task_type == "classification" else "xgb"
-        incompatible = sorted(set(model_types) - {xgb_model})
-        if incompatible:
-            raise ValueError(
-                f"NaNs in snapshot features detected (missing_mode='nan'); only "
-                f"'{xgb_model}' supports native NaN handling. Requested model "
-                f"types {incompatible} are incompatible. Either set "
-                f"missing_mode='exclude' in split_train_test or restrict "
-                f"ls_model_types to ['{xgb_model}']."
-            )
-    elif has_snapshots and "trac" in model_types:
+    if has_snapshots and "trac" in model_types:
         # Remove trac when dynamic snapshots present
         model_types.remove("trac")
         print("Snapshots detected; removing 'trac' from model types.")
@@ -725,6 +819,7 @@ def run_all_trials(
             task_type=task_type,
             k_folds=k_folds,
             nn_corn_max_levels=nn_corn_max_levels,
+            max_trial_failure_rate=max_trial_failure_rate,
         )
         results_all[model] = result
     return results_all

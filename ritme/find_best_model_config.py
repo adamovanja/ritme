@@ -14,7 +14,21 @@ from ritme.evaluate_models import (
 )
 from ritme.feature_space.utils import _PAST_SUFFIX_RE
 from ritme.split_train_test import adaptive_k_folds
-from ritme.tune_models import DEFAULT_NN_CORN_MAX_LEVELS, run_all_trials
+from ritme.tune_models import (
+    DEFAULT_MAX_TRIAL_FAILURE_RATE,
+    DEFAULT_NN_CORN_MAX_LEVELS,
+    _validate_run_inputs,
+    run_all_trials,
+)
+
+# Files left behind by a pre-validator failure in earlier runs. When
+# ``allow_existing_tag`` is set, the existing directory is reused only if
+# it contains nothing beyond this stub set.
+_STUB_DIR_ALLOWED_FILES = frozenset({"experiment_config.json"})
+
+# Filesystem noise that should never block ``allow_existing_tag`` reuse:
+# OS / editor / Jupyter artifacts plus Python bytecode caches.
+_STUB_DIR_IGNORED_NAMES = frozenset({"__pycache__"})
 
 
 # ----------------------------------------------------------------------------
@@ -176,14 +190,39 @@ def _define_model_tracker(tracking_uri: str, path_exp: str) -> str:
 
 
 @helper_function
-def _define_experiment_path(config, path_store_model_logs):
+def _define_experiment_path(
+    config,
+    path_store_model_logs,
+    allow_existing_tag: bool = False,
+):
     # path to experiments and their logs
     path_exp = os.path.join(path_store_model_logs, config["experiment_tag"])
     if os.path.exists(path_exp):
-        raise ValueError(
-            f"This experiment tag already exists: {config['experiment_tag']}."
-            "Please use another one."
-        )
+        # Ignore OS/editor noise (.DS_Store, .ipynb_checkpoints, ...) and
+        # bytecode caches when deciding whether the directory is a stub.
+        contents = {
+            name
+            for name in os.listdir(path_exp)
+            if not name.startswith(".") and name not in _STUB_DIR_IGNORED_NAMES
+        }
+        extras = contents - _STUB_DIR_ALLOWED_FILES
+        if not allow_existing_tag or extras:
+            hint = (
+                "Please use another one."
+                if not allow_existing_tag
+                else (
+                    f"--allow-existing-tag only reuses stub directories "
+                    f"(containing nothing beyond "
+                    f"{sorted(_STUB_DIR_ALLOWED_FILES)}); found extra "
+                    f"entries: {sorted(extras)}."
+                )
+            )
+            raise ValueError(
+                f"This experiment tag already exists: "
+                f"{config['experiment_tag']}. {hint}"
+            )
+        # Reuse the stub directory: a prior pre-validator failure left
+        # only ``experiment_config.json``; overwriting it is safe.
     else:
         os.makedirs(path_exp)
     return path_exp
@@ -197,6 +236,7 @@ def find_best_model_config(
     tax: pd.DataFrame = None,
     tree_phylo: skbio.TreeNode = None,
     path_store_model_logs: str = "experiments/models",
+    allow_existing_tag: bool = False,
 ) -> tuple[dict[str, TunedModel], str]:
     """
     Find the best model configuration incl. feature representation.
@@ -223,8 +263,21 @@ def find_best_model_config(
     """
     _verify_experiment_config(config)
 
+    # ! Run pre-flight validators BEFORE creating the experiment directory
+    # so a config-rejection failure does not leave a stub on disk
+    # (issue_m_existing_dir.md).
+    _validate_run_inputs(
+        model_types=config["ls_model_types"],
+        task_type=config.get("task_type", "regression"),
+        target=config["target"],
+        train_val=train_val,
+        nn_corn_max_levels=config.get("nn_corn_max_levels", DEFAULT_NN_CORN_MAX_LEVELS),
+    )
+
     # ! Define needed paths
-    path_exp = _define_experiment_path(config, path_store_model_logs)
+    path_exp = _define_experiment_path(
+        config, path_store_model_logs, allow_existing_tag=allow_existing_tag
+    )
     _save_config(config, path_exp, "experiment_config.json")
 
     # ! Process taxonomy and phylogeny by microbial feature table
@@ -281,6 +334,9 @@ def find_best_model_config(
             nn_corn_max_levels=config.get(
                 "nn_corn_max_levels", DEFAULT_NN_CORN_MAX_LEVELS
             ),
+            max_trial_failure_rate=config.get(
+                "max_trial_failure_rate", DEFAULT_MAX_TRIAL_FAILURE_RATE
+            ),
         )
 
         # ! Get best models of this experiment
@@ -305,6 +361,7 @@ def cli_find_best_model_config(
     path_to_tax: str = None,
     path_to_tree_phylo: str = None,
     path_store_model_logs: str = "experiments/models",
+    allow_existing_tag: bool = False,
 ):
     """
     Find the best model configuration incl. feature representation.
@@ -344,7 +401,12 @@ def cli_find_best_model_config(
         tree_phylo = None
 
     best_model_dict, path_exp = find_best_model_config(
-        config, train_val, tax, tree_phylo, path_store_model_logs
+        config,
+        train_val,
+        tax,
+        tree_phylo,
+        path_store_model_logs,
+        allow_existing_tag=allow_existing_tag,
     )
 
     # save each best tuned model

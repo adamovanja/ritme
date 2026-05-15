@@ -11,6 +11,8 @@ import skbio
 from pandas.testing import assert_frame_equal, assert_series_equal
 
 from ritme.find_best_model_config import (
+    _STUB_DIR_ALLOWED_FILES,
+    _STUB_DIR_IGNORED_NAMES,
     _define_experiment_path,
     _define_model_tracker,
     _extract_mlflow_logs_to_csv,
@@ -40,7 +42,11 @@ class TestFindBestModelConfig(unittest.TestCase):
             "seed_model": 42,
             "time_budget_s": 10,
             "max_cuncurrent_trials": 2,
-            "ls_model_types": ["model1", "model2"],
+            # Real model names so _validate_run_inputs (called before
+            # _define_experiment_path) accepts them. Mock return values
+            # below still use synthetic "model1"/"model2" keys to
+            # exercise the result-dict plumbing.
+            "ls_model_types": ["linreg", "rf"],
             "model_hyperparameters": {},
         }
         # data
@@ -209,6 +215,56 @@ class TestFindBestModelConfig(unittest.TestCase):
             ):
                 _define_experiment_path(self.config, temp_dir)
 
+    def test_define_experiment_path_existing_stub_allowed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stub_path = os.path.join(temp_dir, self.config["experiment_tag"])
+            os.makedirs(stub_path)
+            with open(os.path.join(stub_path, "experiment_config.json"), "w") as f:
+                json.dump({}, f)
+            returned = _define_experiment_path(
+                self.config, temp_dir, allow_existing_tag=True
+            )
+            self.assertEqual(returned, stub_path)
+
+    def test_define_experiment_path_existing_extras_refuses(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            real_path = os.path.join(temp_dir, self.config["experiment_tag"])
+            os.makedirs(real_path)
+            with open(os.path.join(real_path, "experiment_config.json"), "w") as f:
+                json.dump({}, f)
+            with open(os.path.join(real_path, "mlflow_logs.csv"), "w") as f:
+                f.write("run_id\n")
+            with self.assertRaisesRegex(ValueError, "mlflow_logs.csv"):
+                _define_experiment_path(self.config, temp_dir, allow_existing_tag=True)
+
+    def test_define_experiment_path_ignores_hidden_files(self):
+        # OS / editor / Jupyter noise (.DS_Store, .ipynb_checkpoints,
+        # __pycache__) must not block stub reuse.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stub_path = os.path.join(temp_dir, self.config["experiment_tag"])
+            os.makedirs(stub_path)
+            with open(os.path.join(stub_path, "experiment_config.json"), "w") as f:
+                json.dump({}, f)
+            for noise in (".DS_Store", ".ipynb_checkpoints"):
+                with open(os.path.join(stub_path, noise), "w") as f:
+                    f.write("noise")
+            os.makedirs(os.path.join(stub_path, "__pycache__"))
+            returned = _define_experiment_path(
+                self.config, temp_dir, allow_existing_tag=True
+            )
+            self.assertEqual(returned, stub_path)
+
+    def test_stub_dir_allowed_files_membership(self):
+        # Pins the allowlist contents so a future maintainer cannot
+        # silently expand the set (e.g. adding mlflow_logs.csv would
+        # allow overwriting real artifacts).
+        self.assertEqual(_STUB_DIR_ALLOWED_FILES, frozenset({"experiment_config.json"}))
+
+    def test_stub_dir_ignored_names_membership(self):
+        # Symmetric pin: silently expanding the ignore set would also
+        # let real artifacts slip past the stub gate.
+        self.assertEqual(_STUB_DIR_IGNORED_NAMES, frozenset({"__pycache__"}))
+
     @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")
     @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
@@ -263,6 +319,7 @@ class TestFindBestModelConfig(unittest.TestCase):
                 task_type="regression",
                 k_folds=ANY,
                 nn_corn_max_levels=20,
+                max_trial_failure_rate=0.005,
             )
             # Verify temp storage paths are NOT under path_exp
             self.assertNotEqual(args[8], os.path.join(path_exp, "mlruns"))
@@ -297,6 +354,74 @@ class TestFindBestModelConfig(unittest.TestCase):
 
         forwarded = mock_run_all_trials.call_args.kwargs["nn_corn_max_levels"]
         self.assertEqual(forwarded, 7)
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_forwards_max_trial_failure_rate(
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        mock_run_all_trials.return_value = {"model1": MagicMock()}
+        mock_retrieve_n_init_best_models.return_value = {"model1": MagicMock()}
+
+        config = self.config.copy()
+        config["max_trial_failure_rate"] = 0.05
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            find_best_model_config(
+                config, self.train_val, self.tax, tree_phylo, temp_dir
+            )
+        forwarded = mock_run_all_trials.call_args.kwargs["max_trial_failure_rate"]
+        self.assertEqual(forwarded, 0.05)
+
+    @patch("ritme.find_best_model_config.run_all_trials")
+    def test_find_best_model_config_invalid_model_leaves_no_stub_dir(
+        self, mock_run_all_trials
+    ):
+        # Pre-flight validators fire BEFORE _define_experiment_path so a
+        # config-rejection failure leaves no stub directory on disk
+        # (issue_m_existing_dir.md).
+        config = self.config.copy()
+        config["ls_model_types"] = ["not_a_real_model"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(ValueError):
+                find_best_model_config(config, self.train_val, self.tax, None, temp_dir)
+            mock_run_all_trials.assert_not_called()
+            self.assertFalse(
+                os.path.exists(os.path.join(temp_dir, config["experiment_tag"]))
+            )
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_allow_existing_tag_reuses_stub(
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        mock_run_all_trials.return_value = {"model1": MagicMock()}
+        mock_retrieve_n_init_best_models.return_value = {"model1": MagicMock()}
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stub_dir = os.path.join(temp_dir, self.config["experiment_tag"])
+            os.makedirs(stub_dir)
+            with open(os.path.join(stub_dir, "experiment_config.json"), "w") as f:
+                json.dump({}, f)
+            _, path_exp = find_best_model_config(
+                self.config,
+                self.train_val,
+                self.tax,
+                tree_phylo,
+                temp_dir,
+                allow_existing_tag=True,
+            )
+            self.assertEqual(path_exp, stub_dir)
 
     @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")
@@ -373,6 +498,41 @@ class TestFindBestModelConfig(unittest.TestCase):
         args, _ = mock_find_best_model_config.call_args
         assert_frame_equal(args[2], self.tax)
         self.assertEqual(str(args[3]), str(self.tree_phylo))
+
+    @patch("ritme.find_best_model_config._load_experiment_config")
+    @patch("ritme.find_best_model_config.pd.read_pickle")
+    @patch("ritme.find_best_model_config.find_best_model_config")
+    @patch("ritme.find_best_model_config.save_best_models")
+    def test_cli_find_best_model_config_forwards_allow_existing_tag(
+        self,
+        mock_best_models,
+        mock_find_best_model_config,
+        mock_train_val,
+        mock_config,
+    ):
+        # Pins the Typer flag wiring: a CLI invocation with the flag
+        # must pass allow_existing_tag=True to find_best_model_config.
+        # A regression where the parameter default leaks a typer.OptionInfo
+        # (instead of a bool) would fail this test.
+        mock_config.return_value = self.config
+        mock_train_val.return_value = self.train_val
+        mock_find_best_model_config.return_value = ({}, "path/to/logs")
+        mock_best_models.return_value = None
+
+        cli_find_best_model_config(
+            "path/to/config",
+            "path/to/train_val",
+            allow_existing_tag=True,
+        )
+        kwargs = mock_find_best_model_config.call_args.kwargs
+        self.assertIs(kwargs["allow_existing_tag"], True)
+
+        # And the default path (no flag): must be exactly False, not an
+        # OptionInfo.
+        mock_find_best_model_config.reset_mock()
+        cli_find_best_model_config("path/to/config", "path/to/train_val")
+        kwargs = mock_find_best_model_config.call_args.kwargs
+        self.assertIs(kwargs["allow_existing_tag"], False)
 
     @patch("ritme.find_best_model_config._load_experiment_config")
     @patch("ritme.find_best_model_config.pd.read_pickle")
