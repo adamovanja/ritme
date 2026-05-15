@@ -57,7 +57,7 @@ Each of the four main functions exists in two forms:
 | `split_train_test()` | `cli_split_train_test()` | `ritme split-train-test` |
 | `find_best_model_config()` | `cli_find_best_model_config()` | `ritme find-best-model-config` |
 | `evaluate_tuned_models()` | `cli_evaluate_tuned_models()` | `ritme evaluate-tuned-models` |
-| `compute_shap_values()` | `cli_explain_features()` | `ritme explain-features` |
+| `explain_features()` | `cli_explain_features()` | `ritme explain-features` |
 
 Internal/private functions are decorated with `@helper_function`. Both decorators are defined in `ritme/_decorators.py` and are used purely as flags (no runtime behavior).
 
