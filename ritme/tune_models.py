@@ -337,16 +337,20 @@ def _validate_run_inputs(
         else False
     )
     if has_snapshots and has_snapshot_nans:
-        # Only xgb/xgb_class support native NaN handling; reject any other request
-        xgb_model = "xgb_class" if task_type == "classification" else "xgb"
-        incompatible = sorted(set(model_types) - {xgb_model})
+        task_models = (
+            CLASSIFICATION_MODELS
+            if task_type == "classification"
+            else REGRESSION_MODELS
+        )
+        allowed = sorted(NAN_TOLERANT_MODELS & task_models)
+        incompatible = sorted(set(model_types) - set(allowed))
         if incompatible:
             raise ValueError(
-                f"NaNs in snapshot features detected (missing_mode='nan'); only "
-                f"'{xgb_model}' supports native NaN handling. Requested model "
-                f"types {incompatible} are incompatible. Either set "
+                f"NaNs in snapshot features detected (missing_mode='nan'); "
+                f"only {allowed} support native NaN handling. Requested "
+                f"model types {incompatible} are incompatible. Either set "
                 f"missing_mode='exclude' in split_train_test or restrict "
-                f"ls_model_types to ['{xgb_model}']."
+                f"ls_model_types to {allowed}."
             )
 
 
@@ -749,34 +753,13 @@ def run_all_trials(
         nn_corn_max_levels=nn_corn_max_levels,
     )
 
-    # First apply snapshot-related constraints for models
+    # The snapshot+NaN gate runs inside ``_validate_run_inputs`` above;
+    # here we only adjust ``model_types`` for the snapshot/trac
+    # interaction (TRAC's log-contrast solver can't process snapshot
+    # data even when no NaNs are present).
     model_types = model_types.copy()
-
     has_snapshots = any(_PAST_SUFFIX_RE.search(col) for col in train_val.columns)
-    all_micro = [c for c in train_val.columns if c.startswith("F")]
-    has_snapshot_nans = (
-        (pd.isna(train_val[all_micro]).values.any() if all_micro else False)
-        if has_snapshots
-        else False
-    )
-    if has_snapshots and has_snapshot_nans:
-        task_models = (
-            CLASSIFICATION_MODELS
-            if task_type == "classification"
-            else REGRESSION_MODELS
-        )
-        allowed = sorted(NAN_TOLERANT_MODELS & task_models)
-        incompatible = sorted(set(model_types) - set(allowed))
-        if incompatible:
-            raise ValueError(
-                f"NaNs in snapshot features detected (missing_mode='nan'); "
-                f"only {allowed} support native NaN handling. Requested "
-                f"model types {incompatible} are incompatible. Either set "
-                f"missing_mode='exclude' in split_train_test or restrict "
-                f"ls_model_types to {allowed}."
-            )
-    elif has_snapshots and "trac" in model_types:
-        # Remove trac when dynamic snapshots present
+    if has_snapshots and "trac" in model_types:
         model_types.remove("trac")
         print("Snapshots detected; removing 'trac' from model types.")
 

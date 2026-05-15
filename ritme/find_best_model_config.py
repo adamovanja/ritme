@@ -17,6 +17,7 @@ from ritme.split_train_test import adaptive_k_folds
 from ritme.tune_models import (
     DEFAULT_MAX_TRIAL_FAILURE_RATE,
     DEFAULT_NN_CORN_MAX_LEVELS,
+    NAN_TOLERANT_MODELS,
     _validate_run_inputs,
     run_all_trials,
 )
@@ -29,10 +30,6 @@ _STUB_DIR_ALLOWED_FILES = frozenset({"experiment_config.json"})
 # Filesystem noise that should never block ``allow_existing_tag`` reuse:
 # OS / editor / Jupyter artifacts plus Python bytecode caches.
 _STUB_DIR_IGNORED_NAMES = frozenset({"__pycache__"})
-    DEFAULT_NN_CORN_MAX_LEVELS,
-    NAN_TOLERANT_MODELS,
-    run_all_trials,
-)
 
 
 # ----------------------------------------------------------------------------
