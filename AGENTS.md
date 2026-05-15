@@ -82,7 +82,7 @@ When testing new functionality always do it in an activated conda environment ca
 - **Compositionality per snapshot**: Microbial features within a single time point are compositional. Transforms (CLR/ILR/ALR) are applied per snapshot, never across time points.
 - **No data leakage**: Feature engineering parameters (selection, ALR denominator, enrichment schema) are learned on train and reused as-is on test via `TunedModel` state.
 - **TRAC incompatibility**: TRAC requires a single compositional snapshot + phylogenetic tree. It is automatically excluded when dynamic snapshots are detected.
-- **NaN handling**: `missing_mode="nan"` requires `ls_model_types` to contain only XGBoost; requesting any other model raises a `ValueError`. NaN rows are separated before compositional transforms and reintroduced afterward.
+- **NaN handling**: `missing_mode="nan"` restricts `ls_model_types` to the NaN-tolerant set; requesting any other model raises a `ValueError`. Numeric `data_enrich_with` columns are validated against the same set at config-resolution time. NaN rows are separated before compositional transforms and reintroduced afterward.
 - **Column naming**: Past snapshots are suffixed (`F0__t-1`, `age__t-2`); current (t0) columns remain unsuffixed. This ensures backward compatibility with the static workflow.
 - **K-fold cross-validation**: Trainables default to 5-fold cross-validation (adaptively capped by group count and smallest stratum; `k_folds: 1` opts out) and `find_best_model_config` selects the best configuration using a one-standard-error rule on the per-fold metric.
 

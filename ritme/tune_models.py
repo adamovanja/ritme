@@ -45,6 +45,11 @@ MODEL_TRAINABLES = {
 REGRESSION_MODELS = {"xgb", "nn_reg", "linreg", "rf", "trac", "nn_corn"}
 CLASSIFICATION_MODELS = {"xgb_class", "nn_class", "logreg", "rf_class"}
 
+# Trainables that accept NaN-bearing inputs without preprocessing.
+# - xgb/xgb_class: native NaN handling in DMatrix
+# - rf/rf_class:   sklearn >= 1.4 RandomForest splitter accepts NaN
+NAN_TOLERANT_MODELS = frozenset({"xgb", "xgb_class", "rf", "rf_class"})
+
 # Re-export so callers can keep importing the cap constant from ``tune_models``
 # without learning about its physical home in ``static_trainables``.
 DEFAULT_NN_CORN_MAX_LEVELS = st.DEFAULT_NN_CORN_MAX_LEVELS
@@ -643,16 +648,20 @@ def run_all_trials(
         else False
     )
     if has_snapshots and has_snapshot_nans:
-        # Only xgb/xgb_class support native NaN handling; reject any other request
-        xgb_model = "xgb_class" if task_type == "classification" else "xgb"
-        incompatible = sorted(set(model_types) - {xgb_model})
+        task_models = (
+            CLASSIFICATION_MODELS
+            if task_type == "classification"
+            else REGRESSION_MODELS
+        )
+        allowed = sorted(NAN_TOLERANT_MODELS & task_models)
+        incompatible = sorted(set(model_types) - set(allowed))
         if incompatible:
             raise ValueError(
-                f"NaNs in snapshot features detected (missing_mode='nan'); only "
-                f"'{xgb_model}' supports native NaN handling. Requested model "
-                f"types {incompatible} are incompatible. Either set "
+                f"NaNs in snapshot features detected (missing_mode='nan'); "
+                f"only {allowed} support native NaN handling. Requested "
+                f"model types {incompatible} are incompatible. Either set "
                 f"missing_mode='exclude' in split_train_test or restrict "
-                f"ls_model_types to ['{xgb_model}']."
+                f"ls_model_types to {allowed}."
             )
     elif has_snapshots and "trac" in model_types:
         # Remove trac when dynamic snapshots present

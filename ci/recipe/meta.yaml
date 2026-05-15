@@ -40,7 +40,7 @@ requirements:
     - conda-forge::ray-default >=2.54
     - conda-forge::ray-tune >=2.54
     - scikit-bio
-    - scikit-learn
+    - scikit-learn >=1.4
     - scipy
     - conda-forge::seaborn
     - conda-forge::shap
