@@ -1641,10 +1641,35 @@ def load_data(X_train, y_train, X_val, y_val, config, seed_model, num_workers=2)
         torch.tensor(X_val, dtype=torch.float32),
         torch.tensor(y_val, dtype=torch.float32),
     )
+    # ``BatchNorm1d`` (used as ``NeuralNet.input_norm``) raises on a
+    # 1-sample batch in train mode. A single-sample training set cannot
+    # produce a usable batch under any ``batch_size``, so refuse it
+    # explicitly rather than dropping silently to a zero-batch loader
+    # that would record random-init metrics as a "successful" trial.
+    n_train = len(train_dataset)
+    if n_train < 2:
+        raise ValueError(
+            f"NeuralNet trainables require at least 2 training samples "
+            f"(got {n_train}); BatchNorm1d cannot compute batch "
+            f"statistics from a single sample."
+        )
+    # Drop the partial last batch ONLY when it would have size 1, so
+    # larger remainders still contribute gradient updates and we lose
+    # at most one sample per epoch (rotated each epoch because
+    # ``shuffle=True``).
+    drop_last_train = n_train % config["batch_size"] == 1
+    if drop_last_train:
+        # Surface the per-trial drop so coverage discrepancies in logs
+        # are traceable; rationale lives in the comment above.
+        print(
+            f"NeuralNet load_data: drop_last=True "
+            f"(n_train={n_train}, batch_size={config['batch_size']})."
+        )
     train_loader = DataLoader(
         train_dataset,
         batch_size=config["batch_size"],
         shuffle=True,
+        drop_last=drop_last_train,
         num_workers=num_workers,
         worker_init_fn=seed_worker,
         generator=g,

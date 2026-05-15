@@ -53,6 +53,95 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(obs_rmse, exp_rmse)
         self.assertEqual(obs_r2, exp_r2)
 
+    @parameterized.expand(
+        [
+            # (n_train, batch_size, expected_drop_last)
+            # Remainder == 1 -> drop_last must fire to spare BatchNorm1d
+            # (issue_m_batchnorm_1.md).
+            ("size_1_remainder_drops", 257, 256, True),
+            ("size_2_remainder_keeps", 258, 256, False),
+            ("exact_divisor_keeps", 256, 256, False),
+            ("under_batch_keeps", 100, 256, False),
+            ("small_batch_size_1_remainder_drops", 33, 32, True),
+        ]
+    )
+    def test_load_data_train_drop_last(self, _name, n_train, batch_size, expected):
+        X_train = np.random.rand(n_train, 3).astype(np.float32)
+        y_train = np.random.rand(n_train).astype(np.float32)
+        X_val = np.random.rand(4, 3).astype(np.float32)
+        y_val = np.random.rand(4).astype(np.float32)
+        train_loader, val_loader = st.load_data(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            {"batch_size": batch_size},
+            seed_model=42,
+            num_workers=0,
+        )
+        self.assertEqual(train_loader.drop_last, expected)
+        # val_loader must never drop -- eval-mode BatchNorm uses running
+        # stats so it handles size-1 batches fine and dropping would
+        # skew evaluation metrics.
+        self.assertFalse(val_loader.drop_last)
+
+    def test_load_data_drop_last_prevents_batchnorm_crash(self):
+        # End-to-end regression: with N=257 / batch_size=256 the final
+        # batch would be size 1 and BatchNorm1d.train() raises on it.
+        # batch_count==1 also pins that the size-1 tail was dropped, not
+        # the full first batch (which would yield batch_count==0).
+        X_train = np.random.rand(257, 4).astype(np.float32)
+        y_train = np.random.rand(257).astype(np.float32)
+        train_loader, _ = st.load_data(
+            X_train,
+            y_train,
+            X_train[:4],
+            y_train[:4],
+            {"batch_size": 256},
+            seed_model=42,
+            num_workers=0,
+        )
+        bn = torch.nn.BatchNorm1d(4)
+        bn.train()
+        for x_batch, _ in train_loader:
+            bn(x_batch)
+        batch_count = sum(1 for _ in train_loader)
+        self.assertEqual(batch_count, 1)
+
+    def test_load_data_rejects_single_sample_train(self):
+        # n_train == 1 would land in `drop_last_train=True` -> zero
+        # batches -> silent garbage trial. Refuse it loudly instead.
+        with self.assertRaisesRegex(ValueError, "at least 2 training samples"):
+            st.load_data(
+                np.zeros((1, 3), dtype=np.float32),
+                np.zeros((1,), dtype=np.float32),
+                np.zeros((4, 3), dtype=np.float32),
+                np.zeros((4,), dtype=np.float32),
+                {"batch_size": 32},
+                seed_model=42,
+                num_workers=0,
+            )
+
+    def test_load_data_val_loader_handles_size_one_batch(self):
+        # Asymmetry guarantee: val_loader.drop_last must stay False
+        # because eval-mode BatchNorm uses running stats and tolerates a
+        # size-1 batch. Pins the asymmetry by running a real size-1 val
+        # batch through eval-mode BatchNorm1d.
+        _, val_loader = st.load_data(
+            np.random.rand(32, 4).astype(np.float32),
+            np.random.rand(32).astype(np.float32),
+            np.random.rand(1, 4).astype(np.float32),
+            np.random.rand(1).astype(np.float32),
+            {"batch_size": 256},
+            seed_model=42,
+            num_workers=0,
+        )
+        bn = torch.nn.BatchNorm1d(4)
+        bn.eval()
+        for x_batch, _ in val_loader:
+            self.assertEqual(x_batch.shape[0], 1)
+            bn(x_batch)
+
     def test_predict_rmse_r2_trac(self):
         alpha = np.array([1.0, 0.1, 0.1])
         obs_rmse, obs_r2 = st._predict_rmse_r2_trac(alpha, self.X, self.y)
