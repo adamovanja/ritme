@@ -22,7 +22,7 @@ conda install -c adamova -c conda-forge -c bioconda -c pytorch ritme
 | split_train_test       | Preprocess your dataset and split it into train-test (with static/dynamic feature, stratification and grouping options)                         |
 | find_best_model_config | Find the best model configuration (incl. feature representation and model class) |
 | evaluate_tuned_models  | Evaluate the best model configuration on the complete train and a left-out test set                     |
-| explain_features       | Compute SHAP feature importance for a specified best tuned model                        |
+| explain_features       | Compute feature importance for a specified best tuned model — coefficients for linear/sparse-linear models (`linreg`, `logreg`, `trac`), SHAP for tree- and neural-network-based models |
 
 ## Preprocess your dataset and split it into train-test with `split_train_test`
 
@@ -107,24 +107,37 @@ metrics_df, fig = evaluate_tuned_models(best_model_dict, exp_config, train, test
 
 Via the CLI, metrics are saved to `best_metrics.csv` and plots to `best_true_vs_pred.png` in the experiment directory.
 
-## Explain feature importance with `compute_shap_values`
+## Explain feature importance with `explain_features`
 
-`compute_shap_values` uses [SHAP](https://shap.readthedocs.io/) (SHapley Additive exPlanations) to understand which features drive a single model's predictions. It builds the processed design matrix from raw data (reusing the exact feature engineering pipeline learned during training) and computes SHAP values on a test set. Supported model types: `linreg`, `logreg`, `rf`, `rf_class`, `xgb`, `xgb_class`, and all neural networks. TRAC models are not supported because their coefficients already provide direct feature importance.
+`explain_features` returns per-feature importance for a single tuned model. It builds the processed design matrix from raw data (reusing the exact feature engineering pipeline learned during training) and dispatches automatically on the underlying trainable:
+
+- **Coefficient-bearing models** (`linreg`, `logreg`, `trac`): returns a long-form per-feature coefficient `pd.DataFrame` (the model *is* its coefficients, so SHAP is unnecessary).
+- **Tree- and neural-network-based models** (`rf`, `rf_class`, `xgb`, `xgb_class`, `nn_*`): returns a `shap.Explanation` computed via [SHAP](https://shap.readthedocs.io/).
 
 ```python
-from ritme.explain_features import compute_shap_values, plot_shap_summary, plot_shap_bar
+import pandas as pd
 
-# compute SHAP values on test set (train_val is used as background)
-shap_values = compute_shap_values(best_model_dict["linreg"], train_val, test)
+from ritme.explain_features import (
+    explain_features,
+    plot_feature_importance_bar,
+    plot_shap_summary,
+    plot_shap_bar,
+)
+
+# automatic dispatch — returns a DataFrame for linreg, a shap.Explanation otherwise
+importance = explain_features(best_model_dict["linreg"], train_val, test)
 
 # plot
-plot_shap_summary(shap_values, max_display=15, show=True)
-plot_shap_bar(shap_values, max_display=15, show=True)
+if isinstance(importance, pd.DataFrame):
+    plot_feature_importance_bar(importance, max_display=15, show=True)
+else:
+    plot_shap_summary(importance, max_display=15, show=True)
+    plot_shap_bar(importance, max_display=15, show=True)
 ```
 
-The returned `shap.Explanation` object can also be used directly with any plotting function from the [shap](https://shap.readthedocs.io/) library.
+If you specifically want SHAP on a linear model (skipping the coefficient dispatch), call `compute_shap_values` directly; it supports every trainable except `trac`.
 
-Via the CLI, SHAP values, summary plots, and bar plots are saved in the experiment directory:
+Via the CLI, artifacts are saved in the experiment directory. For coefficient-bearing models a `feature_importance_<model_type>.csv` and `feature_importance_bar_<model_type>.png` are written; for tree/NN models the SHAP triple (`shap_values_<m>.pkl`, `shap_summary_<m>.png`, `shap_bar_<m>.png`) is written:
 
 ```shell
 ritme explain-features \

@@ -20,6 +20,7 @@ from ritme.explain_features import (
     cli_explain_features,
     compute_feature_importance,
     compute_shap_values,
+    explain_features,
     plot_feature_importance_bar,
     plot_shap_bar,
     plot_shap_summary,
@@ -854,6 +855,175 @@ class TestCliExplainFeaturesCoefDispatch(unittest.TestCase):
 
         mock_compute_shap_values.assert_not_called()
         plt.close("all")
+
+    @patch("ritme.explain_features.load_best_model")
+    @patch("pandas.read_pickle")
+    def test_cli_rf_writes_shap_triple_through_new_dispatch(
+        self,
+        mock_read_pickle,
+        mock_load_best_model,
+    ):
+        """End-to-end CLI dispatch for a non-coef model (rf): confirms the
+        new ``explain_features`` dispatcher routes rf to the SHAP path so
+        the CLI persists ``shap_values_<m>.pkl`` + summary + bar PNGs and
+        does NOT write a ``feature_importance_<m>.csv``."""
+        from sklearn.ensemble import RandomForestRegressor
+
+        current_dir = os.path.dirname(__file__)
+        data = pd.read_csv(
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        tax_df = pd.read_csv(
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        mock_read_pickle.side_effect = [data, data]
+
+        tmodel = TunedModel(
+            model=RandomForestRegressor(n_estimators=5, random_state=42),
+            data_config={
+                "data_aggregation": None,
+                "data_transform": None,
+                "data_selection": None,
+                "data_enrich": None,
+                "data_enrich_with": None,
+            },
+            tax=tax_df,
+            path="",
+            model_type="rf",
+        )
+        X = tmodel.build_design_matrix(data, split="train")
+        tmodel.model.fit(X.values, np.arange(X.shape[0], dtype=float))
+        mock_load_best_model.return_value = tmodel
+
+        with tempfile.TemporaryDirectory() as path_to_exp:
+            cli_explain_features(path_to_exp, "rf", "train.pkl", "test.pkl")
+            for shap_name in (
+                "shap_values_rf.pkl",
+                "shap_summary_rf.png",
+                "shap_bar_rf.png",
+            ):
+                self.assertTrue(
+                    os.path.exists(os.path.join(path_to_exp, shap_name)),
+                    f"Expected SHAP artifact {shap_name} to be written.",
+                )
+            self.assertFalse(
+                os.path.exists(os.path.join(path_to_exp, "feature_importance_rf.csv"))
+            )
+        plt.close("all")
+
+
+class TestExplainFeatures(unittest.TestCase):
+    """The Python API ``explain_features`` must dispatch coef vs SHAP and
+    return the corresponding object type without writing anything to disk."""
+
+    def setUp(self):
+        current_dir = os.path.dirname(__file__)
+        self.data = pd.read_csv(
+            os.path.join(current_dir, "data/example_feature_table.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        self.tax_df = pd.read_csv(
+            os.path.join(current_dir, "data/example_taxonomy.tsv"),
+            sep="\t",
+            index_col=0,
+        )
+        self.data_config = {
+            "data_aggregation": None,
+            "data_transform": None,
+            "data_selection": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+
+    def _make_tmodel_with_linreg(self):
+        from sklearn.linear_model import ElasticNet
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        pipeline = Pipeline(
+            [("scaler", StandardScaler()), ("linreg", ElasticNet(alpha=0.01))]
+        )
+        tmodel = TunedModel(
+            model=pipeline,
+            data_config=self.data_config,
+            tax=self.tax_df,
+            path="",
+            model_type="linreg",
+        )
+        X = tmodel.build_design_matrix(self.data, split="train")
+        tmodel.model.fit(X.values, np.arange(X.shape[0], dtype=float))
+        return tmodel
+
+    def _make_tmodel_with_rf(self):
+        from sklearn.ensemble import RandomForestRegressor
+
+        tmodel = TunedModel(
+            model=RandomForestRegressor(n_estimators=5, random_state=42),
+            data_config=self.data_config,
+            tax=self.tax_df,
+            path="",
+            model_type="rf",
+        )
+        X = tmodel.build_design_matrix(self.data, split="train")
+        tmodel.model.fit(X.values, np.arange(X.shape[0], dtype=float))
+        return tmodel
+
+    def test_explain_features_returns_dataframe_for_linreg(self):
+        tmodel = self._make_tmodel_with_linreg()
+        train = self.data.iloc[:7]
+        test = self.data.iloc[7:]
+        result = explain_features(tmodel, train, test)
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertEqual(
+            sorted(result.columns),
+            sorted(["feature", "coefficient", "abs_coefficient"]),
+        )
+
+    def test_explain_features_returns_explanation_for_rf(self):
+        tmodel = self._make_tmodel_with_rf()
+        train = self.data.iloc[:7]
+        test = self.data.iloc[7:]
+        result = explain_features(tmodel, train, test)
+        self.assertIsInstance(result, shap.Explanation)
+
+    def test_explain_features_forwards_max_background_samples_to_shap(self):
+        """``max_background_samples`` is SHAP-only; the dispatcher must
+        forward it untouched into ``compute_shap_values``."""
+        tmodel = self._make_tmodel_with_rf()
+        train = self.data.iloc[:7]
+        test = self.data.iloc[7:]
+        with patch(
+            "ritme.explain_features.compute_shap_values"
+        ) as mock_compute_shap_values:
+            mock_compute_shap_values.return_value = shap.Explanation(
+                values=np.zeros((1, 1)),
+                base_values=np.zeros(1),
+                data=np.zeros((1, 1)),
+                feature_names=["F1"],
+            )
+            explain_features(tmodel, train, test, max_background_samples=3)
+        mock_compute_shap_values.assert_called_once()
+        _, kwargs = mock_compute_shap_values.call_args
+        self.assertEqual(kwargs.get("max_background_samples"), 3)
+
+    def test_explain_features_returns_dataframe_for_trac(self):
+        a_df = pd.DataFrame({"n1": [1, 0], "n2": [0, 1]}, index=["F1", "F2"])
+        alpha_df = pd.DataFrame(
+            {"alpha": [0.1, 0.5, -0.3]}, index=["intercept", "n1", "n2"]
+        )
+        tmodel = MagicMock(spec=TunedModel)
+        tmodel.model = {"model": alpha_df, "matrix_a": a_df}
+        # build_design_matrix is mocked because TRAC ignores feature_names
+        # but the call is still made for symmetry with the linear branch.
+        tmodel.build_design_matrix.return_value = pd.DataFrame(columns=["F1", "F2"])
+        result = explain_features(tmodel, pd.DataFrame(), pd.DataFrame())
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertEqual(sorted(result["feature"].tolist()), ["n1", "n2"])
 
 
 if __name__ == "__main__":

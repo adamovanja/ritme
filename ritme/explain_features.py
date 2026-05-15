@@ -204,7 +204,8 @@ def compute_feature_importance(
     if not _is_coef_model(tmodel.model):
         raise TypeError(
             "compute_feature_importance only supports coefficient-bearing "
-            "models (linreg / logreg / trac). Use compute_shap_values for "
+            "models (linreg / logreg / trac). Use explain_features for "
+            "automatic dispatch, or compute_shap_values directly for "
             "tree- and neural-network-based trainables."
         )
     X_train = tmodel.build_design_matrix(train_val, split="train")
@@ -281,6 +282,11 @@ def compute_shap_values(
 ) -> shap.Explanation:
     """Compute SHAP values for the test set using a single trained model.
 
+    Most callers should use :func:`explain_features` instead, which
+    automatically dispatches between SHAP and coefficient-based importance.
+    Call this directly only to force SHAP on a coefficient-bearing model
+    (``linreg`` / ``logreg``); ``trac`` is unsupported on this path.
+
     Args:
         tmodel: A fitted TunedModel (must have been run on train split first).
         train_val: Training data used as SHAP background.
@@ -343,7 +349,8 @@ def plot_shap_summary(
     per class in a vertically stacked figure, using ``plot_type``.
 
     Args:
-        shap_values: SHAP Explanation object from ``compute_shap_values``.
+        shap_values: SHAP Explanation object from ``explain_features``
+            (or ``compute_shap_values``).
         max_display: Maximum number of features to display.
         plot_type: One of "dot" (beeswarm, default), "bar", "violin".
         show: When True, render via ``plt.show()`` and return ``None`` (so
@@ -418,7 +425,8 @@ def plot_shap_bar(
     class in a vertically stacked figure.
 
     Args:
-        shap_values: SHAP Explanation object from ``compute_shap_values``.
+        shap_values: SHAP Explanation object from ``explain_features``
+            (or ``compute_shap_values``).
         max_display: Maximum number of features to display.
         show: When True, render via ``plt.show()`` and return ``None`` (so
             Jupyter does not auto-render the return value, causing a duplicate
@@ -481,6 +489,45 @@ def plot_shap_bar(
 
 # ----------------------------------------------------------------------------
 @main_function
+def explain_features(
+    tmodel: TunedModel,
+    train_val: pd.DataFrame,
+    test: pd.DataFrame,
+    max_background_samples: Optional[int] = None,
+) -> pd.DataFrame | shap.Explanation:
+    """Compute feature importance for a single tuned model.
+
+    Dispatches based on the underlying trainable:
+
+    - Coefficient-bearing models (``linreg``, ``logreg``, ``trac``): returns a
+      long-form per-feature coefficient DataFrame via
+      :func:`compute_feature_importance`. ``test`` and
+      ``max_background_samples`` are unused on this path.
+    - Tree- and neural-network-based models: returns a
+      :class:`shap.Explanation` via :func:`compute_shap_values`.
+
+    Args:
+        tmodel: A fitted TunedModel.
+        train_val: Training data; used as SHAP background for the SHAP path
+            and to recover the design-matrix column order for the
+            coefficient path.
+        test: Test data on which SHAP values are computed. Unused for the
+            coefficient path.
+        max_background_samples: SHAP-only — if set, subsample the
+            background to this many rows.
+
+    Returns:
+        A long-form ``pd.DataFrame`` (coefficient path) or a
+        ``shap.Explanation`` (SHAP path).
+    """
+    if _is_coef_model(tmodel.model):
+        return compute_feature_importance(tmodel, train_val)
+    return compute_shap_values(
+        tmodel, train_val, test, max_background_samples=max_background_samples
+    )
+
+
+@main_function
 def cli_explain_features(
     path_to_exp: str,
     model_type: str,
@@ -489,11 +536,12 @@ def cli_explain_features(
     max_display: int = 20,
     max_background_samples: Optional[int] = None,
 ) -> None:
-    """Compute feature importance for a single best tuned model.
+    """Compute feature importance for a single best tuned model and write
+    artifacts to disk.
 
-    For coefficient-bearing trainables (``linreg``, ``logreg``, ``trac``) the
-    coefficients themselves are emitted; SHAP is skipped entirely. For
-    tree- and neural-network-based trainables SHAP is computed as before.
+    Thin CLI wrapper around :func:`explain_features` — loads the pickled
+    train/test DataFrames + best-model pickle, delegates the dispatch, and
+    persists the result.
 
     Args:
         path_to_exp: Path to the experiment directory containing
@@ -520,14 +568,20 @@ def cli_explain_features(
 
     tmodel = load_best_model(model_type, path_to_exp)
 
-    if _is_coef_model(tmodel.model):
-        importance = compute_feature_importance(tmodel, train_val)
+    result = explain_features(
+        tmodel,
+        train_val,
+        test,
+        max_background_samples=max_background_samples,
+    )
+
+    if isinstance(result, pd.DataFrame):
         csv_path = os.path.join(path_to_exp, f"feature_importance_{model_type}.csv")
-        importance.to_csv(csv_path, index=False)
+        result.to_csv(csv_path, index=False)
         print(f"Feature importance (coefficients) saved in {csv_path}.")
 
         fig_bar = plot_feature_importance_bar(
-            importance, max_display=max_display, show=False
+            result, max_display=max_display, show=False
         )
         assert fig_bar is not None  # show=False guarantees a Figure
         bar_path = os.path.join(path_to_exp, f"feature_importance_bar_{model_type}.png")
@@ -536,12 +590,7 @@ def cli_explain_features(
         print(f"Feature importance bar plot saved in {bar_path}.")
         return
 
-    explanation = compute_shap_values(
-        tmodel,
-        train_val,
-        test,
-        max_background_samples=max_background_samples,
-    )
+    explanation = result
 
     sv_path = os.path.join(path_to_exp, f"shap_values_{model_type}.pkl")
     with open(sv_path, "wb") as f:
