@@ -20,6 +20,7 @@ from ritme.model_space import static_searchspace as ss
 from ritme.tune_models import (
     DEFAULT_MAX_TRIAL_FAILURE_RATE,
     MODEL_TRAINABLES,
+    NAN_TOLERANT_MODELS,
     OPTUNA_SAMPLER_CLASSES,
     _adaptive_n_startup_trials,
     _check_for_errors_in_trials,
@@ -53,6 +54,13 @@ class TestHelpersTuneModels(unittest.TestCase):
     def test_get_slurm_resource_invalid(self):
         # Test when the environment variable is invalid
         self.assertEqual(_get_slurm_resource("SLURM_CPUS_PER_TASK"), 0)
+
+    def test_nan_tolerant_models_constant(self):
+        # Guard against silent shrinking of the NaN-tolerant whitelist.
+        self.assertEqual(
+            NAN_TOLERANT_MODELS,
+            frozenset({"xgb", "xgb_class", "rf", "rf_class"}),
+        )
 
     def test_check_for_errors_in_trials_no_errors(self):
         mock_result = MagicMock(spec=ResultGrid)
@@ -678,8 +686,9 @@ class TestMainTuneModels(unittest.TestCase):
         self.assertNotIn("trac", results)
 
     @patch("ritme.tune_models.run_trials")
-    def test_run_all_trials_nan_snapshots_rejects_non_xgb(self, mock_run_trials):
-        # dataframe with NaN in snapshot features
+    def test_run_all_trials_nan_snapshots_rejects_non_nan_tolerant(
+        self, mock_run_trials
+    ):
         self.train_val = pd.DataFrame(
             {
                 "F1": [0.1, 0.2],
@@ -693,8 +702,8 @@ class TestMainTuneModels(unittest.TestCase):
         )
         mock_result = MagicMock(spec=ResultGrid)
         mock_run_trials.return_value = mock_result
-        model_types = ["xgb", "rf", "trac"]
-        with self.assertRaisesRegex(ValueError, r"NaNs in snapshot features"):
+        model_types = ["xgb", "rf", "linreg", "trac"]
+        with self.assertRaises(ValueError) as ctx:
             run_all_trials(
                 train_val=self.train_val,
                 target=self.target,
@@ -712,11 +721,27 @@ class TestMainTuneModels(unittest.TestCase):
                 model_types=model_types,
                 model_hyperparameters=self.model_hyperparameters,
             )
+        msg = str(ctx.exception)
+        self.assertIn("NaNs in snapshot features", msg)
+        # Regression task: allowed list must mention rf+xgb and NOT the
+        # *_class counterparts.
+        self.assertIn("'xgb'", msg)
+        self.assertIn("'rf'", msg)
+        self.assertNotIn("'xgb_class'", msg)
+        self.assertNotIn("'rf_class'", msg)
         mock_run_trials.assert_not_called()
 
+    @parameterized.expand(
+        [
+            (["xgb"],),
+            (["rf"],),
+            (["xgb", "rf"],),
+        ]
+    )
     @patch("ritme.tune_models.run_trials")
-    def test_run_all_trials_nan_snapshots_xgb_only_ok(self, mock_run_trials):
-        # dataframe with NaN in snapshot features; only xgb requested
+    def test_run_all_trials_nan_snapshots_xgb_or_rf_ok(
+        self, model_types, mock_run_trials
+    ):
         self.train_val = pd.DataFrame(
             {
                 "F1": [0.1, 0.2],
@@ -744,10 +769,10 @@ class TestMainTuneModels(unittest.TestCase):
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
             experiment_tag=self.experiment_tag,
-            model_types=["xgb"],
+            model_types=list(model_types),
             model_hyperparameters=self.model_hyperparameters,
         )
-        self.assertEqual(list(results.keys()), ["xgb"])
+        self.assertEqual(sorted(results.keys()), sorted(model_types))
 
     @patch("ritme.tune_models.init")
     @patch("ritme.tune_models.ray.cluster_resources")
@@ -851,8 +876,9 @@ class TestMainTuneModels(unittest.TestCase):
             self.assertEqual(call.kwargs.get("task_type"), "classification")
 
     @patch("ritme.tune_models.run_trials")
-    def test_run_all_trials_nan_snapshots_rejects_non_xgb_class(self, mock_run_trials):
-        # dataframe with NaN in snapshot features
+    def test_run_all_trials_nan_snapshots_rejects_non_nan_tolerant_class(
+        self, mock_run_trials
+    ):
         self.train_val = pd.DataFrame(
             {
                 "F1": [0.1, 0.2],
@@ -865,7 +891,7 @@ class TestMainTuneModels(unittest.TestCase):
             }
         )
         model_types = ["xgb_class", "rf_class", "logreg"]
-        with self.assertRaisesRegex(ValueError, r"NaNs in snapshot features"):
+        with self.assertRaises(ValueError) as ctx:
             run_all_trials(
                 train_val=self.train_val,
                 target=self.target,
@@ -884,11 +910,27 @@ class TestMainTuneModels(unittest.TestCase):
                 model_hyperparameters=self.model_hyperparameters,
                 task_type="classification",
             )
+        msg = str(ctx.exception)
+        self.assertIn("NaNs in snapshot features", msg)
+        # Classification task: allowed list must mention *_class
+        # counterparts and NOT the bare regression names.
+        self.assertIn("'xgb_class'", msg)
+        self.assertIn("'rf_class'", msg)
+        self.assertNotIn("'xgb'", msg)
+        self.assertNotIn("'rf'", msg)
         mock_run_trials.assert_not_called()
 
+    @parameterized.expand(
+        [
+            (["xgb_class"],),
+            (["rf_class"],),
+            (["xgb_class", "rf_class"],),
+        ]
+    )
     @patch("ritme.tune_models.run_trials")
-    def test_run_all_trials_nan_snapshots_xgb_class_only_ok(self, mock_run_trials):
-        # dataframe with NaN in snapshot features; only xgb_class requested
+    def test_run_all_trials_nan_snapshots_xgb_class_or_rf_class_ok(
+        self, model_types, mock_run_trials
+    ):
         self.train_val = pd.DataFrame(
             {
                 "F1": [0.1, 0.2],
@@ -916,11 +958,11 @@ class TestMainTuneModels(unittest.TestCase):
             time_budget_s=self.time_budget_s,
             max_concurrent_trials=self.max_concurrent_trials,
             experiment_tag=self.experiment_tag,
-            model_types=["xgb_class"],
+            model_types=list(model_types),
             model_hyperparameters=self.model_hyperparameters,
             task_type="classification",
         )
-        self.assertEqual(list(results.keys()), ["xgb_class"])
+        self.assertEqual(sorted(results.keys()), sorted(model_types))
 
     @patch("ritme.tune_models.run_trials")
     def test_run_all_trials_classification_hparams_fallback_rf_class(

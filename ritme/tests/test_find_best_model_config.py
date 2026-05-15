@@ -6,6 +6,7 @@ import unittest
 from io import StringIO
 from unittest.mock import ANY, MagicMock, patch
 
+import numpy as np
 import pandas as pd
 import skbio
 from pandas.testing import assert_frame_equal, assert_series_equal
@@ -22,6 +23,7 @@ from ritme.find_best_model_config import (
     _process_phylogeny,
     _process_taxonomy,
     _save_config,
+    _verify_data_enrich_compat,
     _verify_experiment_config,
     cli_find_best_model_config,
     find_best_model_config,
@@ -113,6 +115,121 @@ class TestFindBestModelConfig(unittest.TestCase):
         config["tracking_uri"] = "invalid"
         with self.assertRaises(ValueError):
             _verify_experiment_config(config)
+
+    def _make_enrich_data(self, bmi_values=(22.0, 23.0, 24.0), site_values=None):
+        if site_values is None:
+            site_values = ["gut", "skin", "gut"]
+        return pd.DataFrame(
+            {
+                "F1": [0.1, 0.2, 0.3],
+                "F2": [0.4, 0.5, 0.6],
+                "bmi": list(bmi_values),
+                "body-site": pd.Series(site_values, dtype="object"),
+                "target_column": [1.0, 2.0, 3.0],
+            }
+        )
+
+    @staticmethod
+    def _enrich_config(
+        *,
+        data_enrich_with,
+        ls_model_types,
+        data_enrich_options=None,
+        model_hyperparameters_extra=None,
+    ):
+        mh = dict(model_hyperparameters_extra or {})
+        if data_enrich_with is not None:
+            mh["data_enrich_with"] = data_enrich_with
+        if data_enrich_options is not None:
+            mh["data_enrich_options"] = data_enrich_options
+        return {
+            "ls_model_types": list(ls_model_types),
+            "model_hyperparameters": mh,
+        }
+
+    def test_verify_data_enrich_compat_no_enrich_with(self):
+        # No data_enrich_with means no metadata is injected, so the
+        # validator must not fire regardless of requested models.
+        for value in (None, []):
+            with self.subTest(data_enrich_with=value):
+                config = self._enrich_config(
+                    data_enrich_with=value, ls_model_types=["linreg"]
+                )
+                train_val = self._make_enrich_data(bmi_values=[22.0, np.nan, 24.0])
+                _verify_data_enrich_compat(config, train_val)
+        empty_mh_config = {
+            "ls_model_types": ["linreg"],
+            "model_hyperparameters": {},
+        }
+        _verify_data_enrich_compat(empty_mh_config, self._make_enrich_data())
+
+    def test_verify_data_enrich_compat_options_exclude_metadata(self):
+        # data_enrich_options explicitly restricted to non-metadata modes ->
+        # no NaN can reach the trainable, so validator no-ops.
+        config = self._enrich_config(
+            data_enrich_with=["bmi"],
+            ls_model_types=["linreg"],
+            data_enrich_options=[None, "shannon"],
+        )
+        train_val = self._make_enrich_data(bmi_values=[22.0, np.nan, 24.0])
+        _verify_data_enrich_compat(config, train_val)
+
+    def test_verify_data_enrich_compat_no_nan(self):
+        config = self._enrich_config(
+            data_enrich_with=["bmi"], ls_model_types=["linreg"]
+        )
+        _verify_data_enrich_compat(config, self._make_enrich_data())
+
+    def test_verify_data_enrich_compat_only_tolerant_models(self):
+        config = self._enrich_config(
+            data_enrich_with=["bmi"], ls_model_types=["xgb", "rf"]
+        )
+        train_val = self._make_enrich_data(bmi_values=[22.0, np.nan, 24.0])
+        _verify_data_enrich_compat(config, train_val)
+
+    def test_verify_data_enrich_compat_categorical_with_nan_passes(self):
+        # body-site is object/categorical -> enrich_features one-hots it via
+        # pd.get_dummies, which never propagates NaN to the feature matrix.
+        config = self._enrich_config(
+            data_enrich_with=["body-site"], ls_model_types=["linreg"]
+        )
+        train_val = self._make_enrich_data(site_values=["gut", None, "skin"])
+        _verify_data_enrich_compat(config, train_val)
+
+    def test_verify_data_enrich_compat_raises_with_nan_and_intolerant(self):
+        config = self._enrich_config(
+            data_enrich_with=["bmi"], ls_model_types=["xgb", "linreg"]
+        )
+        train_val = self._make_enrich_data(bmi_values=[22.0, np.nan, np.nan])
+        with self.assertRaises(ValueError) as ctx:
+            _verify_data_enrich_compat(config, train_val)
+        msg = str(ctx.exception)
+        self.assertIn("bmi", msg)
+        self.assertRegex(msg, r"'bmi'\D*\b2\b")
+        # xgb is tolerant: must NOT appear in the intolerant-models list
+        # (it still appears in the remediation suggestion downstream).
+        self.assertRegex(msg, r"requested model types \[[^\]]*'linreg'[^\]]*\]")
+        self.assertNotRegex(msg, r"requested model types \[[^\]]*'xgb'[^\]]*\]")
+
+    def test_verify_data_enrich_compat_multi_column_summary(self):
+        train_val = self._make_enrich_data(bmi_values=[22.0, np.nan, np.nan])
+        train_val["age"] = [np.nan, 30.0, 40.0]
+        config = self._enrich_config(
+            data_enrich_with=["bmi", "age"], ls_model_types=["linreg"]
+        )
+        with self.assertRaises(ValueError) as ctx:
+            _verify_data_enrich_compat(config, train_val)
+        msg = str(ctx.exception)
+        self.assertRegex(msg, r"'bmi'\D*\b2\b")
+        self.assertRegex(msg, r"'age'\D*\b1\b")
+
+    def test_verify_data_enrich_compat_skips_missing_columns(self):
+        # Columns absent from train_val are delegated to enrich_features
+        # (see enrich_features.py:46-52) which raises its own ValueError.
+        config = self._enrich_config(
+            data_enrich_with=["not_in_df"], ls_model_types=["linreg"]
+        )
+        _verify_data_enrich_compat(config, self._make_enrich_data())
 
     def test_save_config(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -264,6 +381,37 @@ class TestFindBestModelConfig(unittest.TestCase):
         # Symmetric pin: silently expanding the ignore set would also
         # let real artifacts slip past the stub gate.
         self.assertEqual(_STUB_DIR_IGNORED_NAMES, frozenset({"__pycache__"}))
+    @patch("ritme.find_best_model_config.run_all_trials")
+    def test_find_best_model_config_aborts_on_enrich_nan_before_path_creation(
+        self, mock_run_all_trials
+    ):
+        # End-to-end wiring: the validator must fire before run_all_trials
+        # is invoked AND before _define_experiment_path creates the log
+        # directory on disk.
+        config = self.config.copy()
+        config["ls_model_types"] = ["linreg"]
+        config["model_hyperparameters"] = {"data_enrich_with": ["bmi"]}
+        train_val = self.train_val.copy()
+        train_val["bmi"] = [
+            22.0,
+            np.nan,
+            24.0,
+            25.0,
+            26.0,
+            27.0,
+            28.0,
+            29.0,
+            30.0,
+            31.0,
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, r"data_enrich_with"):
+                find_best_model_config(config, train_val, None, None, temp_dir)
+            mock_run_all_trials.assert_not_called()
+            self.assertFalse(
+                os.path.exists(os.path.join(temp_dir, config["experiment_tag"]))
+            )
 
     @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")
