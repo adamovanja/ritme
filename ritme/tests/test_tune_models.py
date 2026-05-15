@@ -2,6 +2,7 @@
 
 import os
 import unittest
+import warnings
 from functools import partial
 from unittest.mock import MagicMock, Mock, patch
 
@@ -17,6 +18,7 @@ from ray.tune.search.optuna import OptunaSearch
 
 from ritme.model_space import static_searchspace as ss
 from ritme.tune_models import (
+    DEFAULT_MAX_TRIAL_FAILURE_RATE,
     MODEL_TRAINABLES,
     NAN_TOLERANT_MODELS,
     OPTUNA_SAMPLER_CLASSES,
@@ -31,6 +33,7 @@ from ritme.tune_models import (
     _load_wandb_entity,
     _RecordingTrial,
     _SafeMLflowLoggerCallback,
+    _validate_run_inputs,
     run_all_trials,
     run_trials,
 )
@@ -60,18 +63,154 @@ class TestHelpersTuneModels(unittest.TestCase):
         )
 
     def test_check_for_errors_in_trials_no_errors(self):
-        # Mock ResultGrid with no errors
         mock_result = MagicMock(spec=ResultGrid)
+        mock_result.__len__.return_value = 10
         mock_result.num_errors = 0
-        # Should not raise an exception
         _check_for_errors_in_trials(mock_result)
 
     def test_check_for_errors_in_trials_with_errors(self):
-        # Mock ResultGrid with errors
         mock_result = MagicMock(spec=ResultGrid)
-        mock_result.num_errors = 1
+        mock_result.__len__.return_value = 10
+        mock_result.num_errors = 10
         with self.assertRaises(RuntimeError):
             _check_for_errors_in_trials(mock_result)
+
+    def _mock_result_grid(self, num_trials, num_errors, error_types=()):
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_result.__len__.return_value = num_trials
+        mock_result.num_errors = num_errors
+        mock_result.errors = [t() for t in error_types]
+        return mock_result
+
+    def test_check_for_errors_in_trials_below_threshold_warns(self):
+        mock_result = self._mock_result_grid(1000, 1, [TimeoutError])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            breakdown = _check_for_errors_in_trials(mock_result)
+        self.assertEqual(breakdown["num_trials"], 1000)
+        self.assertEqual(breakdown["num_errors"], 1)
+        self.assertAlmostEqual(breakdown["failure_rate"], 0.001)
+        self.assertEqual(breakdown["error_classes"], ["TimeoutError"])
+        msgs = [
+            str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)
+        ]
+        # The warning must name the counts AND the error class so ops triage
+        # has actionable signal even after the breakdown dict is dropped.
+        self.assertTrue(any("1/1000" in m and "TimeoutError" in m for m in msgs))
+
+    def test_check_for_errors_in_trials_above_threshold_raises(self):
+        mock_result = self._mock_result_grid(100, 1, [ValueError])
+        with self.assertRaises(RuntimeError) as ctx:
+            _check_for_errors_in_trials(mock_result)
+        msg = str(ctx.exception)
+        self.assertIn("0.0100", msg)
+        self.assertIn("1/100", msg)
+        self.assertIn("ValueError", msg)
+
+    def test_check_for_errors_in_trials_at_threshold_does_not_raise(self):
+        # Boundary: exactly at threshold must warn, not raise. Pins the
+        # spec's "> threshold raises, <= threshold warns" inequality.
+        mock_result = self._mock_result_grid(200, 1, [ValueError])
+        breakdown = _check_for_errors_in_trials(
+            mock_result, max_trial_failure_rate=0.005
+        )
+        self.assertAlmostEqual(breakdown["failure_rate"], 0.005)
+
+    def test_check_for_errors_in_trials_respects_custom_threshold(self):
+        mock_result = self._mock_result_grid(100, 1, [ValueError])
+        breakdown = _check_for_errors_in_trials(
+            mock_result, max_trial_failure_rate=0.02
+        )
+        self.assertAlmostEqual(breakdown["failure_rate"], 0.01)
+
+    def test_check_for_errors_in_trials_collects_unique_error_classes(self):
+        mock_result = self._mock_result_grid(
+            1000, 3, [TimeoutError, ValueError, TimeoutError]
+        )
+        breakdown = _check_for_errors_in_trials(mock_result)
+        self.assertEqual(breakdown["error_classes"], ["TimeoutError", "ValueError"])
+
+    def test_check_for_errors_in_trials_handles_errors_none(self):
+        # ResultGrid.errors can be None on some Ray versions; the
+        # ``or []`` guard must not raise on iteration.
+        mock_result = self._mock_result_grid(1000, 0)
+        mock_result.errors = None
+        breakdown = _check_for_errors_in_trials(mock_result)
+        self.assertEqual(breakdown["error_classes"], [])
+
+    def test_check_for_errors_in_trials_zero_trials_raises(self):
+        # Ray Tune yielding 0 trials = the campaign produced nothing;
+        # always raise so a misconfigured time_budget / search space is
+        # not silently swallowed.
+        mock_result = MagicMock(spec=ResultGrid)
+        mock_result.__len__.return_value = 0
+        mock_result.num_errors = 0
+        mock_result.errors = []
+        with self.assertRaisesRegex(RuntimeError, "produced 0 trials"):
+            _check_for_errors_in_trials(mock_result)
+
+    def test_check_for_errors_in_trials_default_uses_module_constant(self):
+        # Sanity check: the function's default value tracks the module
+        # constant (single source of truth).
+        default = _check_for_errors_in_trials.__defaults__[-1]
+        self.assertEqual(default, DEFAULT_MAX_TRIAL_FAILURE_RATE)
+
+    def _validator_train_val(self, target_values=None, with_snapshots=False):
+        cols = {
+            "F0": [0.1, 0.2, 0.3],
+            "F1": [0.4, 0.5, 0.6],
+            "target": target_values or [1.0, 2.0, 3.0],
+        }
+        if with_snapshots:
+            cols["F0__t-1"] = [np.nan, 0.15, 0.25]
+        return pd.DataFrame(cols)
+
+    def test_validate_run_inputs_invalid_task_type(self):
+        with self.assertRaisesRegex(ValueError, "Invalid task_type"):
+            _validate_run_inputs(
+                model_types=["linreg"],
+                task_type="not_a_task",
+                target="target",
+                train_val=self._validator_train_val(),
+            )
+
+    def test_validate_run_inputs_nn_corn_non_numeric_target(self):
+        train_val = self._validator_train_val(target_values=["a", "b", "c"])
+        with self.assertRaisesRegex(ValueError, "nn_corn requires a numeric target"):
+            _validate_run_inputs(
+                model_types=["nn_corn"],
+                task_type="regression",
+                target="target",
+                train_val=train_val,
+            )
+
+    def test_validate_run_inputs_nn_corn_nan_target(self):
+        train_val = self._validator_train_val(target_values=[1.0, np.nan, 3.0])
+        with self.assertRaisesRegex(ValueError, "contains 1 NaN"):
+            _validate_run_inputs(
+                model_types=["nn_corn"],
+                task_type="regression",
+                target="target",
+                train_val=train_val,
+            )
+
+    def test_validate_run_inputs_snapshot_nan_gate(self):
+        train_val = self._validator_train_val(with_snapshots=True)
+        with self.assertRaisesRegex(ValueError, "NaNs in snapshot features"):
+            _validate_run_inputs(
+                model_types=["linreg"],
+                task_type="regression",
+                target="target",
+                train_val=train_val,
+            )
+
+    def test_validate_run_inputs_passes_for_valid_inputs(self):
+        _validate_run_inputs(
+            model_types=["linreg", "rf"],
+            task_type="regression",
+            target="target",
+            train_val=self._validator_train_val(),
+        )
 
     @patch("ritme.tune_models._get_slurm_resource")
     def test_get_resources(self, mock_get_slurm_resource):
@@ -314,7 +453,9 @@ class TestMainTuneModels(unittest.TestCase):
         mock_init.return_value = mock_context
         mock_resources.return_value = {}
         mock_tuner = MagicMock()
-        mock_tuner.fit.return_value = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
         mock_tuner_class.return_value = mock_tuner
 
         temp_path2exp = "/tmp/tmp_throwaway_abc123"
@@ -360,7 +501,9 @@ class TestMainTuneModels(unittest.TestCase):
         mock_resources.return_value = {}
 
         mock_tuner = MagicMock()
-        mock_tuner.fit.return_value = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
         mock_tuner_class.return_value = mock_tuner
 
         trainable = MagicMock()
@@ -423,6 +566,33 @@ class TestMainTuneModels(unittest.TestCase):
         self.assertEqual(mock_run_trials.call_count, len(model_types))
 
     @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_defensive_validator_fires(self, mock_run_trials):
+        # The defensive _validate_run_inputs call inside run_all_trials
+        # protects standalone callers that bypass find_best_model_config.
+        # Pins the call site (tune_models.py inside run_all_trials) so a
+        # future refactor cannot silently delete it.
+        with self.assertRaisesRegex(ValueError, "Invalid task_type"):
+            run_all_trials(
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                mlflow_uri=self.mlflow_uri,
+                path_exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                model_types=["linreg"],
+                model_hyperparameters=self.model_hyperparameters,
+                task_type="not_a_task",
+            )
+        mock_run_trials.assert_not_called()
+
+    @patch("ritme.tune_models.run_trials")
     def test_run_all_trials_remove_trac(self, mock_run_trials):
         mock_result = MagicMock(spec=ResultGrid)
         mock_run_trials.return_value = mock_result
@@ -475,6 +645,7 @@ class TestMainTuneModels(unittest.TestCase):
             task_type="regression",
             k_folds=1,
             nn_corn_max_levels=20,
+            max_trial_failure_rate=0.005,
         )
 
     @patch("ritme.tune_models.run_trials")
@@ -616,7 +787,9 @@ class TestMainTuneModels(unittest.TestCase):
         mock_resources.return_value = {}
 
         mock_tuner = MagicMock()
-        mock_tuner.fit.return_value = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
         mock_tuner_class.return_value = mock_tuner
 
         trainable = MagicMock()
