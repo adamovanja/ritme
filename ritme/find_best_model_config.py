@@ -14,7 +14,11 @@ from ritme.evaluate_models import (
 )
 from ritme.feature_space.utils import _PAST_SUFFIX_RE
 from ritme.split_train_test import adaptive_k_folds
-from ritme.tune_models import DEFAULT_NN_CORN_MAX_LEVELS, run_all_trials
+from ritme.tune_models import (
+    DEFAULT_NN_CORN_MAX_LEVELS,
+    NAN_TOLERANT_MODELS,
+    run_all_trials,
+)
 
 
 # ----------------------------------------------------------------------------
@@ -35,6 +39,65 @@ def _verify_experiment_config(config: dict):
             f"Invalid tracking_uri: {config['tracking_uri']}. Must be "
             f"'mlruns' or 'wandb'."
         )
+
+
+_METADATA_ENRICH_MODES = frozenset({"metadata_only", "shannon_and_metadata"})
+
+
+@helper_function
+def _verify_data_enrich_compat(config: dict, train_val: pd.DataFrame) -> None:
+    """
+    Fail fast when ``data_enrich_with`` may inject NaN-bearing numeric
+    metadata into the feature matrix and an intolerant trainable is
+    requested -- so the search aborts at config time instead of crashing
+    inside a trial.
+
+    Mirrors ``ritme.model_space.static_searchspace.get_data_eng_space``:
+    ``data_enrich_with`` and ``data_enrich_options`` both live under
+    ``config["model_hyperparameters"]``. Categorical / object enrich
+    columns are skipped because ``enrich_features`` one-hot encodes them
+    with ``pd.get_dummies``, which collapses NaN to all-zero indicators.
+    """
+    mh = config.get("model_hyperparameters") or {}
+    enrich_cols = mh.get("data_enrich_with") or []
+    if not enrich_cols:
+        return
+
+    # Match the per-trial sampling logic: when ``data_enrich_options`` is
+    # not set, the default option set (with metadata columns present)
+    # includes the two metadata-injecting modes.
+    enrich_options = mh.get("data_enrich_options")
+    if enrich_options is not None and not any(
+        opt in _METADATA_ENRICH_MODES for opt in enrich_options
+    ):
+        return
+
+    intolerant = sorted(set(config.get("ls_model_types", [])) - NAN_TOLERANT_MODELS)
+    if not intolerant:
+        return
+
+    nan_counts = {
+        col: int(train_val[col].isna().sum())
+        for col in enrich_cols
+        # Missing columns are validated downstream by
+        # ``enrich_features`` with its own ValueError. Categorical /
+        # object columns route through ``pd.get_dummies`` and never
+        # propagate NaN, so they are safe regardless of NaN content.
+        if col in train_val.columns
+        and pd.api.types.is_numeric_dtype(train_val[col])
+        and train_val[col].isna().any()
+    }
+    if not nan_counts:
+        return
+
+    nan_summary = ", ".join(f"{col!r}={n}" for col, n in nan_counts.items())
+    raise ValueError(
+        f"data_enrich_with numeric columns contain NaN ({nan_summary}); "
+        f"requested model types {intolerant} do not support NaN inputs. "
+        f"Impute or drop the affected samples in metadata before running "
+        f"the search, or restrict ls_model_types to "
+        f"{sorted(NAN_TOLERANT_MODELS)}."
+    )
 
 
 @helper_function
@@ -222,6 +285,7 @@ def find_best_model_config(
         str: Path to the experiment folder.
     """
     _verify_experiment_config(config)
+    _verify_data_enrich_compat(config, train_val)
 
     # ! Define needed paths
     path_exp = _define_experiment_path(config, path_store_model_logs)
