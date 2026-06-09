@@ -109,6 +109,14 @@ def get_model(model_type: str, result: Result) -> Any:
     return model
 
 
+# Model types whose deployable artifact is a Ray Tune checkpoint (loaded via
+# ``_get_checkpoint_path`` -> ``load_xgb_model`` / ``load_nn_model``) rather than
+# an sklearn / trac model persisted to ``model_path``. A crashed trial of these
+# types can land in the ResultGrid with a reported metric but ``checkpoint is
+# None``; selecting it crashes the loader (issue #123).
+_CHECKPOINT_MODEL_TYPES = {"xgb", "xgb_class", "nn_reg", "nn_class", "nn_corn"}
+
+
 def get_taxonomy(result: Result) -> pd.DataFrame:
     """
     Retrieve the taxonomy DataFrame from the result object.
@@ -513,6 +521,48 @@ def _trial_simplicity_key(
     return (primary, *secondary)
 
 
+def _metric_value(result: Result, metric: str):
+    """Selection score for a trial: ``<metric>_mean`` if present, else ``<metric>``."""
+    m = result.metrics or {}
+    return m.get(f"{metric}_mean", m.get(metric))
+
+
+def _drop_checkpointless_trials(
+    result_grid, metric: str, model_type: str
+) -> List[Result]:
+    """Return only trials that carry a deployable checkpoint.
+
+    A trial that reported ``metric`` but crashed before persisting a checkpoint
+    (OOM kill, SIGSEGV, node loss mid-training) is kept in the ``ResultGrid``
+    with ``result.checkpoint is None``; selecting it crashes the checkpoint
+    loader (issue #123). Drop such trials -- warning per skipped trial with its
+    metric and Ray error status -- and raise if none remain deployable.
+    """
+    deployable = []
+    for result in result_grid:
+        if result.checkpoint is not None:
+            deployable.append(result)
+            continue
+        value = _metric_value(result, metric)
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            # Never reported the metric -> not a selection candidate anyway.
+            continue
+        warnings.warn(
+            f"Skipping '{model_type}' trial with {metric}={value}: it reported a "
+            f"metric but saved no checkpoint, so it crashed mid-training before "
+            f"persisting one (Ray status: {result.error or 'no error recorded'}).",
+            stacklevel=2,
+        )
+    if not deployable:
+        raise RuntimeError(
+            f"No '{model_type}' trial saved a deployable checkpoint: every trial "
+            f"crashed before persisting one (e.g. OOM kill, SIGSEGV, or node "
+            f"failure). Inspect the sweep logs for worker failures and re-run "
+            f"with more memory per trial or fewer concurrent trials."
+        )
+    return deployable
+
+
 def _select_best_with_one_se(
     result_grid,
     metric: str,
@@ -529,10 +579,21 @@ def _select_best_with_one_se(
     Trials without a finite ``<metric>_se`` (single-split runs, or K-fold
     runs that had K-1 NaN folds) are excluded from selection. If no trial
     has a finite SE, defers to ``ResultGrid.get_best_result(scope='all')``.
+
+    For checkpoint-based trainables (see ``_CHECKPOINT_MODEL_TYPES``), trials
+    that crashed before saving a checkpoint are dropped first so a
+    non-deployable trial can never be selected as best (issue #123).
     """
     sign = 1 if mode == "min" else -1
+    # Exclude crashed, checkpoint-less trials up front for checkpoint-based
+    # trainables; sklearn / trac models keep their full grid (their artifact is
+    # ``model_path``, so ``checkpoint is None`` is expected and not a failure).
+    if model_type in _CHECKPOINT_MODEL_TYPES:
+        results = _drop_checkpointless_trials(result_grid, metric, model_type)
+    else:
+        results = result_grid
     candidates = []
-    for result in result_grid:
+    for result in results:
         m = result.metrics or {}
         mean = m.get(f"{metric}_mean", m.get(metric))
         se = m.get(f"{metric}_se")
@@ -546,10 +607,22 @@ def _select_best_with_one_se(
         candidates.append((result, float(mean), float(se)))
 
     if not candidates:
-        # No reliable K-fold trials -> defer to Ray Tune's single-best lookup,
-        # preserving the pre-K-fold behavior. ``metric`` / ``mode`` are passed
-        # explicitly because ``TuneConfig`` no longer carries them (the
-        # scheduler owns them; Ray Tune disallows both -- see tune_models.py).
+        # No reliable K-fold trials (single-split runs, or K-fold runs whose
+        # K-1 folds were NaN). For checkpoint-based trainables, ``results`` has
+        # already been narrowed to checkpoint-carrying trials, so pick the best
+        # by metric directly -- ``get_best_result`` would re-scan the full grid
+        # and could land on a crashed, checkpoint-less trial (issue #123).
+        if model_type in _CHECKPOINT_MODEL_TYPES:
+            scored = [
+                (r, _metric_value(r, metric))
+                for r in results
+                if _metric_value(r, metric) is not None
+            ]
+            return min(scored, key=lambda rv: sign * float(rv[1]))[0]
+        # Otherwise defer to Ray Tune's single-best lookup, preserving the
+        # pre-K-fold behavior. ``metric`` / ``mode`` are passed explicitly
+        # because ``TuneConfig`` no longer carries them (the scheduler owns
+        # them; Ray Tune disallows both -- see tune_models.py).
         return result_grid.get_best_result(metric=metric, mode=mode, scope="all")
 
     # Best by sign-adjusted mean (lower-is-better -> sign=+1, etc.).

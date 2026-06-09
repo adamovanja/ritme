@@ -36,7 +36,7 @@ class TestEvaluateModels(unittest.TestCase):
         self.result.checkpoint = MagicMock()
         self.result.checkpoint.to_directory.return_value = "/test/checkpoint_dir"
 
-        self.result.metrics = {"model_path": "/fake/model/path"}
+        self.result.metrics = {"model_path": "/fake/model/path", "rmse_val": 1.0}
 
         self.result.path = "/fake/trial/dir"
         self.result.config = {
@@ -47,6 +47,9 @@ class TestEvaluateModels(unittest.TestCase):
 
         self.result_grid = MagicMock()
         self.result_grid.get_best_result.return_value = self.result
+        # Iterate to the (checkpoint-carrying) result so selection can run for
+        # checkpoint-based trainables (xgb / nn) without falling back.
+        self.result_grid.__iter__ = lambda _self: iter([self.result])
         self.mock_taxonomy_df = pd.DataFrame({"species": ["A", "B"], "count": [10, 20]})
         self.mock_model = MagicMock()
 
@@ -632,10 +635,17 @@ class TestBuildDesignMatrix(unittest.TestCase):
 
 
 def _make_mock_result(metrics: dict, config: dict):
-    """Build a MagicMock standing in for a Ray Tune ``Result`` row."""
+    """Build a MagicMock standing in for a Ray Tune ``Result`` row.
+
+    A real ``Result`` always carries a ``checkpoint`` attribute; default it to a
+    non-None mock so trials look deployable unless a test overrides it (see
+    ``_make_checkpoint_result``).
+    """
     r = MagicMock(spec=Result)
     r.metrics = metrics
     r.config = config
+    r.checkpoint = MagicMock()
+    r.error = None
     return r
 
 
@@ -1045,6 +1055,100 @@ class TestOneStandardErrorRule(unittest.TestCase):
             "linreg", {"nb_features": 50}, {"alpha": "n/a", "l1_ratio": 0.5}
         )
         self.assertLess(k_present, k_garbage)
+
+
+def _make_checkpoint_result(metrics, config, *, has_checkpoint, error=None):
+    """Mock ``Result`` whose ``checkpoint`` is set or ``None`` (crashed trial)."""
+    r = _make_mock_result(metrics, config)
+    r.checkpoint = MagicMock() if has_checkpoint else None
+    r.error = error
+    return r
+
+
+class TestCheckpointlessTrialSelection(unittest.TestCase):
+    """Trials of checkpoint-based trainables (xgb / nn) that report a metric but
+    crash before saving a checkpoint (OOM kill, SIGSEGV, node loss) appear in the
+    ResultGrid with ``checkpoint is None``. They must never be selected as best --
+    their loader would dereference ``None`` (issue #123)."""
+
+    def test_skips_checkpointless_best_trial_on_fallback_path(self):
+        # Exact issue #123 reproduction: best-scoring trial has no checkpoint,
+        # neither trial reports ``_se`` (single-split -> fallback path).
+        crashed = _make_checkpoint_result(
+            {"rmse_val": 1.0, "nb_features": 100},
+            {"max_depth": 6},
+            has_checkpoint=False,
+            error="oom-kill",
+        )
+        deployable = _make_checkpoint_result(
+            {"rmse_val": 2.0, "nb_features": 80},
+            {"max_depth": 4},
+            has_checkpoint=True,
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([crashed, deployable])
+        rg.get_best_result.side_effect = AssertionError(
+            "must not defer to get_best_result for checkpoint-based trainables"
+        )
+        with self.assertWarns(UserWarning):
+            chosen = _select_best_with_one_se(rg, "rmse_val", "min", "xgb")
+        self.assertIs(chosen, deployable)
+
+    def test_checkpointless_trial_with_se_excluded_from_band(self):
+        # K-fold trial with the best mean + finite SE but no checkpoint (crashed
+        # after a running-fold report, before the final checkpoint report) must
+        # be dropped from the 1-SE band, not anchor it.
+        crashed_best = _make_checkpoint_result(
+            {"rmse_val_mean": 1.0, "rmse_val_se": 0.01, "nb_features": 100},
+            {"max_depth": 6},
+            has_checkpoint=False,
+            error="SIGSEGV",
+        )
+        deployable = _make_checkpoint_result(
+            {"rmse_val_mean": 1.5, "rmse_val_se": 0.5, "nb_features": 80},
+            {"max_depth": 4},
+            has_checkpoint=True,
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([crashed_best, deployable])
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "nn_reg")
+        self.assertIs(chosen, deployable)
+
+    def test_raises_when_every_trial_lacks_a_checkpoint(self):
+        a = _make_checkpoint_result(
+            {"rmse_val": 1.0, "nb_features": 100},
+            {"max_depth": 6},
+            has_checkpoint=False,
+            error="oom-kill",
+        )
+        b = _make_checkpoint_result(
+            {"rmse_val": 2.0, "nb_features": 80},
+            {"max_depth": 4},
+            has_checkpoint=False,
+            error="SIGSEGV",
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([a, b])
+        with self.assertRaises(RuntimeError):
+            _select_best_with_one_se(rg, "rmse_val", "min", "xgb")
+
+    def test_sklearn_selection_unaffected_by_checkpoint_filter(self):
+        # sklearn / trac trainables never attach a checkpoint (their artifact is
+        # ``model_path``); the checkpoint filter must not touch their selection.
+        crashed_like = _make_checkpoint_result(
+            {"rmse_val": 1.0, "nb_features": 100},
+            {"alpha": 0.01},
+            has_checkpoint=False,
+        )
+        rg = MagicMock()
+        sentinel = MagicMock()
+        rg.get_best_result.return_value = sentinel
+        rg.__iter__ = lambda self: iter([crashed_like])
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        rg.get_best_result.assert_called_once_with(
+            metric="rmse_val", mode="min", scope="all"
+        )
+        self.assertIs(chosen, sentinel)
 
 
 if __name__ == "__main__":
