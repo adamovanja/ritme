@@ -181,5 +181,5 @@ When a change is scoped to a specific path, the minimum required smoke is:
 - AI attribution is mandatory: include `Co-Authored-By: <tool>` in commit trailers.
 
 ### Writing style
-- When writing documentation (e.g. in README files) - make sure the text is concise and does not contain unnecessary legacy/context information that is not crucial for the comment being made.
+- When writing documentation/text/comments or similar (e.g. in README files) - make sure the text is concise and does not contain unnecessary legacy/context information that is not crucial for the comment being made.
 - Do not transplant conversational rationale into the document. If you justified a change in chat (e.g. "this works because tool X reads file Y..."), the file itself should still only state *what* the reader needs to do. If they want the rationale, upstream tool docs are the right place to send them.
