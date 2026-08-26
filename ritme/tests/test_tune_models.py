@@ -1,11 +1,13 @@
 # test_script.py
 
+import itertools
 import os
 import unittest
 import warnings
 from functools import partial
 from unittest.mock import MagicMock, Mock, patch
 
+import cloudpickle
 import numpy as np
 import pandas as pd
 import skbio
@@ -13,7 +15,9 @@ from parameterized import parameterized
 from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import ResultGrid
+from ray.tune.experiment import Experiment
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
+from ray.tune.search.basic_variant import BasicVariantGenerator
 from ray.tune.search.optuna import OptunaSearch
 
 from ritme.model_space import static_searchspace as ss
@@ -27,6 +31,7 @@ from ritme.tune_models import (
     _define_callbacks,
     _define_scheduler,
     _define_search_algo,
+    _fixed_config_trainable,
     _get_resources,
     _get_slurm_resource,
     _load_wandb_api_key,
@@ -34,6 +39,7 @@ from ritme.tune_models import (
     _RecordingTrial,
     _SafeMLflowLoggerCallback,
     _validate_run_inputs,
+    retrain_fixed_configs,
     run_all_trials,
     run_trials,
 )
@@ -1504,6 +1510,88 @@ class TestRecordingTrialSteering(unittest.TestCase):
             model_hyperparameters={},
         )
         self.assertEqual(set(trial.params.keys()), {"lambda"})
+
+
+class TestBasicVariantGeneratorPickleFix(unittest.TestCase):
+    def test_get_state_is_picklable_after_next_trial(self):
+        # Reproduces the exact state Ray's TuneController tries to
+        # checkpoint mid-run: after next_trial() is called at least once,
+        # _trial_iter becomes a live itertools.chain, which cloudpickle
+        # cannot serialize unless ritme.tune_models's module-level patch
+        # (applied on import) has stripped it from get_state()'s output.
+        def dummy(config):
+            pass
+
+        gen = BasicVariantGenerator()
+        gen.add_configurations(
+            Experiment(
+                name="pickle_fix_test",
+                run=dummy,
+                config={"trial_config": {"grid_search": [{"a": 1}, {"a": 2}]}},
+            )
+        )
+        gen.next_trial()
+        self.assertIsInstance(gen._trial_iter, itertools.chain)
+        state = gen.get_state()
+        self.assertNotIn("_trial_iter", state)
+        cloudpickle.dumps(state)  # raises TypeError if the patch regresses
+
+
+class TestFixedConfigTrainable(unittest.TestCase):
+    @patch.dict("ritme.tune_models.MODEL_TRAINABLES", {"stub": MagicMock()})
+    def test_dispatches_inner_config_without_copy(self):
+        inner = {"model": "stub", "alpha": 0.5, "mlflow_run_id": "abc"}
+        config = {"trial_config": inner}
+        _fixed_config_trainable(
+            config,
+            train_val="tv",
+            target="y",
+            host_id="h",
+            stratify_by=None,
+            seed_data=1,
+            seed_model=2,
+            tax="tax",
+            tree_phylo="tree",
+            cpus_per_trial=1,
+            gpus_per_trial=0,
+            task_type="regression",
+            k_folds=2,
+            nn_corn_max_levels=10,
+        )
+        passed_config = MODEL_TRAINABLES["stub"].call_args.args[0]
+        self.assertIs(passed_config, inner)
+        self.assertEqual(MODEL_TRAINABLES["stub"].call_args.kwargs["seed_model"], 2)
+
+
+class TestRetrainFixedConfigs(unittest.TestCase):
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.tune.Tuner")
+    def test_grid_search_over_configs_no_scheduler(self, mock_tuner, mock_init):
+        configs = [
+            {"model": "linreg", "alpha": 0.1, "mlflow_run_id": "r1"},
+            {"model": "linreg", "alpha": 0.2, "mlflow_run_id": "r2"},
+        ]
+        retrain_fixed_configs(
+            configs,
+            train_val=pd.DataFrame(),
+            target="y",
+            host_id="h",
+            stratify_by=None,
+            seed_data=1,
+            seed_model=2,
+            tax=None,
+            tree_phylo=None,
+            path2exp="/tmp_path",
+            max_concurrent_trials=2,
+            resources={"cpu": 1, "gpu": 0},
+        )
+        _, kwargs = mock_tuner.call_args
+        grid = kwargs["param_space"]["trial_config"]["grid_search"]
+        self.assertEqual(grid, configs)
+        tune_config = kwargs["tune_config"]
+        self.assertIsNone(tune_config.scheduler)
+        self.assertIsNone(tune_config.search_alg)
+        mock_tuner.return_value.fit.assert_called_once()
 
 
 if __name__ == "__main__":

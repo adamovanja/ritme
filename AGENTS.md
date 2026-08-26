@@ -19,6 +19,7 @@ metadata + feature_table (+ phylogeny & taxonomy)
   → split_train_test()          # merge, optional temporal snapshotting, train/test split
   → find_best_model_config()    # search over feature engineering × model combinations
   → evaluate_tuned_models()     # evaluate best models on train + held-out test
+  → explain_stability()         # optional: importance stability across the near-optimal band
 ```
 
 The package supports two modes:
@@ -35,19 +36,21 @@ The package supports two modes:
 | `ritme/evaluate_models.py` | `TunedModel` class with per-snapshot predict pipeline |
 | `ritme/evaluate_tuned_models.py` | Final evaluation on train + test sets |
 | `ritme/explain_features.py` | SHAP feature importance computation and plotting |
+| `ritme/explain_stability.py` | Feature-importance stability across near-optimal trials |
 | `ritme/feature_space/` | Feature engineering: aggregate, select, transform, enrich |
 | `ritme/feature_space/_process_train.py` | Per-snapshot feature processing pipeline |
 | `ritme/feature_space/utils.py` | Snapshot utilities (`_slice_snapshot`, `_add_suffix`, `_PAST_SUFFIX_RE`) |
+| `ritme/feature_space/feature_provenance.py` | Maps design-matrix columns to source OTUs and matches features across trials with differing feature engineering (owns the `match_kind` vocabulary) |
 | `ritme/model_space/static_trainables.py` | Model trainables: linreg, xgb, rf, trac, nn_reg, nn_class, nn_corn |
 | `ritme/model_space/static_searchspace.py` | Hyperparameter search spaces per model type |
-| `ritme/cli.py` | Typer CLI entry point (`ritme split-train-test`, `find-best-model-config`, `evaluate-tuned-models`, `explain-features`) |
+| `ritme/cli.py` | Typer CLI entry point (`ritme split-train-test`, `find-best-model-config`, `evaluate-tuned-models`, `explain-features`, `explain-stability`) |
 | `ritme/evaluate_mlflow.py` | MLflow visualization utilities |
 | `config/` | Example experiment configuration files |
 | `experiments/` | Example usage notebooks |
 
 ## CLI and Python API pattern
 
-Each of the four main functions exists in two forms:
+Each of the five main functions exists in two forms:
 
 - **Python API** (e.g. `split_train_test()`): accepts in-memory objects (DataFrames, dicts, TreeNode) and returns results directly. Decorated with `@main_function`.
 - **CLI wrapper** (e.g. `cli_split_train_test()`): accepts file paths as strings, loads data, delegates to the Python API function, and writes outputs to disk. Also decorated with `@main_function`. Registered in `ritme/cli.py` via Typer.
@@ -58,6 +61,7 @@ Each of the four main functions exists in two forms:
 | `find_best_model_config()` | `cli_find_best_model_config()` | `ritme find-best-model-config` |
 | `evaluate_tuned_models()` | `cli_evaluate_tuned_models()` | `ritme evaluate-tuned-models` |
 | `explain_features()` | `cli_explain_features()` | `ritme explain-features` |
+| `explain_stability()` | `cli_explain_stability()` | `ritme explain-stability` |
 
 Internal/private functions are decorated with `@helper_function`. Both decorators are defined in `ritme/_decorators.py` and are used purely as flags (no runtime behavior).
 
@@ -99,6 +103,8 @@ make test              # run implemented unit tests
 ritme split-train-test --help
 ritme find-best-model-config --help
 ritme evaluate-tuned-models --help
+ritme explain-features --help
+ritme explain-stability --help
 ```
 
 ## Rules
@@ -153,7 +159,7 @@ their outputs already exist):
 
 | Smoke | Command (from `experiments/`) | Covers | ETA at recommended budget |
 |-------|-------------------------------|--------|----------------------------|
-| Python API + CLI examples | execute `ritme_example_usage.ipynb` via `jupyter nbconvert --to notebook --execute ... --allow-errors` | `find_best_model_config` Python API + CLI, single-model linreg/logreg | ~9 min |
+| Python API + CLI examples | first `rm -rf ritme_example_logs/example_{linreg,linreg_py,logreg,logreg_py}` (the run recreates them), then execute `ritme_example_usage.ipynb` via `jupyter nbconvert --to notebook --execute ...` (no `--allow-errors`: a failing stability cell must fail the run) | `find_best_model_config` Python API + CLI, single-model linreg/logreg, explain-stability (Python API + CLI) | ~11 min |
 | MLflow regression sweep | `./run_experiment_mlflow.sh` (default `regression`) followed by executing `evaluate_trials_mlflow.ipynb` | all 7 regression trainables incl. `nn_corn`, MLflow tracking, SHAP | ~20 min (`time_budget_s=180`/model) |
 | MLflow classification sweep | edit `task_type = "classification"` in `evaluate_trials_mlflow.ipynb` (or copy to a scratch ipynb) + run | `logreg`, `xgb_class`, `nn_class`, `rf_class`, K-fold `get_best_result` post-processing | ~12 min (`time_budget_s=180`/model) |
 | WandB regression sweep | `./run_experiment_wandb.sh` | `WandbLoggerCallback`, same `run_trials` / scheduler / metric plumbing as MLflow but the wandb tracking sink | ~10 min (`time_budget_s=60`/model) |
@@ -169,7 +175,8 @@ When a change is scoped to a specific path, the minimum required smoke is:
   snapshot (temporal column suffixing).
 - Trainables (`model_space/static_trainables.py`): MLflow regression
   (covers all 7 regression trainables) +
-  `ritme_example_usage.ipynb` (single-split path on linreg/logreg).
+  `ritme_example_usage.ipynb` (K-fold linreg/logreg; the stability cells
+  require `k_folds > 1`).
 - CLI wrappers (`split_train_test.py::cli_*`, `find_best_model_config.py::cli_*`,
   etc.): `ritme_example_usage.ipynb` (CLI section runs each command).
 

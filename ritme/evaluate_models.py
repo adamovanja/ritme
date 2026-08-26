@@ -643,6 +643,32 @@ def _select_best_with_one_se(
     return band_sorted[0][0]
 
 
+def build_tuned_model_from_result(
+    model_type: str,
+    result: Result,
+    train_val: pd.DataFrame,
+    trial_config: Dict[str, Any] = None,
+) -> TunedModel:
+    """Construct a fitted TunedModel from a Ray Tune trial result.
+
+    ``trial_config`` overrides ``result.config`` as the source of ``data_*``
+    keys for wrapped configs (see ``tune_models.retrain_fixed_configs``).
+    """
+    model = get_model(model_type, result)
+    source = trial_config if trial_config is not None else result.config
+    data_proc = {k: v for k, v in source.items() if k.startswith("data_")}
+    tax = get_taxonomy(result)
+
+    tmodel = TunedModel(model, data_proc, tax, result.path, model_type=model_type)
+
+    le_path = os.path.join(result.path, "label_encoder.pkl")
+    if os.path.exists(le_path):
+        tmodel.label_encoder = load(le_path)
+
+    tmodel.predict(train_val, "train")
+    return tmodel
+
+
 def retrieve_n_init_best_models(
     result_dic: Dict[str, Result], train_val: pd.DataFrame
 ) -> Dict[str, TunedModel]:
@@ -676,23 +702,8 @@ def retrieve_n_init_best_models(
             result_grid, metric=metric, mode=mode, model_type=model_type
         )
 
-        best_model = get_model(model_type, best_result)
-        best_data_proc = get_data_processing(best_result)
-        best_tax = get_taxonomy(best_result)
-        best_path = best_result.path
-
-        tmodel = TunedModel(
-            best_model, best_data_proc, best_tax, best_path, model_type=model_type
-        )
-
-        # Load label encoder for classification models (string targets)
-        le_path = os.path.join(best_result.path, "label_encoder.pkl")
-        if os.path.exists(le_path):
-            tmodel.label_encoder = load(le_path)
-
+        tmodel = build_tuned_model_from_result(model_type, best_result, train_val)
         best_model_dic[model_type] = tmodel
-        # init all model's feature engineering approaches in TunedModel
-        _ = best_model_dic[model_type].predict(train_val, "train")
     return best_model_dic
 
 

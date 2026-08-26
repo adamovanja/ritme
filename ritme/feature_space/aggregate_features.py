@@ -91,6 +91,23 @@ def aggregate_ft_by_taxonomy(
     return aggregated_df
 
 
+def build_taxonomy_mapping(df_taxonomy: pd.DataFrame, tax_entity: str) -> dict:
+    """Map each OTU id to its aggregated taxon label at ``tax_entity``,
+    refining unknowns with the next-higher rank (one level)."""
+    tax_dict = extract_taxonomic_entity(df_taxonomy, tax_entity)
+
+    tax_ranks_dic = {rank: index for index, rank in enumerate(TAX_RANKS)}
+    idx = tax_ranks_dic[tax_entity]
+    refine_unknown = TAX_RANKS[idx - 1]
+
+    unknown_dict = extract_taxonomic_entity(df_taxonomy, refine_unknown)
+    for key, value in tax_dict.items():
+        tax_unknown = f"{tax_entity[0]}__unknown"
+        if value == tax_unknown:
+            tax_dict[key] = f"{tax_unknown[:-3]}_{unknown_dict[key]}"
+    return tax_dict
+
+
 def agg_microbial_fts_taxonomy(
     ft: pd.DataFrame, tax_entity: str, df_taxonomy: pd.DataFrame
 ):
@@ -106,24 +123,8 @@ def agg_microbial_fts_taxonomy(
     Returns:
         pd.DataFrame: The transformed feature table.
     """
-    # get taxonomic entities: dic[OTU] = tax_entity at level of interest only
-    tax_dict = extract_taxonomic_entity(df_taxonomy, tax_entity)
-
-    # replace __unknowns with tax. entity of higher rank
-    tax_ranks_dic = {rank: index for index, rank in enumerate(TAX_RANKS)}
-    idx = tax_ranks_dic[tax_entity]
-    refine_unknown = TAX_RANKS[idx - 1]
-
-    unknown_dict = extract_taxonomic_entity(df_taxonomy, refine_unknown)
-    for key, value in tax_dict.items():
-        tax_unknown = f"{tax_entity[0]}__unknown"
-        if value == tax_unknown:
-            tax_dict[key] = f"{tax_unknown[:-3]}_{unknown_dict[key]}"
-
-    # aggregate features by derived taxonomic entities
-    ft_aggregated = aggregate_ft_by_taxonomy(ft, tax_dict)
-
-    return ft_aggregated
+    tax_dict = build_taxonomy_mapping(df_taxonomy, tax_entity)
+    return aggregate_ft_by_taxonomy(ft, tax_dict)
 
 
 def aggregate_microbial_features(
