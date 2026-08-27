@@ -12,6 +12,7 @@ from matplotlib.colors import to_rgba
 from matplotlib.patches import Rectangle
 
 from ritme.explain_stability import (
+    _CELL_LEGEND_ENTRIES,
     _legend_max_chars,
     _pack_legend_lines,
     _parse_param_value,
@@ -431,6 +432,29 @@ def _manifest():
     )
 
 
+def _figure_text_sizes(fig):
+    """Font size of the figure title and the set of sizes used by every other
+    non-empty text artist in the figure."""
+    title = [t for t in fig.texts if t.get_text().startswith("Feature stability")][0]
+    body = [t for t in fig.texts if t is not title]
+    for ax in fig.axes:
+        body.extend(
+            [
+                ax.title,
+                ax.xaxis.label,
+                ax.yaxis.label,
+                *ax.texts,
+                *ax.get_xticklabels(),
+                *ax.get_yticklabels(),
+            ]
+        )
+        legend = ax.get_legend()
+        if legend is not None:
+            body.extend(legend.get_texts())
+    sizes = {t.get_fontsize() for t in body if t.get_text().strip()}
+    return title.get_fontsize(), sizes
+
+
 class TestPlotStability(unittest.TestCase):
     def setUp(self):
         self.importances = {
@@ -668,17 +692,41 @@ class TestPlotStability(unittest.TestCase):
         )
         plt.close(fig)
 
-    def test_xtick_and_ytick_labels_share_one_font_size(self):
+    def test_every_text_element_but_the_title_shares_one_font_size(self):
+        # tick labels, axis labels, heatmap cells, colorbar and both legends
+        # must render at one size, so no element reads as more important.
         fig = plot_stability(
             _manifest(),
             self.ranks,
             "rmse_val",
             show=False,
         )
-        ax_ranks = fig.axes[1]
-        x_sizes = {t.get_fontsize() for t in ax_ranks.get_xticklabels()}
-        y_sizes = {t.get_fontsize() for t in ax_ranks.get_yticklabels()}
-        self.assertEqual(x_sizes, y_sizes)
+        _, body_sizes = _figure_text_sizes(fig)
+        self.assertEqual(len(body_sizes), 1, f"mixed body font sizes: {body_sizes}")
+        plt.close(fig)
+
+    def test_title_is_larger_than_the_rest_of_the_text(self):
+        fig = plot_stability(
+            _manifest(),
+            self.ranks,
+            "rmse_val",
+            show=False,
+        )
+        title_size, body_sizes = _figure_text_sizes(fig)
+        self.assertGreater(title_size, max(body_sizes))
+        plt.close(fig)
+
+    def test_capped_colorbar_ticks_keep_the_shared_font_size(self):
+        # set_ticks() rebuilds the tick artists after tick_params() ran, so
+        # the censored ">=N" scale must not fall back to the rcParam size.
+        ranks = self.ranks.copy()
+        ranks["rank"] = ranks["rank"] * 100
+        fig = plot_stability(_manifest(), ranks, "rmse_val", top_n=1, show=False)
+        cbar_ax = fig.axes[-1]
+        labels = [t for t in cbar_ax.get_yticklabels() if t.get_text().strip()]
+        self.assertTrue(any(label.get_text().startswith("\u2265") for label in labels))
+        _, body_sizes = _figure_text_sizes(fig)
+        self.assertEqual(len(body_sizes), 1, f"mixed body font sizes: {body_sizes}")
         plt.close(fig)
 
     def test_suptitle_names_the_model_type_of_the_band(self):
@@ -722,7 +770,12 @@ class TestPlotStability(unittest.TestCase):
         width_inches = ax_ranks.get_position().width * fig.get_figwidth()
         max_chars = _legend_max_chars(width_inches)
         for line in lines:
-            self.assertLessEqual(len(line), max_chars)
+            # a single entry wider than the panel is the documented
+            # exception: it keeps its own line rather than break mid-symbol.
+            self.assertTrue(
+                len(line) <= max_chars or line in _CELL_LEGEND_ENTRIES,
+                f"line overruns the panel but is not one entry: {line!r}",
+            )
         plt.close(fig)
 
     def test_perf_panel_width_matches_ranks_panel_after_colorbar(self):

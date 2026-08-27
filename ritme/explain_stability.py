@@ -349,9 +349,11 @@ def compute_rank_agreement(ranks: pd.DataFrame, top_n: int = 15) -> pd.DataFrame
 _MATCH_ANNOTATIONS = {"contained": "◆", "lumped": "L", "split": "s"}
 _METRIC_LABELS = {"rmse_val": "RMSE val", "roc_auc_macro_ovr_val": "ROC AUC val"}
 
-# Shared by both heatmap axes so trial and feature labels match in size.
-_TICK_LABEL_FONTSIZE = 11
-_LEGEND_FONTSIZE = 10
+# One size for every text element in the figure -- axis labels, tick labels,
+# heatmap cells, colorbar and legends -- so no element reads as more
+# important than another. Only the title steps up.
+_BASE_FONTSIZE = 13
+_TITLE_FONTSIZE = 16
 # Mean glyph advance of DejaVu Sans, in units of the font size.
 _AVG_CHAR_WIDTH_EM = 0.55
 _CELL_LEGEND_ENTRIES = (
@@ -367,7 +369,7 @@ _CELL_LEGEND_ENTRIES = (
 @helper_function
 def _legend_max_chars(width_inches: float) -> int:
     """Characters that fit on one legend line spanning ``width_inches``."""
-    per_char = _AVG_CHAR_WIDTH_EM * _LEGEND_FONTSIZE / 72
+    per_char = _AVG_CHAR_WIDTH_EM * _BASE_FONTSIZE / 72
     return max(20, int(width_inches / per_char))
 
 
@@ -478,14 +480,14 @@ def plot_stability(
         reference_mean + reference_se,
         alpha=0.15,
     )
-    ax_perf.set_ylabel(_METRIC_LABELS.get(metric, metric), fontsize=13)
-    ax_perf.tick_params(axis="y", labelsize=11)
+    ax_perf.set_ylabel(_METRIC_LABELS.get(metric, metric), fontsize=_BASE_FONTSIZE)
+    ax_perf.tick_params(axis="y", labelsize=_BASE_FONTSIZE)
     ax_perf.set_xticks(positions)
     ax_perf.set_xticklabels([])
     ax_perf.legend(
         loc="upper left",
         bbox_to_anchor=(1.02, 1.0),
-        fontsize=10,
+        fontsize=_BASE_FONTSIZE,
         frameon=False,
     )
 
@@ -503,8 +505,8 @@ def plot_stability(
                 matrix[i, j] = min(row["rank"], rank_cap)
     im = ax_ranks.imshow(matrix, cmap="viridis_r", aspect="auto")
     cbar = fig.colorbar(im, ax=ax_ranks, fraction=0.03, pad=0.02)
-    cbar.set_label("rank", fontsize=11)
-    cbar.ax.tick_params(labelsize=10)
+    cbar.set_label("rank", fontsize=_BASE_FONTSIZE)
+    cbar.ax.tick_params(labelsize=_BASE_FONTSIZE)
     if capped_any:
         # the top of the scale is a censored value, not an observed one
         ticks = [t for t in cbar.get_ticks() if im.norm.vmin <= t < rank_cap]
@@ -522,10 +524,15 @@ def plot_stability(
                     )
                 )
             ax_ranks.text(
-                j, i, _rank_cell_text(row), ha="center", va="center", fontsize=10
+                j,
+                i,
+                _rank_cell_text(row),
+                ha="center",
+                va="center",
+                fontsize=_BASE_FONTSIZE,
             )
     ax_ranks.set_yticks(range(n_rows))
-    ax_ranks.set_yticklabels(features, fontsize=_TICK_LABEL_FONTSIZE)
+    ax_ranks.set_yticklabels(features, fontsize=_BASE_FONTSIZE)
     ax_ranks.set_xticks(range(n_cols))
     labels = []
     for j in range(n_cols):
@@ -536,14 +543,12 @@ def plot_stability(
         if len(model_types) > 1:
             lines.insert(0, str(manifest["experiment_name"].iloc[j]))
         labels.append("\n".join(lines))
-    ax_ranks.set_xticklabels(
-        labels, fontsize=_TICK_LABEL_FONTSIZE, rotation=30, ha="right"
-    )
-    ax_ranks.set_xlabel("Trial", fontsize=12)
+    ax_ranks.set_xticklabels(labels, fontsize=_BASE_FONTSIZE, rotation=30, ha="right")
+    ax_ranks.set_xlabel("Trial", fontsize=_BASE_FONTSIZE)
 
     fig.suptitle(
         f"Feature stability among top-performing {' / '.join(model_types)} " "trials",
-        fontsize=14,
+        fontsize=_TITLE_FONTSIZE,
     )
 
     # The heatmap's width is known only after tight_layout: lay out once to
@@ -554,7 +559,7 @@ def plot_stability(
         _CELL_LEGEND_ENTRIES,
         _legend_max_chars(ranks_pos.width * fig.get_figwidth()),
     )
-    legend_inches = (len(legend_lines) + 1) * 1.4 * _LEGEND_FONTSIZE / 72
+    legend_inches = (len(legend_lines) + 1) * 1.4 * _BASE_FONTSIZE / 72
     plt.tight_layout(rect=(0, min(0.3, legend_inches / fig.get_figheight()), 1, 0.94))
     # The colorbar shrinks ax_ranks's own width to make room for itself;
     # match ax_perf's width/left edge to ax_ranks's (post-colorbar) so both
@@ -566,7 +571,7 @@ def plot_stability(
         ranks_pos.x0,
         0.01,
         "\n".join(legend_lines),
-        fontsize=_LEGEND_FONTSIZE,
+        fontsize=_BASE_FONTSIZE,
         ha="left",
         va="bottom",
     )
