@@ -21,10 +21,12 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install -q ruff
+        # pinned to the ruff version in .pre-commit-config.yaml so CI and the
+        # local hook enforce the same rule set
+        pip install -q ruff==0.0.260
 
     - name: Ruff
-      uses: chartboost/ruff-action@v1
+      run: make lint
 
   build-and-test:
     needs: lint
