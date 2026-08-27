@@ -381,6 +381,7 @@ class TestFindBestModelConfig(unittest.TestCase):
         # Symmetric pin: silently expanding the ignore set would also
         # let real artifacts slip past the stub gate.
         self.assertEqual(_STUB_DIR_IGNORED_NAMES, frozenset({"__pycache__"}))
+
     @patch("ritme.find_best_model_config.run_all_trials")
     def test_find_best_model_config_aborts_on_enrich_nan_before_path_creation(
         self, mock_run_all_trials
@@ -464,16 +465,141 @@ class TestFindBestModelConfig(unittest.TestCase):
                 fully_reproducible=False,
                 model_hyperparameters={},
                 optuna_searchspace_sampler="TPESampler",
+                scheduler_grace_period=None,
+                scheduler_max_t=None,
                 task_type="regression",
                 k_folds=ANY,
                 nn_corn_max_levels=20,
                 max_trial_failure_rate=0.005,
+                max_trial_duration_s=None,
+                max_pending_trials=None,
             )
             # Verify temp storage paths are NOT under path_exp
             self.assertNotEqual(args[8], os.path.join(path_exp, "mlruns"))
             self.assertNotEqual(args[9], path_exp)
             # Verify MLflow extraction was called
             mock_extract_mlflow.assert_called_once()
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_forwards_scheduler_settings(
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        mock_run_all_trials.return_value = {"model1": MagicMock()}
+        mock_retrieve_n_init_best_models.return_value = {"model1": MagicMock()}
+
+        config = self.config.copy()
+        config["scheduler_grace_period"] = 2
+        config["scheduler_max_t"] = 4
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            find_best_model_config(
+                config, self.train_val, self.tax, tree_phylo, temp_dir
+            )
+
+        kwargs = mock_run_all_trials.call_args.kwargs
+        self.assertEqual(kwargs["scheduler_grace_period"], 2)
+        self.assertEqual(kwargs["scheduler_max_t"], 4)
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_forwards_task_type_to_retrieve(
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        # Best-model selection must rank by the run's task metric; dropping
+        # this kwarg would make classification campaigns select on rmse_val,
+        # which classification trials never report.
+        mock_run_all_trials.return_value = {"logreg": MagicMock()}
+        mock_retrieve_n_init_best_models.return_value = {"logreg": MagicMock()}
+
+        config = self.config.copy()
+        config["task_type"] = "classification"
+        config["ls_model_types"] = ["logreg"]
+        # 3-class target so the classification validators accept the config.
+        train_val = self.train_val.copy()
+        train_val["target_column"] = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            find_best_model_config(config, train_val, self.tax, tree_phylo, temp_dir)
+
+        kwargs = mock_retrieve_n_init_best_models.call_args.kwargs
+        self.assertEqual(kwargs["task_type"], "classification")
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_forwards_max_pending_trials(
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        mock_run_all_trials.return_value = {"model1": MagicMock()}
+        mock_retrieve_n_init_best_models.return_value = {"model1": MagicMock()}
+
+        config = self.config.copy()
+        config["max_pending_trials"] = 16
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            find_best_model_config(
+                config, self.train_val, self.tax, tree_phylo, temp_dir
+            )
+
+        kwargs = mock_run_all_trials.call_args.kwargs
+        self.assertEqual(kwargs["max_pending_trials"], 16)
+
+    @patch("ritme.find_best_model_config.run_all_trials")
+    def test_find_best_model_config_rejects_degenerate_time_cap(
+        self, mock_run_all_trials
+    ):
+        # Must fail at config validation -- before any experiment directory
+        # is created or budget spent.
+        config = self.config.copy()
+        config["max_trial_duration_s"] = 0
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(ValueError, "max_trial_duration_s"):
+                find_best_model_config(
+                    config, self.train_val, self.tax, tree_phylo, temp_dir
+                )
+            mock_run_all_trials.assert_not_called()
+            self.assertEqual(os.listdir(temp_dir), [])
+
+    @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
+    @patch("ritme.find_best_model_config.run_all_trials")
+    @patch("ritme.find_best_model_config.retrieve_n_init_best_models")
+    def test_find_best_model_config_forwards_max_trial_duration(
+        self,
+        mock_retrieve_n_init_best_models,
+        mock_run_all_trials,
+        mock_extract_mlflow,
+    ):
+        mock_run_all_trials.return_value = {"model1": MagicMock()}
+        mock_retrieve_n_init_best_models.return_value = {"model1": MagicMock()}
+
+        config = self.config.copy()
+        config["max_trial_duration_s"] = 1200
+
+        tree_phylo = skbio.TreeNode.read([self.tree_str])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            find_best_model_config(
+                config, self.train_val, self.tax, tree_phylo, temp_dir
+            )
+
+        kwargs = mock_run_all_trials.call_args.kwargs
+        self.assertEqual(kwargs["max_trial_duration_s"], 1200)
 
     @patch("ritme.find_best_model_config._extract_mlflow_logs_to_csv")
     @patch("ritme.find_best_model_config.run_all_trials")

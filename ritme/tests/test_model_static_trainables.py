@@ -2,6 +2,8 @@
 
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
@@ -14,6 +16,7 @@ import skbio
 import torch
 from parameterized import parameterized
 from ray import tune
+from ray.tune.search.optuna import OptunaSearch
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import ElasticNet, LinearRegression, LogisticRegression
@@ -31,9 +34,30 @@ from ritme.evaluate_models import (
     load_xgb_model,
 )
 from ritme.feature_space._process_train import KFoldEngineered
+from ritme.model_space import nn_trainables as nnt
 from ritme.model_space import static_trainables as st
 from ritme.split_train_test import _split_data_grouped
 from ritme.tune_models import MODEL_TRAINABLES, _check_for_errors_in_trials
+
+
+class TestStaticTrainablesImportFootprint(unittest.TestCase):
+    def test_static_trainables_imports_without_nn_stack(self):
+        # Ray workers running non-nn trainables import only the module that
+        # defines their trainable; the nn stack (lightning, torchmetrics with
+        # its torchvision pull, coral_pytorch) must stay out of that module.
+        # Bare ``torch`` is tolerated: skbio's array-backend probe imports it
+        # whenever it is installed, and skbio is a hard dependency of the
+        # feature-engineering transforms.
+        code = (
+            "import sys; import ritme.model_space.static_trainables; "
+            "mods = [m for m in ('lightning', 'torchmetrics', 'torchvision', "
+            "'coral_pytorch') if m in sys.modules]; "
+            "sys.exit(1 if mods else 0)"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -70,7 +94,7 @@ class TestHelperFunctions(unittest.TestCase):
         y_train = np.random.rand(n_train).astype(np.float32)
         X_val = np.random.rand(4, 3).astype(np.float32)
         y_val = np.random.rand(4).astype(np.float32)
-        train_loader, val_loader = st.load_data(
+        train_loader, val_loader = nnt.load_data(
             X_train,
             y_train,
             X_val,
@@ -92,7 +116,7 @@ class TestHelperFunctions(unittest.TestCase):
         # the full first batch (which would yield batch_count==0).
         X_train = np.random.rand(257, 4).astype(np.float32)
         y_train = np.random.rand(257).astype(np.float32)
-        train_loader, _ = st.load_data(
+        train_loader, _ = nnt.load_data(
             X_train,
             y_train,
             X_train[:4],
@@ -112,7 +136,7 @@ class TestHelperFunctions(unittest.TestCase):
         # n_train == 1 would land in `drop_last_train=True` -> zero
         # batches -> silent garbage trial. Refuse it loudly instead.
         with self.assertRaisesRegex(ValueError, "at least 2 training samples"):
-            st.load_data(
+            nnt.load_data(
                 np.zeros((1, 3), dtype=np.float32),
                 np.zeros((1,), dtype=np.float32),
                 np.zeros((4, 3), dtype=np.float32),
@@ -127,7 +151,7 @@ class TestHelperFunctions(unittest.TestCase):
         # because eval-mode BatchNorm uses running stats and tolerates a
         # size-1 batch. Pins the asymmetry by running a real size-1 val
         # batch through eval-mode BatchNorm1d.
-        _, val_loader = st.load_data(
+        _, val_loader = nnt.load_data(
             np.random.rand(32, 4).astype(np.float32),
             np.random.rand(32).astype(np.float32),
             np.random.rand(1, 4).astype(np.float32),
@@ -155,6 +179,7 @@ class TestHelperFunctions(unittest.TestCase):
         mock_get_context.return_value = mock_trial_context
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_trial_context.get_trial_dir.return_value = tmpdir
+            mock_trial_context.get_storage.return_value.trial_fs_path = tmpdir
 
             result = st._save_sklearn_model(self.model)
             self.assertTrue(os.path.exists(result))
@@ -167,6 +192,7 @@ class TestHelperFunctions(unittest.TestCase):
         mock_get_context.return_value = mock_trial_context
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_trial_context.get_trial_dir.return_value = tmpdir
+            mock_trial_context.get_storage.return_value.trial_fs_path = tmpdir
 
             st._report_results_manually(
                 self.model, self.X, self.y, self.X, self.y, self.tax
@@ -181,6 +207,7 @@ class TestHelperFunctions(unittest.TestCase):
         mock_get_context.return_value = mock_trial_context
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_trial_context.get_trial_dir.return_value = tmpdir
+            mock_trial_context.get_storage.return_value.trial_fs_path = tmpdir
 
             model = {
                 "model": pd.DataFrame(
@@ -523,12 +550,12 @@ class TestTrainables(unittest.TestCase):
             ("ordinal_regression", [5, 10, 5, 2], [0, 1, 2]),
         ]
     )
-    @patch("ritme.model_space.static_trainables._save_taxonomy")
-    @patch("ritme.model_space.static_trainables.seed_everything")
-    @patch("ritme.model_space.static_trainables.process_train")
-    @patch("ritme.model_space.static_trainables.load_data")
-    @patch("ritme.model_space.static_trainables.NeuralNet")
-    @patch("ritme.model_space.static_trainables.Trainer")
+    @patch("ritme.model_space.nn_trainables._save_taxonomy")
+    @patch("ritme.model_space.nn_trainables.seed_everything")
+    @patch("ritme.model_space.nn_trainables.process_train")
+    @patch("ritme.model_space.nn_trainables.load_data")
+    @patch("ritme.model_space.nn_trainables.NeuralNet")
+    @patch("ritme.model_space.nn_trainables.Trainer")
     @patch("ray.tune.get_context", return_value=MagicMock())
     def test_train_nn(
         self,
@@ -556,6 +583,7 @@ class TestTrainables(unittest.TestCase):
         # Create a mock context object with a get_trial_dir method
         mock_context = mock_get_context.return_value
         mock_context.get_trial_dir.return_value = tempfile.mkdtemp()
+        mock_context.get_storage.return_value.trial_fs_path = tempfile.mkdtemp()
 
         # Define dummy config and parameters
         config = {
@@ -577,7 +605,7 @@ class TestTrainables(unittest.TestCase):
         seed_model = 42
 
         # Call the function under test
-        st.train_nn(
+        nnt.train_nn(
             config,
             train_val,
             target,
@@ -732,6 +760,68 @@ class TestTrainableLogging(unittest.TestCase):
                     self.assertAlmostEqual(
                         logged_rmse[split], calculated_rmse, places=6
                     )
+
+    def test_artifacts_land_at_result_path_with_actor_reuse(self):
+        """Regression test for the reuse_actors artifact-path bug: on a
+        REUSED actor, ``get_trial_dir()`` points at an unsynced scratch
+        working dir, so artifacts written there never reach ``Result.path``
+        and downstream retrieval (``get_taxonomy`` / ``load_sklearn_model``)
+        crashes with FileNotFoundError. The trainables must write to the
+        storage ``trial_fs_path`` instead. Four sequential trials on one
+        concurrency slot force actor reuse for trials 2-4.
+        """
+        search_space = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "alpha": tune.uniform(0.01, 1.0),
+            "l1_ratio": 0.5,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tuner = tune.Tuner(
+                tune.with_parameters(
+                    MODEL_TRAINABLES["linreg"],
+                    train_val=self.train_val,
+                    target=self.target,
+                    host_id=self.host_id,
+                    seed_data=self.seed_data,
+                    seed_model=self.seed_model,
+                    stratify_by=None,
+                    tax=self.tax,
+                    tree_phylo=self.tree_phylo,
+                    cpus_per_trial=1,
+                ),
+                param_space=search_space,
+                tune_config=tune.TuneConfig(
+                    metric="rmse_val",
+                    mode="min",
+                    num_samples=4,
+                    max_concurrent_trials=1,
+                    reuse_actors=True,
+                    # OptunaSearch matches production (tune_models) and avoids
+                    # BasicVariantGenerator, whose state snapshot cannot be
+                    # pickled under Python 3.14.
+                    search_alg=OptunaSearch(),
+                ),
+                run_config=tune.RunConfig(storage_path=tmpdir),
+            )
+            results = tuner.fit()
+            _check_for_errors_in_trials(results)
+
+            self.assertEqual(len(results), 4)
+            for result in results:
+                for artifact in ("model.pkl", "taxonomy.pkl"):
+                    self.assertTrue(
+                        os.path.exists(os.path.join(result.path, artifact)),
+                        f"{artifact} missing at result.path for trial "
+                        f"{result.path}",
+                    )
+                # model_path metric must point inside the durable trial dir.
+                self.assertEqual(
+                    os.path.realpath(os.path.dirname(result.metrics["model_path"])),
+                    os.path.realpath(result.path),
+                )
 
 
 class TestRitmeXGBCheckpointCallback(unittest.TestCase):
@@ -922,7 +1012,7 @@ class TestNNTuneReportCheckpointCallback(unittest.TestCase):
     """
 
     def _make_callback(self):
-        return st.NNTuneReportCheckpointCallback(
+        return nnt.NNTuneReportCheckpointCallback(
             metrics={
                 "rmse_val": "val_rmse",
                 "rmse_train": "train_rmse",
@@ -955,10 +1045,10 @@ class TestNNTuneReportCheckpointCallback(unittest.TestCase):
         trainers = [self._trainer_with_score(v) for v in val_rmses]
 
         ckpt_path = (
-            "ritme.model_space.static_trainables.ray.train" ".Checkpoint.from_directory"
+            "ritme.model_space.nn_trainables.ray.train" ".Checkpoint.from_directory"
         )
         with patch(ckpt_path, return_value="fake_safety_ckpt") as mock_from_dir, patch(
-            "ritme.model_space.static_trainables.tune.report"
+            "ritme.model_space.nn_trainables.tune.report"
         ) as mock_report:
             for trainer in trainers:
                 callback._handle(trainer, MagicMock())
@@ -1005,7 +1095,7 @@ class TestNNTuneReportCheckpointCallback(unittest.TestCase):
         callback = self._make_callback()
         trainer = self._trainer_with_score(0.1)
         trainer.sanity_checking = True
-        with patch("ritme.model_space.static_trainables.tune.report") as mock_report:
+        with patch("ritme.model_space.nn_trainables.tune.report") as mock_report:
             callback._handle(trainer, MagicMock())
         mock_report.assert_not_called()
         trainer.save_checkpoint.assert_not_called()
@@ -1019,13 +1109,12 @@ class TestNNTuneReportCheckpointCallback(unittest.TestCase):
         callback._best_report_dict = {"rmse_val": 0.4, "nb_features": 11}
         try:
             ckpt_path = (
-                "ritme.model_space.static_trainables.ray.train"
-                ".Checkpoint.from_directory"
+                "ritme.model_space.nn_trainables.ray.train" ".Checkpoint.from_directory"
             )
             with patch(
                 ckpt_path, return_value="fake_checkpoint"
             ) as mock_from_dir, patch(
-                "ritme.model_space.static_trainables.tune.report"
+                "ritme.model_space.nn_trainables.tune.report"
             ) as mock_report:
                 callback.on_train_end(self._trainer_with_score(0.99), MagicMock())
             mock_from_dir.assert_called_once_with(scratch)
@@ -1053,7 +1142,7 @@ class TestNNTuneReportCheckpointCallback(unittest.TestCase):
         with patch.object(
             callback, "_get_checkpoint", return_value=ckpt_cm
         ) as mock_ckpt, patch(
-            "ritme.model_space.static_trainables.tune.report"
+            "ritme.model_space.nn_trainables.tune.report"
         ) as mock_report:
             callback.on_train_end(self._trainer_with_score(0.7), MagicMock())
         mock_ckpt.assert_called_once()
@@ -1233,6 +1322,137 @@ class TestKfoldHelpers(unittest.TestCase):
         self.assertTrue(in_flight_history, "ray.wait should be invoked")
         self.assertLessEqual(max(in_flight_history), n_workers)
 
+    @patch("ritme.model_space.static_trainables.ray")
+    def test_throttled_fold_dispatch_invokes_report_running_per_fold(self, mock_ray):
+        """``report_running`` fires once per collected fold with the growing
+        ``fold_results`` list, so the parallel sklearn / trac K-fold paths
+        surface running aggregates the scheduler can prune on."""
+        n_folds = 3
+
+        def fake_ray_wait(refs, num_returns):
+            return ([refs[0]], refs[1:])
+
+        def fake_ray_get(ref):
+            if isinstance(ref, tuple) and ref[0] == "fold_ref":
+                return {"rmse_val": 0.1 * ref[1]}
+            return {"full": True}
+
+        mock_ray.wait.side_effect = fake_ray_wait
+        mock_ray.get.side_effect = fake_ray_get
+
+        completed_counts = []
+
+        def recorder(fold_results):
+            completed_counts.append(sum(1 for r in fold_results if r is not None))
+
+        st._dispatch_folds_then_refit(
+            submit_fold=lambda i: ("fold_ref", i),
+            n_folds=n_folds,
+            submit_refit=lambda: ("refit_ref",),
+            n_workers=2,
+            report_running=recorder,
+        )
+
+        self.assertEqual(completed_counts, [1, 2, 3])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    def test_emit_running_aggregate_for_completed(self, mock_report):
+        # Two of three folds done -> running aggregate emitted over the
+        # completed folds only.
+        fold_results = [{"rmse_val": 0.2}, None, {"rmse_val": 0.4}]
+        st._emit_running_aggregate_for_completed(fold_results, 7, 3)
+        reported = mock_report.call_args.kwargs["metrics"]
+        self.assertAlmostEqual(reported["rmse_val_mean"], 0.3, places=6)
+        self.assertEqual(reported["nb_features"], 7)
+        self.assertNotIn("rmse_val", reported)  # bare key stripped
+
+        # All folds done -> no mid-trial report (final report carries them).
+        mock_report.reset_mock()
+        st._emit_running_aggregate_for_completed(
+            [{"rmse_val": 0.2}, {"rmse_val": 0.3}, {"rmse_val": 0.4}], 7, 3
+        )
+        mock_report.assert_not_called()
+
+    @patch("ritme.model_space.static_trainables.time")
+    def test_time_cap_reached(self, mock_time):
+        mock_time.monotonic.return_value = 150.0
+        self.assertTrue(st._time_cap_reached(0.0, 100.0))
+        self.assertFalse(st._time_cap_reached(100.0, 100.0))
+        self.assertFalse(st._time_cap_reached(0.0, None))
+
+    @patch("ritme.model_space.static_trainables.time")
+    def test_past_deadline(self, mock_time):
+        mock_time.monotonic.return_value = 150.0
+        self.assertTrue(st._past_deadline(100.0))
+        self.assertFalse(st._past_deadline(200.0))
+        self.assertFalse(st._past_deadline(None))
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    def test_report_time_capped_aggregate_shape(self, mock_report):
+        st._report_time_capped_aggregate([{"rmse_val": 0.2}, {"rmse_val": 0.4}], 9)
+        reported = mock_report.call_args.kwargs["metrics"]
+        # No bare metric key and no checkpoint: a capped trial must never be
+        # selectable as best.
+        self.assertNotIn("rmse_val", reported)
+        self.assertNotIn("checkpoint", mock_report.call_args.kwargs)
+        self.assertAlmostEqual(reported["rmse_val_mean"], 0.3, places=6)
+        self.assertTrue(reported["time_capped"])
+        self.assertEqual(reported["nb_features"], 9)
+        self.assertEqual(reported["n_folds"], 2)
+
+    @patch("ritme.model_space.static_trainables.ray")
+    def test_throttled_fold_dispatch_deadline_truncates(self, mock_ray):
+        """Past the deadline, fold 0 is still submitted (a trial must produce
+        at least one result), later folds are never submitted, and the refit
+        is skipped -- the truncated return carries ``None`` as the model."""
+
+        def fake_ray_wait(refs, num_returns):
+            return ([refs[0]], refs[1:])
+
+        def fake_ray_get(ref):
+            if isinstance(ref, tuple) and ref[0] == "fold_ref":
+                return {"rmse_val": 0.1 * ref[1]}
+            return {"full": True}
+
+        mock_ray.wait.side_effect = fake_ray_wait
+        mock_ray.get.side_effect = fake_ray_get
+        refit_submitted = []
+
+        def fake_submit_refit():
+            refit_submitted.append(True)
+            return ("refit_ref",)
+
+        fold_results, refit_result = st._dispatch_folds_then_refit(
+            submit_fold=lambda i: ("fold_ref", i),
+            n_folds=3,
+            submit_refit=fake_submit_refit,
+            n_workers=2,
+            deadline=-1.0,  # monotonic clock is always past a negative time
+        )
+
+        self.assertIsNone(refit_result)
+        self.assertEqual(refit_submitted, [])
+        self.assertAlmostEqual(fold_results[0]["rmse_val"], 0.0, places=6)
+        self.assertEqual(fold_results[1:], [None, None])
+
+    @patch("ritme.model_space.static_trainables.tune.report")
+    def test_finalize_sklearn_truncated_reports_time_capped(self, mock_report):
+        # full_model None signals a time-capped trial: only the completed
+        # folds' aggregate is reported, with no model_path.
+        st._finalize_and_report_sklearn(
+            5,
+            None,
+            [{"rmse_val": 0.2}, None, None],
+            False,
+            pd.DataFrame(),
+            {},
+        )
+        reported = mock_report.call_args.kwargs["metrics"]
+        self.assertTrue(reported["time_capped"])
+        self.assertNotIn("model_path", reported)
+        self.assertNotIn("rmse_val", reported)
+        self.assertEqual(reported["n_folds"], 1)
+
     def test_aggregate_fold_metrics_one_valid_value_yields_nan_se(self):
         """A single valid observation cannot support a meaningful SE: K-1
         folds returned NaN (degenerate val split, SIGSEGV worker, etc.), so
@@ -1286,31 +1506,31 @@ class TestKfoldHelpers(unittest.TestCase):
         self.assertEqual(st._xgb_refit_rounds([0, 0, 0], 100), 1)
 
     def test_nn_refit_epochs_fallback_when_any_fold_none(self):
-        self.assertEqual(st._nn_refit_epochs([None, 5, 8], 100), 100)
-        self.assertEqual(st._nn_refit_epochs([None, None, None], 100), 100)
+        self.assertEqual(nnt._nn_refit_epochs([None, 5, 8], 100), 100)
+        self.assertEqual(nnt._nn_refit_epochs([None, None, None], 100), 100)
 
     def test_nn_refit_epochs_median_plus_one(self):
-        self.assertEqual(st._nn_refit_epochs([3, 4, 5], 100), 5)
-        self.assertEqual(st._nn_refit_epochs([2, 3, 4, 5], 100), 4)
+        self.assertEqual(nnt._nn_refit_epochs([3, 4, 5], 100), 5)
+        self.assertEqual(nnt._nn_refit_epochs([2, 3, 4, 5], 100), 4)
         # I-1 fix: median=0 must NOT fall back to max_epochs_config;
         # refits for 1 epoch.
-        self.assertEqual(st._nn_refit_epochs([0, 0, 0], 100), 1)
+        self.assertEqual(nnt._nn_refit_epochs([0, 0, 0], 100), 1)
         # And a single positive value still rounds correctly.
-        self.assertEqual(st._nn_refit_epochs([7], 100), 8)
+        self.assertEqual(nnt._nn_refit_epochs([7], 100), 8)
 
     def test_extract_best_epoch_returns_none_when_never_fired(self):
         early_stop = MagicMock(stopped_epoch=0, patience=10)
-        self.assertIsNone(st._extract_best_epoch(early_stop, max_epochs=100))
+        self.assertIsNone(nnt._extract_best_epoch(early_stop, max_epochs=100))
 
     def test_extract_best_epoch_clamps_below_zero(self):
         early_stop = MagicMock(stopped_epoch=3, patience=10)
         # 3 - 10 = -7, clamps to 0
-        self.assertEqual(st._extract_best_epoch(early_stop, max_epochs=100), 0)
+        self.assertEqual(nnt._extract_best_epoch(early_stop, max_epochs=100), 0)
 
     def test_extract_best_epoch_normal_case(self):
         early_stop = MagicMock(stopped_epoch=25, patience=10)
         # 25 - 10 = 15
-        self.assertEqual(st._extract_best_epoch(early_stop, max_epochs=100), 15)
+        self.assertEqual(nnt._extract_best_epoch(early_stop, max_epochs=100), 15)
 
     @patch("ritme.model_space.static_trainables.tune.report")
     def test_emit_running_fold_aggregate_skips_last_fold(self, mock_report):
@@ -1556,6 +1776,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_linreg"
             mock_get_context.return_value = mock_ctx
 
@@ -1574,6 +1795,57 @@ class TestKfoldTrainables(unittest.TestCase):
             )
 
             self._assert_kfold_report(mock_report, "rmse_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_linreg_kfold_time_cap_truncates(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_dispatch,
+    ):
+        # The dispatcher signals a max_trial_duration_s truncation by
+        # returning ``None`` as the refit model with unfinished folds left
+        # as ``None``; the trainable must end on a time-capped partial
+        # aggregate with no model_path.
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        mock_dispatch.return_value = ([self.reg_fold_metrics[0], None, None], None)
+
+        config = {"alpha": 0.1, "l1_ratio": 0.5}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
+            mock_get_context.return_value = mock_ctx
+
+            st.train_linreg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+                max_trial_duration_s=1.0,
+            )
+
+        reported = mock_report.call_args.kwargs["metrics"]
+        self.assertTrue(reported["time_capped"])
+        self.assertNotIn("model_path", reported)
+        self.assertNotIn("rmse_val", reported)
+        self.assertIn("rmse_val_mean", reported)
+        self.assertEqual(reported["n_folds"], 1)
+        # The cap must actually reach the dispatcher as a deadline.
+        self.assertIsNotNone(mock_dispatch.call_args.kwargs["deadline"])
 
     @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_sklearn")
     @patch("ritme.model_space.static_trainables.process_train_kfold")
@@ -1607,6 +1879,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_rf"
             mock_get_context.return_value = mock_ctx
 
@@ -1658,6 +1931,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_xgb"
             mock_get_context.return_value = mock_ctx
 
@@ -1727,6 +2001,9 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_get_context.return_value = MagicMock()
             mock_get_context.return_value.get_trial_dir.return_value = tmpdir
+            mock_get_context.return_value.get_storage.return_value.trial_fs_path = (
+                tmpdir
+            )
             st.train_xgb(
                 config,
                 self.train_val,
@@ -1777,6 +2054,130 @@ class TestKfoldTrainables(unittest.TestCase):
                 "Final report must carry the refit checkpoint",
             )
 
+    @patch("ritme.model_space.static_trainables._time_cap_reached")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_time_cap_truncates_at_fold_boundary(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_cap,
+    ):
+        """With the cap reached, the K-fold xgb loop stops after fold 0 (the
+        first check happens once one fold's metrics exist), skips folds 1-2
+        and the refit, and reports a time-capped partial aggregate without a
+        checkpoint."""
+        mock_cap.return_value = True
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_get_context.return_value = MagicMock()
+            mock_get_context.return_value.get_trial_dir.return_value = tmpdir
+            mock_get_context.return_value.get_storage.return_value.trial_fs_path = (
+                tmpdir
+            )
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+                max_trial_duration_s=1.0,
+            )
+
+        # One running aggregate (after fold 0) + one time-capped final.
+        self.assertEqual(mock_report.call_count, 2)
+        final = mock_report.call_args
+        reported = final.kwargs["metrics"]
+        self.assertTrue(reported["time_capped"])
+        self.assertEqual(reported["n_folds"], 1)
+        self.assertNotIn("rmse_val", reported)
+        self.assertIn("rmse_val_mean", reported)
+        self.assertNotIn("checkpoint", final.kwargs)
+
+    @patch("ritme.model_space.static_trainables._time_cap_reached")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_xgb_kfold_time_cap_skips_only_refit(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_cap,
+    ):
+        """Cap reached only after the last fold: all K folds contribute to
+        the aggregate, but the refit is skipped and the trial ends without a
+        deployable checkpoint."""
+        # Checks run before folds 1 and 2 (fold 0 has no metrics yet) and
+        # once before the refit.
+        mock_cap.side_effect = [False, False, True]
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_estimators": 25,
+            "max_depth": 3,
+            "learning_rate": 0.1,
+            "gamma": 0.0,
+            "min_child_weight": 1,
+            "reg_alpha": 0.0,
+            "reg_lambda": 1.0,
+            "model": "xgb",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_get_context.return_value = MagicMock()
+            mock_get_context.return_value.get_trial_dir.return_value = tmpdir
+            mock_get_context.return_value.get_storage.return_value.trial_fs_path = (
+                tmpdir
+            )
+            st.train_xgb(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+                max_trial_duration_s=1.0,
+            )
+
+        # Two running aggregates (after folds 0 and 1) + one capped final.
+        self.assertEqual(mock_report.call_count, 3)
+        final = mock_report.call_args
+        reported = final.kwargs["metrics"]
+        self.assertTrue(reported["time_capped"])
+        self.assertEqual(reported["n_folds"], 3)
+        self.assertNotIn("rmse_val", reported)
+        self.assertNotIn("checkpoint", final.kwargs)
+
     @patch("ritme.model_space.static_trainables.tune.report")
     @patch("ritme.model_space.static_trainables.ray.tune.get_context")
     def test_train_xgb_class_kfold_reports_aggregated_metrics(
@@ -1817,6 +2218,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_xgb_class"
             mock_get_context.return_value = mock_ctx
 
@@ -1916,6 +2318,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_xgb_ckpt"
             mock_get_context.return_value = mock_ctx
 
@@ -2033,6 +2436,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_single_xgb"
             mock_get_context.return_value = mock_ctx
 
@@ -2107,6 +2511,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_single_xgb_class"
             mock_get_context.return_value = mock_ctx
 
@@ -2183,6 +2588,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_logreg"
             mock_get_context.return_value = mock_ctx
 
@@ -2234,6 +2640,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_rf_class"
             mock_get_context.return_value = mock_ctx
 
@@ -2252,6 +2659,70 @@ class TestKfoldTrainables(unittest.TestCase):
             )
 
             self._assert_kfold_report(mock_report, "roc_auc_macro_ovr_val", n_splits=3)
+
+    @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_trac")
+    @patch("ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
+    @patch("ritme.model_space.static_trainables.create_matrix_from_tree")
+    @patch("ritme.model_space.static_trainables.process_train_kfold")
+    @patch("ritme.model_space.static_trainables.tune.report")
+    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    def test_train_trac_kfold_time_cap_truncates(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_process_train_kfold,
+        mock_create_matrix,
+        mock_preprocess,
+        mock_dispatch_trac,
+    ):
+        mock_process_train_kfold.return_value = self._make_kfold_engineered(
+            n_splits=3, classification=False
+        )
+        a_df = pd.DataFrame(
+            np.eye(self.X_full.shape[1]),
+            index=self.feature_cols,
+            columns=self.feature_cols,
+        )
+        mock_create_matrix.return_value = a_df
+        mock_preprocess.return_value = (
+            self.X_full.copy(),
+            np.ones(self.X_full.shape[1]),
+        )
+        # Truncated dispatch: one completed fold, refit skipped.
+        mock_dispatch_trac.return_value = (
+            [{"rmse_val": 0.40, "rmse_train": 0.30}, None, None],
+            None,
+        )
+
+        config = {"lambda": 0.1}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
+            mock_get_context.return_value = mock_ctx
+
+            st.train_trac(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                k_folds=3,
+                max_trial_duration_s=1.0,
+            )
+
+        reported = mock_report.call_args.kwargs["metrics"]
+        self.assertTrue(reported["time_capped"])
+        self.assertNotIn("model_path", reported)
+        self.assertNotIn("rmse_val", reported)
+        self.assertEqual(reported["n_folds"], 1)
+        # The cap must actually reach the dispatcher as a deadline.
+        self.assertIsNotNone(mock_dispatch_trac.call_args.kwargs["deadline"])
 
     @patch("ritme.model_space.static_trainables._dispatch_kfold_and_refit_trac")
     @patch("ritme.model_space.static_trainables._preprocess_taxonomy_aggregation")
@@ -2300,6 +2771,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_trac"
             mock_get_context.return_value = mock_ctx
 
@@ -2346,8 +2818,8 @@ class TestKfoldTrainables(unittest.TestCase):
             # The model was pickled to disk by the trainable.
             self.assertTrue(os.path.exists(reported["model_path"]))
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_reg_kfold_reports_aggregated_metrics(
         self,
         mock_get_context,
@@ -2385,10 +2857,11 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_nn_reg"
             mock_get_context.return_value = mock_ctx
 
-            st.train_nn_reg(
+            nnt.train_nn_reg(
                 config,
                 self.train_val,
                 self.target,
@@ -2425,9 +2898,131 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
 
-    @patch("ritme.model_space.static_trainables.process_train_kfold")
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables._time_cap_reached")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_time_cap_truncates_at_fold_boundary(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_cap,
+    ):
+        """With the cap reached, the K-fold nn loop stops after fold 0 and
+        reports a time-capped partial aggregate with no checkpoint."""
+        mock_cap.return_value = True
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
+            mock_get_context.return_value = mock_ctx
+
+            nnt.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+                max_trial_duration_s=1.0,
+            )
+
+        # One running aggregate (after fold 0) + one time-capped final.
+        self.assertEqual(mock_report.call_count, 2)
+        final = mock_report.call_args
+        reported = final.kwargs["metrics"]
+        self.assertTrue(reported["time_capped"])
+        self.assertEqual(reported["n_folds"], 1)
+        self.assertNotIn("rmse_val", reported)
+        self.assertIn("rmse_val_mean", reported)
+        self.assertNotIn("checkpoint", final.kwargs)
+
+    @patch("ritme.model_space.nn_trainables._time_cap_reached")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
+    def test_train_nn_reg_kfold_time_cap_skips_only_refit(
+        self,
+        mock_get_context,
+        mock_report,
+        mock_cap,
+    ):
+        """nn counterpart of the xgb skip-only-refit test: cap reached after
+        the last fold -> full aggregate, no refit, no checkpoint."""
+        mock_cap.side_effect = [False, False, True]
+        config = {
+            "data_aggregation": None,
+            "data_selection": None,
+            "data_selection_t": None,
+            "data_transform": None,
+            "data_enrich": None,
+            "n_hidden_layers": 1,
+            "n_units_hl0": 4,
+            "learning_rate": 1e-3,
+            "epochs": 3,
+            "dropout_rate": 0.0,
+            "weight_decay": 0.0,
+            "batch_size": 3,
+            "early_stopping_patience": 5,
+            "early_stopping_min_delta": 0.0,
+            "model": "nn_reg",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_ctx = MagicMock()
+            mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
+            mock_get_context.return_value = mock_ctx
+
+            nnt.train_nn_reg(
+                config,
+                self.train_val,
+                self.target,
+                self.host_id,
+                None,
+                self.seed_data,
+                self.seed_model,
+                self.tax,
+                self.tree_phylo,
+                cpus_per_trial=1,
+                gpus_per_trial=0,
+                task_type="regression",
+                k_folds=3,
+                max_trial_duration_s=1.0,
+            )
+
+        self.assertEqual(mock_report.call_count, 3)
+        final = mock_report.call_args
+        reported = final.kwargs["metrics"]
+        self.assertTrue(reported["time_capped"])
+        self.assertEqual(reported["n_folds"], 3)
+        self.assertNotIn("rmse_val", reported)
+        self.assertNotIn("checkpoint", final.kwargs)
+
+    @patch("ritme.model_space.nn_trainables.process_train_kfold")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_reg_kfold_handles_per_fold_feature_count_drift(
         self,
         mock_get_context,
@@ -2500,10 +3095,11 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_fcount_drift"
             mock_get_context.return_value = mock_ctx
 
-            st.train_nn_reg(
+            nnt.train_nn_reg(
                 config,
                 self.train_val,
                 self.target,
@@ -2530,8 +3126,8 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(final["nb_features"], X_refit.shape[1])
             self.assertEqual(final["n_folds"], 2)
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_reg_kfold_saves_loadable_checkpoint(
         self,
         mock_get_context,
@@ -2581,6 +3177,7 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_nn_reg_ckpt"
             mock_get_context.return_value = mock_ctx
 
@@ -2605,7 +3202,7 @@ class TestKfoldTrainables(unittest.TestCase):
 
             mock_report.side_effect = _persist
 
-            st.train_nn_reg(
+            nnt.train_nn_reg(
                 config,
                 self.train_val,
                 self.target,
@@ -2638,7 +3235,7 @@ class TestKfoldTrainables(unittest.TestCase):
             fake_result = MagicMock()
             fake_result.checkpoint = stable_checkpoint
             loaded_nn = load_nn_model(fake_result)
-            self.assertIsInstance(loaded_nn, st.NeuralNet)
+            self.assertIsInstance(loaded_nn, nnt.NeuralNet)
 
             # Wrap in TunedModel so the public reload surface (the way the
             # orchestrator instantiates it from a Result) is exercised.
@@ -2672,8 +3269,8 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(preds.shape, (5,))
             self.assertTrue(np.all(np.isfinite(preds)))
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_class_kfold_reports_aggregated_metrics(
         self,
         mock_get_context,
@@ -2715,10 +3312,11 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_nn_class"
             mock_get_context.return_value = mock_ctx
 
-            st.train_nn_class(
+            nnt.train_nn_class(
                 config,
                 train_val,
                 self.target,
@@ -2772,8 +3370,8 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_corn_kfold_reports_aggregated_metrics(
         self,
         mock_get_context,
@@ -2816,10 +3414,11 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_kfold_nn_corn"
             mock_get_context.return_value = mock_ctx
 
-            st.train_nn_corn(
+            nnt.train_nn_corn(
                 config,
                 train_val,
                 self.target,
@@ -2866,8 +3465,8 @@ class TestKfoldTrainables(unittest.TestCase):
             self.assertEqual(reported["n_folds"], 3)
             self.assertEqual(reported["nb_features"], self.X_full.shape[1])
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_reg_single_split_no_kfold_aggregates(
         self,
         mock_get_context,
@@ -2907,10 +3506,11 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_single_nn_reg"
             mock_get_context.return_value = mock_ctx
 
-            st.train_nn_reg(
+            nnt.train_nn_reg(
                 config,
                 self.train_val,
                 self.target,
@@ -2955,8 +3555,8 @@ class TestKfoldTrainables(unittest.TestCase):
                 ):
                     self.assertNotIn(forbidden, reported)
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_class_single_split_no_kfold_aggregates(
         self,
         mock_get_context,
@@ -2995,10 +3595,11 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_single_nn_class"
             mock_get_context.return_value = mock_ctx
 
-            st.train_nn_class(
+            nnt.train_nn_class(
                 config,
                 train_val,
                 self.target,
@@ -3045,8 +3646,8 @@ class TestKfoldTrainables(unittest.TestCase):
                 ):
                     self.assertNotIn(forbidden, reported)
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_corn_single_split_no_kfold_aggregates(
         self,
         mock_get_context,
@@ -3085,10 +3686,11 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_single_nn_corn"
             mock_get_context.return_value = mock_ctx
 
-            st.train_nn_corn(
+            nnt.train_nn_corn(
                 config,
                 train_val,
                 self.target,
@@ -3126,8 +3728,8 @@ class TestKfoldTrainables(unittest.TestCase):
                 ):
                     self.assertNotIn(forbidden, reported)
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_corn_raises_when_levels_exceed_cap_single_split(
         self,
         mock_get_context,
@@ -3163,11 +3765,12 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_cap_violation"
             mock_get_context.return_value = mock_ctx
 
             with self.assertRaisesRegex(ValueError, r"nn_corn_max_levels"):
-                st.train_nn_corn(
+                nnt.train_nn_corn(
                     config,
                     train_val,
                     self.target,
@@ -3186,8 +3789,8 @@ class TestKfoldTrainables(unittest.TestCase):
             # The cap check fires before training, so no metrics are reported.
             mock_report.assert_not_called()
 
-    @patch("ritme.model_space.static_trainables.tune.report")
-    @patch("ritme.model_space.static_trainables.ray.tune.get_context")
+    @patch("ritme.model_space.nn_trainables.tune.report")
+    @patch("ritme.model_space.nn_trainables.ray.tune.get_context")
     def test_train_nn_corn_raises_when_levels_exceed_cap_kfold(
         self,
         mock_get_context,
@@ -3225,11 +3828,12 @@ class TestKfoldTrainables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_ctx = MagicMock()
             mock_ctx.get_trial_dir.return_value = tmpdir
+            mock_ctx.get_storage.return_value.trial_fs_path = tmpdir
             mock_ctx.get_trial_id.return_value = "trial_cap_violation_kfold"
             mock_get_context.return_value = mock_ctx
 
             with self.assertRaisesRegex(ValueError, r"nn_corn_max_levels"):
-                st.train_nn_corn(
+                nnt.train_nn_corn(
                     config,
                     train_val,
                     self.target,
@@ -3254,7 +3858,7 @@ class TestKfoldTrainables(unittest.TestCase):
         from an ordinal model and defeat the relabel.
         """
         with self.assertRaisesRegex(ValueError, r"regression-only"):
-            st.train_nn_corn(
+            nnt.train_nn_corn(
                 {},
                 self.train_val,
                 self.target,

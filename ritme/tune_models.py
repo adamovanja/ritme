@@ -1,3 +1,4 @@
+import math
 import os
 import random
 import warnings
@@ -23,8 +24,10 @@ from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import ResultGrid
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
 from ray.tune.search.optuna import OptunaSearch
+from ray.tune.stopper import Stopper
 
 from ritme.feature_space.utils import _PAST_SUFFIX_RE
+from ritme.model_space import nn_trainables as nt
 from ritme.model_space import static_searchspace as ss
 from ritme.model_space import static_trainables as st
 
@@ -33,9 +36,9 @@ MODEL_TRAINABLES = {
     # model_type: trainable
     "xgb": st.train_xgb,
     "xgb_class": st.train_xgb_class,
-    "nn_reg": st.train_nn_reg,
-    "nn_class": st.train_nn_class,
-    "nn_corn": st.train_nn_corn,
+    "nn_reg": nt.train_nn_reg,
+    "nn_class": nt.train_nn_class,
+    "nn_corn": nt.train_nn_corn,
     "linreg": st.train_linreg,
     "logreg": st.train_logreg,
     "rf": st.train_rf,
@@ -60,13 +63,42 @@ DEFAULT_NN_CORN_MAX_LEVELS = st.DEFAULT_NN_CORN_MAX_LEVELS
 # warning while preserving the existing abort for systemic failures.
 DEFAULT_MAX_TRIAL_FAILURE_RATE = 0.005
 
+# Early-abort thresholds for _SearchHealthGuard. Deliberately far more
+# conservative than DEFAULT_MAX_TRIAL_FAILURE_RATE: the guard only catches
+# *systemically* broken searches (every trial erroring, metric never finite)
+# within minutes; the exact user-configured failure-rate policy is still
+# enforced right after fit() by _check_for_errors_in_trials.
+EARLY_ABORT_MIN_ERRORS = 10
+EARLY_ABORT_MIN_COMPLETED = 10
+EARLY_ABORT_FAILURE_RATE = 0.5
+
 TASK_METRICS = {
     "regression": ("rmse_val", "min"),
     "classification": ("roc_auc_macro_ovr_val", "max"),
 }
 
+# Single-split scheduler rungs: xgb / nn trainables report once per boosting
+# iteration / epoch there, so iteration-based rungs are meaningful.
 DEFAULT_SCHEDULER_GRACE_PERIOD = 10
 DEFAULT_SCHEDULER_MAX_T = 100
+
+# K-fold scheduler grace period: a trial emits at most k_folds reports (one
+# per fold), so the first pruning rung must be below k_folds to be reachable
+# at all. 2 bases the pruning decision on a two-fold running mean rather than
+# a single fold's noisy estimate (important at the small sample sizes typical
+# for microbiome data). With Ray's default reduction_factor=4 and the default
+# k_folds=5, the only rung is at fold 2 (2 * 4 = 8 > 5).
+KFOLD_SCHEDULER_GRACE_PERIOD = 2
+
+# Families whose single-split (k_folds=1) path reports exactly once at the end
+# of the trial -- no scheduler can prune them there.
+SINGLE_REPORT_MODELS = frozenset({"linreg", "logreg", "rf", "rf_class", "trac"})
+
+# Families whose per-fit computation is single-threaded (ElasticNet's cyclic
+# coordinate descent, saga, classo's Path-Alg): a trial can occupy at most one
+# CPU per parallel K-fold fold. The threaded families (xgb via nthread, rf via
+# n_jobs, nn via torch threads) can fill an arbitrary reservation.
+FOLD_PARALLEL_MODELS = frozenset({"linreg", "logreg", "trac"})
 
 # overview of all optuna samplers is available here:
 # https://optuna.readthedocs.io/en/stable/reference/samplers/index.html
@@ -77,6 +109,11 @@ OPTUNA_SAMPLER_CLASSES = {
     "GPSampler": GPSampler,  # inefficient cond. search space
     "QMCSampler": QMCSampler,  # inefficient cat.params + cond. search space
 }
+
+# The TUNE_MAX_PENDING_TRIALS_PG value ritme itself wrote last (None until the
+# first run_trials call); lets _resolve_max_pending_trials distinguish a
+# user-provided override from ritme's own earlier writes in this process.
+_SELF_SET_MAX_PENDING: str | None = None
 
 # Floor and multiplier for n_startup_trials = max(floor, mult * effective_dims).
 # 5x is enough to seed multivariate-TPE's grouped Parzen estimator without
@@ -276,6 +313,8 @@ def _validate_run_inputs(
     target: str,
     train_val: pd.DataFrame,
     nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
+    max_trial_duration_s: float | None = None,
+    max_pending_trials: int | None = None,
 ) -> None:
     """Cheap pre-flight validation shared by ``find_best_model_config`` and
     ``run_all_trials``.
@@ -287,6 +326,8 @@ def _validate_run_inputs(
     failure from leaving a stub experiment directory on disk
     (issue_m_existing_dir.md).
     """
+    _validate_budget_inputs(max_trial_duration_s, max_pending_trials)
+
     if task_type not in TASK_METRICS:
         raise ValueError(
             f"Invalid task_type '{task_type}'. Must be one of: "
@@ -354,15 +395,206 @@ def _validate_run_inputs(
             )
 
 
-def _get_resources(max_concurrent_trials: int) -> dict:
-    """Calculate CPU and GPU resources based on SLURM environment variables."""
+def _validate_budget_inputs(
+    max_trial_duration_s: float | None, max_pending_trials: int | None
+) -> None:
+    """Reject degenerate per-trial budget settings up front.
+
+    A non-positive ``max_trial_duration_s`` would truncate every K-fold trial
+    after its first fold, so no trial ever persists a deployable artifact and
+    the campaign fails only at the retrieve step -- hours later, with an
+    unrelated-looking error.
+    """
+    if max_trial_duration_s is not None and not max_trial_duration_s > 0:
+        raise ValueError(
+            f"max_trial_duration_s must be a positive number of seconds or "
+            f"None/unset (got {max_trial_duration_s!r})."
+        )
+    if max_pending_trials is not None and int(max_pending_trials) < 1:
+        raise ValueError(
+            f"max_pending_trials must be a positive int or None/unset "
+            f"(got {max_pending_trials!r})."
+        )
+
+
+def _model_type_for(trainable: Any, exp_name: str) -> str:
+    """Model-family key for resource sizing and scheduler warnings.
+
+    ``run_all_trials`` passes the model type as ``exp_name``, but direct
+    ``run_trials`` callers may use any experiment name -- resolve the family
+    from the trainable itself and fall back to ``exp_name``.
+    """
+    for model_type, fn in MODEL_TRAINABLES.items():
+        if fn is trainable:
+            return model_type
+    return exp_name
+
+
+def _resolve_max_pending_trials(
+    max_concurrent_trials: int, requested: int | None = None
+) -> int:
+    """Resolve how many trials Ray Tune may hold in the pending/bootstrap
+    pipeline.
+
+    Ray hard-codes 1 pending trial for any non-BasicVariantGenerator searcher
+    (OptunaSearch included), which serialises trial launches -- one actor
+    bootstrapping at a time -- throttling short-trial searches regardless of
+    allocation. Overriding via the ``TUNE_MAX_PENDING_TRIALS_PG`` environment
+    variable lets actor bootstrap overlap across trials; the TPE sampler
+    already runs with ``constant_liar=True``, which is designed for exactly
+    this kind of parallel suggestion.
+
+    Precedence: explicit ``requested`` value (``max_pending_trials`` config
+    key) > a ``TUNE_MAX_PENDING_TRIALS_PG`` value the user set (any value
+    ritme did not write itself) > ``max(2, max_concurrent_trials)``.
+    """
+    if requested is not None:
+        return int(requested)
+    env = os.environ.get("TUNE_MAX_PENDING_TRIALS_PG")
+    if env is not None and env != _SELF_SET_MAX_PENDING:
+        return int(env)
+    return max(2, int(max_concurrent_trials))
+
+
+def _set_max_pending_trials_env(
+    max_concurrent_trials: int, requested: int | None = None
+) -> int:
+    """Resolve and export ``TUNE_MAX_PENDING_TRIALS_PG``, remembering the
+    value ritme wrote so later calls can still recognise a user override."""
+    global _SELF_SET_MAX_PENDING
+    resolved = _resolve_max_pending_trials(max_concurrent_trials, requested)
+    _SELF_SET_MAX_PENDING = str(resolved)
+    os.environ["TUNE_MAX_PENDING_TRIALS_PG"] = _SELF_SET_MAX_PENDING
+    return resolved
+
+
+def _max_usable_cpus_per_trial(model_type: str, k_folds: int) -> int | None:
+    """CPUs a single trial of this model family can actually occupy.
+
+    Fold-parallel families run one single-threaded fit per fold, so their
+    appetite is one CPU per fold (one CPU in single-split mode). Threaded
+    families have no family cap (returns ``None``).
+    """
+    if model_type in FOLD_PARALLEL_MODELS:
+        return max(1, int(k_folds or 1))
+    return None
+
+
+def _get_resources(
+    max_concurrent_trials: int,
+    model_type: str | None = None,
+    k_folds: int = 1,
+    launched_concurrency: int | None = None,
+) -> dict:
+    """Calculate CPU and GPU resources based on SLURM environment variables.
+
+    The per-trial CPU reservation is the allocation share
+    (``all_cpus // max_concurrent_trials``) capped by what the model family
+    can actually occupy (:func:`_max_usable_cpus_per_trial`) -- without the
+    cap, fold-parallel families hold cores their single-threaded fits can
+    never use. Prints right-sizing guidance when the capped reservation
+    cannot fill the allocation.
+    """
     all_cpus_avail = _get_slurm_resource("SLURM_CPUS_PER_TASK", 1)
     all_gpus_avail = _get_slurm_resource("SLURM_GPUS_PER_TASK", 0)
     cpus = max(1, all_cpus_avail // max_concurrent_trials)
+    usable = (
+        _max_usable_cpus_per_trial(model_type, k_folds)
+        if model_type is not None
+        else None
+    )
+    if usable is not None and usable < cpus:
+        cpus = usable
+        # trac launches fewer slots than the sizing concurrency (memory
+        # workaround), so the guidance must count what actually gets held.
+        n_slots = launched_concurrency or max_concurrent_trials
+        reserved = cpus * n_slots
+        print(
+            f"Note: '{model_type}' trials can occupy at most {cpus} CPU(s) "
+            f"each (k_folds={int(k_folds or 1)}), reserving "
+            f"{reserved}/{all_cpus_avail} allocated CPUs across {n_slots} "
+            f"concurrent trial(s). Consider a smaller allocation or a "
+            f"higher max_cuncurrent_trials."
+        )
     gpus = max(0, all_gpus_avail // max_concurrent_trials)
     print(f"Using these resources: CPU {cpus}")
     print(f"Using these resources: GPU {gpus}")
     return {"cpu": cpus, "gpu": gpus}
+
+
+def _resolve_scheduler_rungs(
+    scheduler_grace_period: int | None,
+    scheduler_max_t: int | None,
+    k_folds: int,
+    fully_reproducible: bool = False,
+) -> tuple[int, int]:
+    """Resolve scheduler rungs, deriving reachable defaults when unset.
+
+    In K-fold mode a trial reports at most ``k_folds`` times (once per fold),
+    so the ASHA defaults are ``grace_period=2`` / ``max_t=k_folds`` --
+    reachable rungs on a running mean of at least two folds. Single-split keeps the
+    iteration-based defaults (xgb / nn report per boosting iteration / epoch
+    there). Explicit values are passed through unchanged.
+
+    ``fully_reproducible`` runs keep the iteration-based defaults even in
+    K-fold mode: ``HyperBandScheduler`` PAUSES trials at reachable
+    milestones, and K-fold running reports carry no checkpoint, so a resumed
+    trial restarts its fold loop from scratch -- pure waste. With the
+    unreachable defaults the scheduler stays inert there, as before.
+    """
+    n_folds = int(k_folds or 1)
+    derive_kfold_rungs = n_folds > 1 and not fully_reproducible
+    if scheduler_grace_period is None:
+        scheduler_grace_period = (
+            KFOLD_SCHEDULER_GRACE_PERIOD
+            if derive_kfold_rungs
+            else DEFAULT_SCHEDULER_GRACE_PERIOD
+        )
+    if scheduler_max_t is None:
+        scheduler_max_t = n_folds if derive_kfold_rungs else DEFAULT_SCHEDULER_MAX_T
+    return int(scheduler_grace_period), int(scheduler_max_t)
+
+
+def _max_reportable_iterations(model_type: str, k_folds: int) -> int | None:
+    """Upper bound on ``training_iteration`` a trial of this family can emit.
+
+    K-fold trials report once per fold for every family. In single-split mode
+    the manual-report families (``SINGLE_REPORT_MODELS``) report exactly once;
+    xgb / nn report per boosting iteration / epoch, for which no fixed bound
+    exists (returns ``None``).
+    """
+    n_folds = int(k_folds or 1)
+    if n_folds > 1:
+        return n_folds
+    if model_type in SINGLE_REPORT_MODELS:
+        return 1
+    return None
+
+
+def _warn_unreachable_scheduler_rungs(
+    model_type: str, k_folds: int, scheduler_grace_period: int
+) -> str | None:
+    """Print + return a warning when the scheduler's first rung is unreachable.
+
+    Returns ``None`` when the configuration can prune (or the report count is
+    unbounded).
+    """
+    max_reports = _max_reportable_iterations(model_type, k_folds)
+    if max_reports is None or scheduler_grace_period <= max_reports:
+        return None
+    hint = (
+        "Use k_folds > 1 to enable pruning."
+        if max_reports == 1
+        else "Lower scheduler_grace_period to enable pruning."
+    )
+    msg = (
+        f"WARNING: the trial scheduler cannot prune '{model_type}' trials: "
+        f"grace_period={scheduler_grace_period} exceeds the {max_reports} "
+        f"report(s) a trial emits (k_folds={int(k_folds or 1)}). Every trial "
+        f"will run to completion. {hint}"
+    )
+    print(msg)
+    return msg
 
 
 def _define_scheduler(
@@ -465,6 +697,124 @@ def _define_search_algo(
     )
 
 
+class _SearchHealthGuard(Stopper, tune.Callback):
+    """Stops a search within minutes when it is systemically broken, and
+    enforces the optional per-trial wall-clock cap at report boundaries.
+
+    Registered both as the ``RunConfig.stop`` stopper and as a Tune callback
+    on the same instance: the callback hooks count errored / completed
+    trials, ``__call__`` sees every reported result (per-trial time cap +
+    finite-metric tracking), and ``stop_all`` is polled once per controller
+    step to end the whole experiment.
+
+    Experiment-abort conditions (``stop_all``):
+
+    - **Systemic trial failure**: at least ``EARLY_ABORT_MIN_ERRORS`` trials
+      errored AND the error rate over finished trials reaches
+      ``max(EARLY_ABORT_FAILURE_RATE, max_trial_failure_rate)``. Sporadic
+      flaky failures (well below 50%) can therefore never abort a healthy
+      campaign early. ``run_trials`` raises after ``fit()`` whenever this
+      condition fired -- unconditionally, because the post-hoc
+      ``_check_for_errors_in_trials`` rate is diluted by the trials that
+      were still pending/running at the stop and cannot be relied on to
+      re-detect the systemic failure.
+    - **Metric never finite**: at least ``EARLY_ABORT_MIN_COMPLETED`` trials
+      completed and no report ever carried a finite ``runtime_metric``
+      (e.g. every trial reported NaN). ``run_trials`` then raises the same
+      "No best trial found" error the retrieve step would have raised at the
+      end of the budget.
+
+    Per-trial condition (``__call__``): when ``max_trial_duration_s`` is set
+    AND ``enforce_time_cap`` is True, a trial whose reported ``time_total_s``
+    reaches the cap is stopped at that report boundary. ``run_trials``
+    enables this only for single-split runs (``k_folds == 1``): K-fold
+    trainables cap themselves at fold boundaries and stamp ``time_capped``
+    on their final report; a stopper-side kill evaluated on the same
+    fold-boundary reports would race that check and win, leaving the trial
+    without the stamp.
+    """
+
+    def __init__(
+        self,
+        runtime_metric: str,
+        max_trial_failure_rate: float,
+        max_trial_duration_s: float | None = None,
+        enforce_time_cap: bool = True,
+    ):
+        self._runtime_metric = runtime_metric
+        self._early_abort_rate = max(EARLY_ABORT_FAILURE_RATE, max_trial_failure_rate)
+        self._max_trial_duration_s = max_trial_duration_s
+        self._enforce_time_cap = enforce_time_cap
+        self._num_errored = 0
+        self._num_completed = 0
+        self._seen_finite_metric = False
+        self._announced = False
+        self._time_capped_trials: set[str] = set()
+        self.stopped_for_missing_metric = False
+        self.stopped_for_systemic_failure = False
+
+    @property
+    def num_errored(self) -> int:
+        return self._num_errored
+
+    @property
+    def num_finished(self) -> int:
+        return self._num_errored + self._num_completed
+
+    def __call__(self, trial_id: str, result: Dict[str, Any]) -> bool:
+        value = result.get(self._runtime_metric)
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            self._seen_finite_metric = True
+        if self._max_trial_duration_s is None or not self._enforce_time_cap:
+            return False
+        time_total = result.get("time_total_s")
+        if time_total is None or time_total < self._max_trial_duration_s:
+            return False
+        if trial_id not in self._time_capped_trials:
+            self._time_capped_trials.add(trial_id)
+            print(
+                f"Trial {trial_id} reached max_trial_duration_s="
+                f"{self._max_trial_duration_s}; stopping it at this report."
+            )
+        return True
+
+    def on_trial_error(self, iteration, trials, trial, **info) -> None:
+        self._num_errored += 1
+
+    def on_trial_complete(self, iteration, trials, trial, **info) -> None:
+        self._num_completed += 1
+
+    def _announce(self, reason: str) -> None:
+        if not self._announced:
+            print(f"Stopping the search early: {reason}")
+            self._announced = True
+
+    def stop_all(self) -> bool:
+        finished = self._num_errored + self._num_completed
+        if (
+            self._num_errored >= EARLY_ABORT_MIN_ERRORS
+            and self._num_errored / finished >= self._early_abort_rate
+        ):
+            self.stopped_for_systemic_failure = True
+            self._announce(
+                f"{self._num_errored}/{finished} finished trials errored "
+                f"(systemic failure, early-abort rate "
+                f"{self._early_abort_rate})."
+            )
+            return True
+        if (
+            self._num_completed >= EARLY_ABORT_MIN_COMPLETED
+            and not self._seen_finite_metric
+        ):
+            self.stopped_for_missing_metric = True
+            self._announce(
+                f"none of the first {self._num_completed} completed trials "
+                f"reported a finite '{self._runtime_metric}'."
+            )
+            return True
+        return False
+
+
 def _load_wandb_api_key() -> str:
     """Load WandB API key from .env file."""
     dotenv.load_dotenv()
@@ -552,20 +902,30 @@ def run_trials(
     fully_reproducible: bool = False,
     model_hyperparameters: dict = None,
     optuna_searchspace_sampler: str = "TPESampler",
-    scheduler_grace_period: int = DEFAULT_SCHEDULER_GRACE_PERIOD,
-    scheduler_max_t: int = DEFAULT_SCHEDULER_MAX_T,
+    scheduler_grace_period: int | None = None,
+    scheduler_max_t: int | None = None,
     resources: dict = None,
     task_type: str = "regression",
     k_folds: int = 1,
     nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
     max_trial_failure_rate: float = DEFAULT_MAX_TRIAL_FAILURE_RATE,
+    max_trial_duration_s: float | None = None,
+    max_pending_trials: int | None = None,
 ) -> ResultGrid:
     if model_hyperparameters is None:
         model_hyperparameters = {}
 
+    _validate_budget_inputs(max_trial_duration_s, max_pending_trials)
+    model_type = _model_type_for(trainable, exp_name)
+
     if resources is None:
         # If not a SLURM process, default values are used
-        resources = _get_resources(max_concurrent_trials)
+        resources = _get_resources(max_concurrent_trials, model_type, k_folds)
+
+    # Unblock the serial trial-launch path: Ray allows only 1 pending trial
+    # for Optuna-backed searches unless overridden via this env var (see
+    # _resolve_max_pending_trials).
+    _set_max_pending_trials_env(max_concurrent_trials, max_pending_trials)
 
     # Trainable parallelization & GPU capabilities:
     # - linreg: not parallelizable, CPU-only
@@ -608,7 +968,11 @@ def run_trials(
     # the search algo's metric to be present on every report.
     runtime_metric = f"{metric}_mean" if int(k_folds or 1) > 1 else metric
 
-    # Define schedulers
+    # Define schedulers (rungs derived from k_folds when not set explicitly)
+    scheduler_grace_period, scheduler_max_t = _resolve_scheduler_rungs(
+        scheduler_grace_period, scheduler_max_t, k_folds, fully_reproducible
+    )
+    _warn_unreachable_scheduler_rungs(model_type, k_folds, scheduler_grace_period)
     scheduler = _define_scheduler(
         fully_reproducible,
         scheduler_grace_period,
@@ -635,6 +999,21 @@ def run_trials(
 
     callbacks = _define_callbacks(tracking_uri, exp_name, experiment_tag)
 
+    # Health guard: early abort of systemically broken searches + per-trial
+    # wall-clock cap at report boundaries. Registered as both stopper and
+    # callback (one instance) -- see _SearchHealthGuard.
+    health_guard = _SearchHealthGuard(
+        runtime_metric=runtime_metric,
+        max_trial_failure_rate=max_trial_failure_rate,
+        max_trial_duration_s=max_trial_duration_s,
+        # K-fold trainables cap themselves at fold boundaries (with the
+        # ``time_capped`` stamp); the stopper-side cap covers single-split
+        # xgb / nn, which report per iteration / epoch but have no
+        # in-trainable check.
+        enforce_time_cap=int(k_folds or 1) == 1,
+    )
+    callbacks = callbacks + [health_guard]
+
     # Inject allocated resource counts so trainables can configure parallelism
     cpus_per_trial = resources.get("cpu", 1)
     gpus_per_trial = resources.get("gpu", 0)
@@ -657,6 +1036,7 @@ def run_trials(
                 task_type=task_type,
                 k_folds=k_folds,
                 nn_corn_max_levels=nn_corn_max_levels,
+                max_trial_duration_s=max_trial_duration_s,
             ),
             resources,
         ),
@@ -680,6 +1060,7 @@ def run_trials(
             ),
             failure_config=tune.FailureConfig(max_failures=2),
             callbacks=callbacks,
+            stop=health_guard,
         ),
         tune_config=tune.TuneConfig(
             # ``metric`` / ``mode`` are intentionally NOT set here: the
@@ -696,6 +1077,12 @@ def run_trials(
             time_budget_s=time_budget_s,
             # Set max concurrent trials to launch
             max_concurrent_trials=max_concurrent_trials,
+            # Reuse worker actors across trials: process spawn + module
+            # imports leave the launch path entirely. Safe here because the
+            # trainables re-seed on entry, mutate only their per-trial config
+            # copy, and FunctionTrainable.reset_config gives each trial a
+            # fresh session/trial dir.
+            reuse_actors=True,
             # Define search algorithm
             search_alg=search_algo,
         ),
@@ -705,6 +1092,31 @@ def run_trials(
 
     # Check all trials & apply failure-rate policy
     _check_for_errors_in_trials(result, max_trial_failure_rate=max_trial_failure_rate)
+
+    if health_guard.stopped_for_systemic_failure:
+        # Raise unconditionally: the post-hoc failure rate above is diluted
+        # by the trials that were still pending/running at the early stop
+        # (they end terminated, not errored), so it cannot be relied on to
+        # re-detect the systemic failure the guard already established.
+        raise RuntimeError(
+            f"The search health guard stopped '{exp_name}' early: "
+            f"{health_guard.num_errored} of {health_guard.num_finished} "
+            f"finished trials errored (systemic failure). See the Ray Tune "
+            f"logs above for the trial errors."
+        )
+
+    if health_guard.stopped_for_missing_metric:
+        # Same error the retrieve step would raise at the end of the time
+        # budget -- surfaced now, minutes in, before the remaining model
+        # types consume their budgets too.
+        raise RuntimeError(
+            f"No best trial found for the given metric: {metric}. This "
+            f"means that no trial has reported this metric, or all values "
+            f"reported for this metric are NaN. The search health guard "
+            f"aborted '{exp_name}' early: none of the first "
+            f"{EARLY_ABORT_MIN_COMPLETED} completed trials reported a "
+            f"finite '{runtime_metric}'."
+        )
 
     return result
 
@@ -735,10 +1147,14 @@ def run_all_trials(
     fully_reproducible: bool = False,
     model_hyperparameters: dict = {},
     optuna_searchspace_sampler: str = "TPESampler",
+    scheduler_grace_period: int | None = None,
+    scheduler_max_t: int | None = None,
     task_type: str = "regression",
     k_folds: int = 1,
     nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
     max_trial_failure_rate: float = DEFAULT_MAX_TRIAL_FAILURE_RATE,
+    max_trial_duration_s: float | None = None,
+    max_pending_trials: int | None = None,
 ) -> dict[str, ResultGrid]:
     results_all = {}
 
@@ -751,6 +1167,8 @@ def run_all_trials(
         target=target,
         train_val=train_val,
         nn_corn_max_levels=nn_corn_max_levels,
+        max_trial_duration_s=max_trial_duration_s,
+        max_pending_trials=max_pending_trials,
     )
 
     # The snapshot+NaN gate runs inside ``_validate_run_inputs`` above;
@@ -805,8 +1223,19 @@ def run_all_trials(
                 f"Reducing max_concurrent_trials to {max_concurrent_trials_launched} "
                 "for trac model due to high memory requirements."
             )
+            # Size the CPU reservation from the ORIGINAL concurrency, not
+            # the memory-reduced trac slot count -- dividing by the reduced
+            # count would hand each trac trial ~3x the CPUs its
+            # single-threaded solver can occupy.
+            resources = _get_resources(
+                max_concurrent_trials,
+                model,
+                k_folds,
+                launched_concurrency=max_concurrent_trials_launched,
+            )
         else:
             max_concurrent_trials_launched = max_concurrent_trials
+            resources = None
         result = run_trials(
             mlflow_uri,
             model,
@@ -826,10 +1255,15 @@ def run_all_trials(
             fully_reproducible=fully_reproducible,
             model_hyperparameters=model_hparams_type,
             optuna_searchspace_sampler=optuna_searchspace_sampler,
+            scheduler_grace_period=scheduler_grace_period,
+            scheduler_max_t=scheduler_max_t,
+            resources=resources,
             task_type=task_type,
             k_folds=k_folds,
             nn_corn_max_levels=nn_corn_max_levels,
             max_trial_failure_rate=max_trial_failure_rate,
+            max_trial_duration_s=max_trial_duration_s,
+            max_pending_trials=max_pending_trials,
         )
         results_all[model] = result
     return results_all

@@ -29,7 +29,7 @@ def create_color_map(df, column, cmap_name="Set3"):
         dict: Mapping of unique values to colors.
     """
     unique_vals = df[column].unique()
-    cmap = plt.cm.get_cmap(cmap_name, len(unique_vals))
+    cmap = plt.get_cmap(cmap_name, len(unique_vals))
     color_map = {val: cmap(i) for i, val in enumerate(unique_vals)}
     colors = df[column].map(color_map).tolist()
     return colors, color_map

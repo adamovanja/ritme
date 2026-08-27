@@ -38,7 +38,8 @@ The package supports two modes:
 | `ritme/feature_space/` | Feature engineering: aggregate, select, transform, enrich |
 | `ritme/feature_space/_process_train.py` | Per-snapshot feature processing pipeline |
 | `ritme/feature_space/utils.py` | Snapshot utilities (`_slice_snapshot`, `_add_suffix`, `_PAST_SUFFIX_RE`) |
-| `ritme/model_space/static_trainables.py` | Model trainables: linreg, xgb, rf, trac, nn_reg, nn_class, nn_corn |
+| `ritme/model_space/static_trainables.py` | Model trainables: linreg, logreg, rf, rf_class, xgb, xgb_class, trac |
+| `ritme/model_space/nn_trainables.py` | Neural-network trainables: nn_reg, nn_class, nn_corn (keeps torch/lightning imports out of non-nn Ray workers) |
 | `ritme/model_space/static_searchspace.py` | Hyperparameter search spaces per model type |
 | `ritme/cli.py` | Typer CLI entry point (`ritme split-train-test`, `find-best-model-config`, `evaluate-tuned-models`, `explain-features`) |
 | `ritme/evaluate_mlflow.py` | MLflow visualization utilities |
@@ -167,7 +168,8 @@ When a change is scoped to a specific path, the minimum required smoke is:
 - Feature engineering (`feature_space/`): MLflow regression (small N,
   `data_enrich_with` exercises the categorical-universe path) +
   snapshot (temporal column suffixing).
-- Trainables (`model_space/static_trainables.py`): MLflow regression
+- Trainables (`model_space/static_trainables.py`,
+  `model_space/nn_trainables.py`): MLflow regression
   (covers all 7 regression trainables) +
   `ritme_example_usage.ipynb` (single-split path on linreg/logreg).
 - CLI wrappers (`split_train_test.py::cli_*`, `find_best_model_config.py::cli_*`,

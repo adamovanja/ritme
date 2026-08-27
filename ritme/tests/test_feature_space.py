@@ -5,6 +5,7 @@ from unittest.mock import patch
 import biom
 import numpy as np
 import pandas as pd
+import ray
 from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal, assert_series_equal
 from parameterized import parameterized
@@ -25,6 +26,8 @@ from ritme.feature_space._process_train import (
     _apply_frozen_selection,
     _encode_target,
     _engineer_features,
+    _engineer_fold_arrays,
+    _engineer_refit_arrays,
     process_train,
     process_train_kfold,
 )
@@ -1320,6 +1323,115 @@ class TestProcessTrainKFold(unittest.TestCase):
         for X_tr, _, X_va, _ in out.folds:
             self.assertEqual(X_tr.shape[1], X_va.shape[1])
             self.assertEqual(X_tr.shape[1], len(out.ft_ls_used))
+
+
+class TestProcessTrainKFoldParallel(unittest.TestCase):
+    """The ``n_workers > 1`` path fans the 2K+1 engineering passes out as Ray
+    tasks; its outputs (per-fold matrices, refit matrix, ALR denominator
+    compat shim) must be bit-identical to the serial path."""
+
+    def setUp(self):
+        super().setUp()
+        rng = np.random.default_rng(7)
+        n_rows = 30
+        host_ids = np.repeat(np.arange(10), 3)
+        self.train_val = pd.DataFrame(
+            {
+                "host_id": host_ids,
+                "target": rng.uniform(size=n_rows),
+                "F0": rng.uniform(size=n_rows),
+                "F1": rng.uniform(size=n_rows),
+                "F2": rng.uniform(size=n_rows),
+                "F3": rng.uniform(size=n_rows),
+            },
+            index=[f"SR{i}" for i in range(n_rows)],
+        )
+        self.tax = pd.DataFrame([])
+        # ALR + data-dependent selection exercises both frozen-params reuse
+        # and the ``data_alr_denom_idx_map`` config side effect.
+        self.config = {
+            "data_transform": "alr",
+            "data_aggregation": None,
+            "data_selection": "abundance_topi",
+            "data_selection_i": 3,
+            "data_selection_q": None,
+            "data_selection_t": None,
+            "data_enrich": None,
+            "data_enrich_with": None,
+        }
+
+    def _run(self, n_workers):
+        config = self.config.copy()
+        out = process_train_kfold(
+            config,
+            self.train_val,
+            "target",
+            "host_id",
+            self.tax,
+            seed_data=0,
+            n_splits=3,
+            n_workers=n_workers,
+        )
+        return out, config
+
+    def test_helper_fold_arrays_match_engineer_features(self):
+        # The extracted per-fold helper reproduces the legacy inline steps.
+        tr_idx = np.arange(0, 24)
+        va_idx = np.arange(24, 30)
+        config = self.config.copy()
+        X_tr, X_va = _engineer_fold_arrays(
+            config, self.train_val, self.tax, tr_idx, va_idx
+        )
+        cfg2 = self.config.copy()
+        train_eng, ft_ls, frozen = _engineer_features(
+            cfg2, self.train_val.iloc[tr_idx], self.tax
+        )
+        val_eng, _, _ = _engineer_features(
+            cfg2, self.train_val.iloc[va_idx], self.tax, frozen_params=frozen
+        )
+        assert_array_equal(X_tr, train_eng[ft_ls].fillna(np.nan).astype(float).values)
+        assert_array_equal(X_va, val_eng[ft_ls].fillna(np.nan).astype(float).values)
+
+    def test_helper_refit_arrays_return_alr_denom_map(self):
+        config = self.config.copy()
+        X_refit, ft_ls, denom_map = _engineer_refit_arrays(
+            config, self.train_val, self.tax
+        )
+        self.assertEqual(X_refit.shape[0], len(self.train_val))
+        self.assertEqual(X_refit.shape[1], len(ft_ls))
+        self.assertIsInstance(denom_map, dict)
+        self.assertEqual(denom_map, config["data_alr_denom_idx_map"])
+
+    def test_parallel_outputs_identical_to_serial(self):
+        serial, serial_config = self._run(n_workers=1)
+
+        ray.init(num_cpus=2, include_dashboard=False, ignore_reinit_error=True)
+        self.addCleanup(ray.shutdown)
+        parallel, parallel_config = self._run(n_workers=3)
+
+        self.assertEqual(serial.ft_ls_used, parallel.ft_ls_used)
+        assert_array_equal(serial.X_refit, parallel.X_refit)
+        assert_array_equal(serial.y_refit, parallel.y_refit)
+        self.assertEqual(len(serial.folds), len(parallel.folds))
+        for (sX_tr, sy_tr, sX_va, sy_va), (pX_tr, py_tr, pX_va, py_va) in zip(
+            serial.folds, parallel.folds
+        ):
+            assert_array_equal(sX_tr, pX_tr)
+            assert_array_equal(sy_tr, py_tr)
+            assert_array_equal(sX_va, pX_va)
+            assert_array_equal(sy_va, py_va)
+        # ALR denominator compat shim ends up identical in both paths.
+        self.assertEqual(
+            serial_config["data_alr_denom_idx_map"],
+            parallel_config["data_alr_denom_idx_map"],
+        )
+
+    def test_parallel_request_without_ray_falls_back_to_serial(self):
+        if ray.is_initialized():
+            ray.shutdown()
+        out, config = self._run(n_workers=4)
+        self.assertIsInstance(out, KFoldEngineered)
+        self.assertIn("data_alr_denom_idx_map", config)
 
 
 class TestEngineeringFitApplyLeakFree(unittest.TestCase):

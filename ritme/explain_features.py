@@ -14,7 +14,7 @@ from sklearn.pipeline import Pipeline
 
 from ritme._decorators import helper_function, main_function
 from ritme.evaluate_models import TunedModel, load_best_model
-from ritme.model_space.static_trainables import NeuralNet
+from ritme.model_space.nn_trainables import NeuralNet
 
 plt.rcParams.update({"font.family": "DejaVu Sans"})
 plt.style.use("seaborn-v0_8-pastel")

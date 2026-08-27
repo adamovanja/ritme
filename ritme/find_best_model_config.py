@@ -217,12 +217,16 @@ def _extract_mlflow_logs_to_csv(tracking_uri: str, output_dir: str) -> None:
             "experiment_id": run.info.experiment_id,
             "experiment_name": exp_name_map.get(run.info.experiment_id, ""),
             "status": run.info.status,
-            "start_time": pd.Timestamp(run.info.start_time, unit="ms")
-            if run.info.start_time
-            else None,
-            "end_time": pd.Timestamp(run.info.end_time, unit="ms")
-            if run.info.end_time
-            else None,
+            "start_time": (
+                pd.Timestamp(run.info.start_time, unit="ms")
+                if run.info.start_time
+                else None
+            ),
+            "end_time": (
+                pd.Timestamp(run.info.end_time, unit="ms")
+                if run.info.end_time
+                else None
+            ),
         }
         row.update({f"params.{k}": v for k, v in run.data.params.items()})
         row.update({f"metrics.{k}": v for k, v in run.data.metrics.items()})
@@ -333,6 +337,8 @@ def find_best_model_config(
         target=config["target"],
         train_val=train_val,
         nn_corn_max_levels=config.get("nn_corn_max_levels", DEFAULT_NN_CORN_MAX_LEVELS),
+        max_trial_duration_s=config.get("max_trial_duration_s"),
+        max_pending_trials=config.get("max_pending_trials"),
     )
 
     # ! Define needed paths
@@ -390,6 +396,8 @@ def find_best_model_config(
             optuna_searchspace_sampler=config.get(
                 "optuna_searchspace_sampler", "TPESampler"
             ),
+            scheduler_grace_period=config.get("scheduler_grace_period"),
+            scheduler_max_t=config.get("scheduler_max_t"),
             task_type=config.get("task_type", "regression"),
             k_folds=k_folds,
             nn_corn_max_levels=config.get(
@@ -398,10 +406,14 @@ def find_best_model_config(
             max_trial_failure_rate=config.get(
                 "max_trial_failure_rate", DEFAULT_MAX_TRIAL_FAILURE_RATE
             ),
+            max_trial_duration_s=config.get("max_trial_duration_s"),
+            max_pending_trials=config.get("max_pending_trials"),
         )
 
         # ! Get best models of this experiment
-        best_model_dic = retrieve_n_init_best_models(result_dic, train_val)
+        best_model_dic = retrieve_n_init_best_models(
+            result_dic, train_val, task_type=config.get("task_type", "regression")
+        )
 
         # ! Extract MLflow logs to CSV before temp directory cleanup
         if config["tracking_uri"] == "mlruns":

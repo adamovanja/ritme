@@ -1,5 +1,6 @@
 # test_script.py
 
+import inspect
 import os
 import unittest
 import warnings
@@ -19,6 +20,11 @@ from ray.tune.search.optuna import OptunaSearch
 from ritme.model_space import static_searchspace as ss
 from ritme.tune_models import (
     DEFAULT_MAX_TRIAL_FAILURE_RATE,
+    DEFAULT_SCHEDULER_GRACE_PERIOD,
+    DEFAULT_SCHEDULER_MAX_T,
+    EARLY_ABORT_MIN_COMPLETED,
+    EARLY_ABORT_MIN_ERRORS,
+    KFOLD_SCHEDULER_GRACE_PERIOD,
     MODEL_TRAINABLES,
     NAN_TOLERANT_MODELS,
     OPTUNA_SAMPLER_CLASSES,
@@ -31,9 +37,17 @@ from ritme.tune_models import (
     _get_slurm_resource,
     _load_wandb_api_key,
     _load_wandb_entity,
+    _max_reportable_iterations,
+    _max_usable_cpus_per_trial,
+    _model_type_for,
     _RecordingTrial,
+    _resolve_max_pending_trials,
+    _resolve_scheduler_rungs,
     _SafeMLflowLoggerCallback,
+    _SearchHealthGuard,
+    _validate_budget_inputs,
     _validate_run_inputs,
+    _warn_unreachable_scheduler_rungs,
     run_all_trials,
     run_trials,
 )
@@ -224,6 +238,132 @@ class TestHelpersTuneModels(unittest.TestCase):
         # Check that get_slurm_resource was called with correct arguments
         mock_get_slurm_resource.assert_any_call("SLURM_CPUS_PER_TASK", 1)
         mock_get_slurm_resource.assert_any_call("SLURM_GPUS_PER_TASK", 0)
+
+    def test_resolve_scheduler_rungs_kfold_defaults(self):
+        # K-fold trials emit at most k_folds reports, so the derived rungs
+        # must be reachable: first pruning decision at the fold-2 running
+        # mean, max_t at the fold count.
+        self.assertEqual(
+            _resolve_scheduler_rungs(None, None, 5),
+            (KFOLD_SCHEDULER_GRACE_PERIOD, 5),
+        )
+
+    def test_resolve_scheduler_rungs_single_split_defaults(self):
+        self.assertEqual(
+            _resolve_scheduler_rungs(None, None, 1),
+            (DEFAULT_SCHEDULER_GRACE_PERIOD, DEFAULT_SCHEDULER_MAX_T),
+        )
+
+    def test_resolve_scheduler_rungs_reproducible_keeps_inert_defaults(self):
+        # HyperBand (fully_reproducible) PAUSES at reachable milestones and
+        # K-fold reports carry no checkpoint, so a resumed trial restarts
+        # from fold 0 -- keep the unreachable defaults there.
+        self.assertEqual(
+            _resolve_scheduler_rungs(None, None, 5, fully_reproducible=True),
+            (DEFAULT_SCHEDULER_GRACE_PERIOD, DEFAULT_SCHEDULER_MAX_T),
+        )
+        # Explicit values still win for users who accept the pause cost.
+        self.assertEqual(
+            _resolve_scheduler_rungs(1, 5, 5, fully_reproducible=True), (1, 5)
+        )
+
+    def test_resolve_scheduler_rungs_explicit_override(self):
+        self.assertEqual(_resolve_scheduler_rungs(3, 7, 5), (3, 7))
+
+    def test_resolve_scheduler_rungs_partial_override(self):
+        self.assertEqual(
+            _resolve_scheduler_rungs(None, 50, 5),
+            (KFOLD_SCHEDULER_GRACE_PERIOD, 50),
+        )
+        self.assertEqual(_resolve_scheduler_rungs(3, None, 5), (3, 5))
+
+    def test_max_reportable_iterations(self):
+        # K-fold: every family reports once per fold.
+        self.assertEqual(_max_reportable_iterations("linreg", 5), 5)
+        self.assertEqual(_max_reportable_iterations("xgb", 5), 5)
+        # Single-split: the manual-report families report exactly once,
+        # xgb / nn report per boosting iteration / epoch.
+        self.assertEqual(_max_reportable_iterations("linreg", 1), 1)
+        self.assertEqual(_max_reportable_iterations("trac", 1), 1)
+        self.assertEqual(_max_reportable_iterations("rf", 1), 1)
+        self.assertEqual(_max_reportable_iterations("rf_class", 1), 1)
+        self.assertIsNone(_max_reportable_iterations("xgb", 1))
+        self.assertIsNone(_max_reportable_iterations("nn_reg", 1))
+
+    def test_max_usable_cpus_per_trial(self):
+        # Fold-parallel families: one CPU per fold.
+        self.assertEqual(_max_usable_cpus_per_trial("linreg", 5), 5)
+        self.assertEqual(_max_usable_cpus_per_trial("logreg", 1), 1)
+        self.assertEqual(_max_usable_cpus_per_trial("trac", 5), 5)
+        # Threaded families: no family cap.
+        self.assertIsNone(_max_usable_cpus_per_trial("xgb", 5))
+        self.assertIsNone(_max_usable_cpus_per_trial("rf", 5))
+        self.assertIsNone(_max_usable_cpus_per_trial("nn_reg", 5))
+
+    @patch("ritme.tune_models._get_slurm_resource")
+    def test_get_resources_caps_fold_parallel_families(self, mock_slurm):
+        mock_slurm.side_effect = [60, 0]
+        # Allocation share 60 // 10 = 6, capped by k_folds = 5.
+        self.assertEqual(_get_resources(10, "linreg", 5)["cpu"], 5)
+
+    @patch("ritme.tune_models._get_slurm_resource")
+    def test_get_resources_no_cap_for_threaded_families(self, mock_slurm):
+        mock_slurm.side_effect = [60, 0]
+        self.assertEqual(_get_resources(10, "xgb", 5)["cpu"], 6)
+
+    def test_validate_budget_inputs(self):
+        _validate_budget_inputs(None, None)
+        _validate_budget_inputs(600.0, 8)
+        with self.assertRaisesRegex(ValueError, "max_trial_duration_s"):
+            _validate_budget_inputs(0, None)
+        with self.assertRaisesRegex(ValueError, "max_trial_duration_s"):
+            _validate_budget_inputs(-5, None)
+        with self.assertRaisesRegex(ValueError, "max_pending_trials"):
+            _validate_budget_inputs(None, 0)
+
+    def test_model_type_for_resolves_trainable_over_exp_name(self):
+        self.assertEqual(
+            _model_type_for(MODEL_TRAINABLES["linreg"], "my_linreg_sweep"),
+            "linreg",
+        )
+        # Unknown trainable (e.g. a mock): fall back to the experiment name.
+        self.assertEqual(_model_type_for(Mock(), "xgb"), "xgb")
+
+    def test_resolve_max_pending_trials_default_matches_concurrency(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TUNE_MAX_PENDING_TRIALS_PG", None)
+            self.assertEqual(_resolve_max_pending_trials(10), 10)
+            # Floor of 2 keeps at least one launch overlapping.
+            self.assertEqual(_resolve_max_pending_trials(1), 2)
+
+    def test_resolve_max_pending_trials_explicit_wins(self):
+        with patch.dict(
+            os.environ, {"TUNE_MAX_PENDING_TRIALS_PG": "7"}, clear=False
+        ), patch("ritme.tune_models._SELF_SET_MAX_PENDING", None):
+            self.assertEqual(_resolve_max_pending_trials(10, requested=4), 4)
+
+    def test_resolve_max_pending_trials_external_env_respected(self):
+        # A user-set env value wins even when exported after import.
+        with patch.dict(
+            os.environ, {"TUNE_MAX_PENDING_TRIALS_PG": "7"}, clear=False
+        ), patch("ritme.tune_models._SELF_SET_MAX_PENDING", None):
+            self.assertEqual(_resolve_max_pending_trials(10), 7)
+
+    def test_resolve_max_pending_trials_ignores_own_earlier_write(self):
+        # A value ritme itself wrote on a previous run_trials call must not
+        # masquerade as a user override for the next model's sweep.
+        with patch.dict(
+            os.environ, {"TUNE_MAX_PENDING_TRIALS_PG": "12"}, clear=False
+        ), patch("ritme.tune_models._SELF_SET_MAX_PENDING", "12"):
+            self.assertEqual(_resolve_max_pending_trials(5), 5)
+
+    @patch("builtins.print")
+    def test_warn_unreachable_scheduler_rungs(self, mock_print):
+        msg = _warn_unreachable_scheduler_rungs("linreg", 1, 10)
+        self.assertIn("cannot prune", msg)
+        mock_print.assert_called_once()
+        self.assertIsNone(_warn_unreachable_scheduler_rungs("linreg", 5, 1))
+        self.assertIsNone(_warn_unreachable_scheduler_rungs("xgb", 1, 10))
 
     def test_define_scheduler_not_fully_reproducible(self):
         scheduler_max_t = 100
@@ -420,6 +560,97 @@ class TestHelpersTuneModels(unittest.TestCase):
         )
 
 
+class TestSearchHealthGuard(unittest.TestCase):
+    def test_healthy_search_never_stops(self):
+        guard = _SearchHealthGuard("rmse_val", DEFAULT_MAX_TRIAL_FAILURE_RATE)
+        for i in range(100):
+            self.assertFalse(guard(f"t{i}", {"rmse_val": 1.0, "time_total_s": 10.0}))
+            guard.on_trial_complete(i, [], None)
+        # One sporadic flaky error among 100 completions must not abort.
+        guard.on_trial_error(100, [], None)
+        self.assertFalse(guard.stop_all())
+        self.assertFalse(guard.stopped_for_missing_metric)
+
+    def test_all_error_search_stops_at_min_errors(self):
+        guard = _SearchHealthGuard("rmse_val", DEFAULT_MAX_TRIAL_FAILURE_RATE)
+        for i in range(EARLY_ABORT_MIN_ERRORS - 1):
+            guard.on_trial_error(i, [], None)
+        self.assertFalse(guard.stop_all())
+        guard.on_trial_error(EARLY_ABORT_MIN_ERRORS, [], None)
+        self.assertTrue(guard.stop_all())
+
+    def test_early_abort_rate_never_below_user_rate(self):
+        # A user tolerating 90% failures must not see an early abort at 50%.
+        guard = _SearchHealthGuard("rmse_val", max_trial_failure_rate=0.9)
+        for i in range(20):
+            guard.on_trial_error(i, [], None)
+        for i in range(10):
+            guard(f"t{i}", {"rmse_val": 1.0, "time_total_s": 5.0})
+            guard.on_trial_complete(i, [], None)
+        # 20 / 30 ~ 0.67 < 0.9 -> keep running.
+        self.assertFalse(guard.stop_all())
+        for i in range(70):
+            guard.on_trial_error(i, [], None)
+        # 90 / 100 = 0.9 >= 0.9 -> stop.
+        self.assertTrue(guard.stop_all())
+
+    def test_nan_metric_search_stops_after_min_completed(self):
+        guard = _SearchHealthGuard(
+            "roc_auc_macro_ovr_val_mean", DEFAULT_MAX_TRIAL_FAILURE_RATE
+        )
+        for i in range(EARLY_ABORT_MIN_COMPLETED):
+            guard(
+                f"t{i}",
+                {
+                    "roc_auc_macro_ovr_val_mean": float("nan"),
+                    "time_total_s": 5.0,
+                },
+            )
+            guard.on_trial_complete(i, [], None)
+        self.assertTrue(guard.stop_all())
+        self.assertTrue(guard.stopped_for_missing_metric)
+
+    def test_single_finite_metric_prevents_missing_metric_stop(self):
+        guard = _SearchHealthGuard("rmse_val", DEFAULT_MAX_TRIAL_FAILURE_RATE)
+        guard("t0", {"rmse_val": 0.7, "time_total_s": 5.0})
+        for i in range(5 * EARLY_ABORT_MIN_COMPLETED):
+            guard(f"t{i}", {"rmse_val": float("nan"), "time_total_s": 5.0})
+            guard.on_trial_complete(i, [], None)
+        self.assertFalse(guard.stop_all())
+
+    def test_systemic_failure_sets_flag(self):
+        guard = _SearchHealthGuard("rmse_val", DEFAULT_MAX_TRIAL_FAILURE_RATE)
+        for i in range(EARLY_ABORT_MIN_ERRORS):
+            guard.on_trial_error(i, [], None)
+        self.assertTrue(guard.stop_all())
+        self.assertTrue(guard.stopped_for_systemic_failure)
+        self.assertEqual(guard.num_errored, EARLY_ABORT_MIN_ERRORS)
+        self.assertEqual(guard.num_finished, EARLY_ABORT_MIN_ERRORS)
+
+    def test_time_cap_not_enforced_when_trainables_self_cap(self):
+        # K-fold runs disable the stopper-side cap: the trainables cap
+        # themselves at fold boundaries and stamp ``time_capped``; a
+        # stopper-side kill on the same reports would race that check.
+        guard = _SearchHealthGuard(
+            "rmse_val_mean",
+            DEFAULT_MAX_TRIAL_FAILURE_RATE,
+            max_trial_duration_s=100,
+            enforce_time_cap=False,
+        )
+        self.assertFalse(guard("t0", {"rmse_val_mean": 1.0, "time_total_s": 1e9}))
+
+    def test_time_cap_stops_trial_at_report_boundary(self):
+        guard = _SearchHealthGuard(
+            "rmse_val", DEFAULT_MAX_TRIAL_FAILURE_RATE, max_trial_duration_s=100
+        )
+        self.assertFalse(guard("t0", {"rmse_val": 1.0, "time_total_s": 99.0}))
+        self.assertTrue(guard("t0", {"rmse_val": 1.0, "time_total_s": 101.0}))
+
+    def test_no_time_cap_never_stops_trials(self):
+        guard = _SearchHealthGuard("rmse_val", DEFAULT_MAX_TRIAL_FAILURE_RATE)
+        self.assertFalse(guard("t0", {"rmse_val": 1.0, "time_total_s": 1e9}))
+
+
 class TestMainTuneModels(unittest.TestCase):
     def setUp(self):
         # Common variables for all tests. The minimal train_val needs at
@@ -534,6 +765,407 @@ class TestMainTuneModels(unittest.TestCase):
         mock_tuner.fit.assert_called_once()
         self.assertIsInstance(result, ResultGrid)
 
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    @patch("ritme.tune_models._define_scheduler")
+    def test_run_trials_derives_scheduler_rungs_from_k_folds(
+        self, mock_scheduler, mock_tuner_class, mock_resources, mock_init
+    ):
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_tuner = MagicMock()
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
+        mock_tuner_class.return_value = mock_tuner
+
+        run_trials(
+            tracking_uri=self.mlflow_uri,
+            exp_name="xgb",
+            trainable=MagicMock(),
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            path2exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            k_folds=5,
+        )
+
+        sched_args = mock_scheduler.call_args.args
+        self.assertEqual(sched_args[1], KFOLD_SCHEDULER_GRACE_PERIOD)
+        self.assertEqual(sched_args[2], 5)
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    def test_run_trials_wires_health_guard_as_stopper_and_callback(
+        self, mock_tuner_class, mock_resources, mock_init
+    ):
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_tuner = MagicMock()
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
+        mock_tuner_class.return_value = mock_tuner
+
+        run_trials(
+            tracking_uri=self.mlflow_uri,
+            exp_name="linreg",
+            trainable=MagicMock(),
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            path2exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+        )
+
+        run_config = mock_tuner_class.call_args.kwargs["run_config"]
+        self.assertIsInstance(run_config.stop, _SearchHealthGuard)
+        self.assertIn(run_config.stop, run_config.callbacks)
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    @patch("ritme.tune_models._SearchHealthGuard")
+    def test_run_trials_raises_early_no_best_trial_error(
+        self, mock_guard_class, mock_tuner_class, mock_resources, mock_init
+    ):
+        # When the guard stopped the experiment because no finite metric was
+        # ever reported, run_trials must raise the no-best-trial error right
+        # after fit() -- not hours later in the retrieve step (or after the
+        # remaining model types consumed their budgets too).
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_tuner = MagicMock()
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
+        mock_tuner_class.return_value = mock_tuner
+        mock_guard = MagicMock(spec=_SearchHealthGuard)
+        mock_guard.stopped_for_missing_metric = True
+        mock_guard.stopped_for_systemic_failure = False
+        mock_guard_class.return_value = mock_guard
+
+        with self.assertRaisesRegex(
+            RuntimeError, "No best trial found for the given metric"
+        ):
+            run_trials(
+                tracking_uri=self.mlflow_uri,
+                exp_name="nn_class",
+                trainable=MagicMock(),
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                path2exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                task_type="classification",
+            )
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    @patch("ritme.tune_models._SearchHealthGuard")
+    def test_run_trials_raises_unconditionally_on_systemic_failure(
+        self, mock_guard_class, mock_tuner_class, mock_resources, mock_init
+    ):
+        # The post-fit failure rate is diluted by pending/running trials that
+        # were terminated (not errored) at the early stop, so run_trials must
+        # raise from the guard's flag rather than rely on the policy.
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_tuner = MagicMock()
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 100
+        mock_tuner.fit.return_value = _fit_result
+        mock_tuner_class.return_value = mock_tuner
+        mock_guard = MagicMock(spec=_SearchHealthGuard)
+        mock_guard.stopped_for_missing_metric = False
+        mock_guard.stopped_for_systemic_failure = True
+        mock_guard.num_errored = 10
+        mock_guard.num_finished = 20
+        mock_guard_class.return_value = mock_guard
+
+        with self.assertRaisesRegex(RuntimeError, "systemic failure"):
+            run_trials(
+                tracking_uri=self.mlflow_uri,
+                exp_name="linreg",
+                trainable=MagicMock(),
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                path2exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+            )
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_forwards_scheduler_settings(self, mock_run_trials):
+        mock_run_trials.return_value = MagicMock(spec=ResultGrid)
+
+        run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            model_types=["xgb"],
+            scheduler_grace_period=2,
+            scheduler_max_t=4,
+        )
+
+        kwargs = mock_run_trials.call_args.kwargs
+        self.assertEqual(kwargs["scheduler_grace_period"], 2)
+        self.assertEqual(kwargs["scheduler_max_t"], 4)
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    @patch("ritme.tune_models.tune.with_parameters")
+    def test_run_trials_passes_time_cap_to_trainable_and_guard(
+        self, mock_with_params, mock_tuner_class, mock_resources, mock_init
+    ):
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_tuner = MagicMock()
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
+        mock_tuner_class.return_value = mock_tuner
+
+        run_trials(
+            tracking_uri=self.mlflow_uri,
+            exp_name="xgb",
+            trainable=MagicMock(),
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            path2exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            k_folds=5,
+            max_trial_duration_s=1200.0,
+        )
+
+        # Trainable receives the cap (fold-boundary stop) ...
+        self.assertEqual(
+            mock_with_params.call_args.kwargs["max_trial_duration_s"], 1200.0
+        )
+        # ... while the stopper-side cap stays disabled in K-fold mode (the
+        # trainables cap themselves at fold boundaries).
+        run_config = mock_tuner_class.call_args.kwargs["run_config"]
+        self.assertFalse(
+            run_config.stop("t0", {"rmse_val_mean": 1.0, "time_total_s": 1201.0})
+        )
+
+        run_trials(
+            tracking_uri=self.mlflow_uri,
+            exp_name="xgb",
+            trainable=MagicMock(),
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            path2exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            k_folds=1,
+            max_trial_duration_s=1200.0,
+        )
+        # Single-split xgb/nn have no in-trainable cap: the stopper enforces
+        # it at report (iteration/epoch) boundaries.
+        run_config = mock_tuner_class.call_args.kwargs["run_config"]
+        self.assertTrue(
+            run_config.stop("t0", {"rmse_val": 1.0, "time_total_s": 1201.0})
+        )
+        self.assertFalse(run_config.stop("t0", {"rmse_val": 1.0, "time_total_s": 10.0}))
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    def test_run_trials_enables_actor_reuse_and_pending_pipeline(
+        self, mock_tuner_class, mock_resources, mock_init
+    ):
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_tuner = MagicMock()
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
+        mock_tuner_class.return_value = mock_tuner
+
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "ritme.tune_models._SELF_SET_MAX_PENDING", None
+        ):
+            os.environ.pop("TUNE_MAX_PENDING_TRIALS_PG", None)
+            run_trials(
+                tracking_uri=self.mlflow_uri,
+                exp_name="linreg",
+                trainable=MagicMock(),
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                path2exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=8,
+                experiment_tag=self.experiment_tag,
+            )
+            self.assertEqual(os.environ["TUNE_MAX_PENDING_TRIALS_PG"], "8")
+
+        tune_config = mock_tuner_class.call_args.kwargs["tune_config"]
+        self.assertTrue(tune_config.reuse_actors)
+
+    @patch("ritme.tune_models.init")
+    @patch("ritme.tune_models.ray.cluster_resources")
+    @patch("ritme.tune_models.tune.Tuner")
+    @patch("ritme.tune_models._get_resources")
+    def test_run_trials_sizes_default_resources_by_family_and_folds(
+        self, mock_get_resources, mock_tuner_class, mock_resources, mock_init
+    ):
+        mock_context = MagicMock()
+        mock_context.dashboard_url = "http://localhost:8265"
+        mock_init.return_value = mock_context
+        mock_resources.return_value = {}
+        mock_get_resources.return_value = {"cpu": 1, "gpu": 0}
+        mock_tuner = MagicMock()
+        _fit_result = MagicMock(spec=ResultGrid, num_errors=0)
+        _fit_result.__len__.return_value = 10
+        mock_tuner.fit.return_value = _fit_result
+        mock_tuner_class.return_value = mock_tuner
+
+        run_trials(
+            tracking_uri=self.mlflow_uri,
+            exp_name="linreg",
+            trainable=MODEL_TRAINABLES["linreg"],
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            path2exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            k_folds=5,
+        )
+
+        mock_get_resources.assert_called_once_with(
+            self.max_concurrent_trials, "linreg", 5
+        )
+
+    def test_run_trials_rejects_degenerate_time_cap(self):
+        with self.assertRaisesRegex(ValueError, "max_trial_duration_s"):
+            run_trials(
+                tracking_uri=self.mlflow_uri,
+                exp_name="xgb",
+                trainable=MagicMock(),
+                train_val=self.train_val,
+                target=self.target,
+                host_id=self.host_id,
+                stratify_by=None,
+                seed_data=self.seed_data,
+                seed_model=self.seed_model,
+                tax=self.tax,
+                tree_phylo=self.tree_phylo,
+                path2exp=self.path2exp,
+                time_budget_s=self.time_budget_s,
+                max_concurrent_trials=self.max_concurrent_trials,
+                experiment_tag=self.experiment_tag,
+                max_trial_duration_s=0,
+            )
+
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_forwards_time_cap(self, mock_run_trials):
+        mock_run_trials.return_value = MagicMock(spec=ResultGrid)
+
+        run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=self.max_concurrent_trials,
+            experiment_tag=self.experiment_tag,
+            model_types=["xgb"],
+            max_trial_duration_s=900.0,
+        )
+
+        kwargs = mock_run_trials.call_args.kwargs
+        self.assertEqual(kwargs["max_trial_duration_s"], 900.0)
+
     @patch("ritme.tune_models.run_trials")
     def test_run_all_trials(self, mock_run_trials):
         mock_result = MagicMock(spec=ResultGrid)
@@ -592,6 +1224,44 @@ class TestMainTuneModels(unittest.TestCase):
             )
         mock_run_trials.assert_not_called()
 
+    @patch("ritme.tune_models._get_resources")
+    @patch("ritme.tune_models.run_trials")
+    def test_run_all_trials_trac_resources_sized_from_original_concurrency(
+        self, mock_run_trials, mock_get_resources
+    ):
+        # trac's memory workaround still reduces the launched concurrency to
+        # a third, but the per-trial CPU reservation must be sized from the
+        # ORIGINAL concurrency + family appetite -- the /3 reduction used to
+        # triple the reservation of the one family that cannot thread.
+        mock_run_trials.return_value = MagicMock(spec=ResultGrid)
+        mock_get_resources.return_value = {"cpu": 5, "gpu": 0}
+
+        run_all_trials(
+            train_val=self.train_val,
+            target=self.target,
+            host_id=self.host_id,
+            stratify_by=None,
+            seed_data=self.seed_data,
+            seed_model=self.seed_model,
+            tax=self.tax,
+            tree_phylo=self.tree_phylo,
+            mlflow_uri=self.mlflow_uri,
+            path_exp=self.path2exp,
+            time_budget_s=self.time_budget_s,
+            max_concurrent_trials=9,
+            experiment_tag=self.experiment_tag,
+            model_types=["trac"],
+            k_folds=5,
+        )
+
+        mock_get_resources.assert_called_once_with(9, "trac", 5, launched_concurrency=3)
+        call = mock_run_trials.call_args
+        bound = inspect.signature(run_trials).bind(*call.args, **call.kwargs)
+        # Launched concurrency stays memory-reduced (9 / 3 = 3) ...
+        self.assertEqual(bound.arguments["max_concurrent_trials"], 3)
+        # ... while the reservation from the original concurrency is used.
+        self.assertEqual(bound.arguments["resources"], {"cpu": 5, "gpu": 0})
+
     @patch("ritme.tune_models.run_trials")
     def test_run_all_trials_remove_trac(self, mock_run_trials):
         mock_result = MagicMock(spec=ResultGrid)
@@ -642,10 +1312,15 @@ class TestMainTuneModels(unittest.TestCase):
             fully_reproducible=False,
             model_hyperparameters={"data_enrich_with": None},
             optuna_searchspace_sampler="TPESampler",
+            scheduler_grace_period=None,
+            scheduler_max_t=None,
+            resources=None,
             task_type="regression",
             k_folds=1,
             nn_corn_max_levels=20,
             max_trial_failure_rate=0.005,
+            max_trial_duration_s=None,
+            max_pending_trials=None,
         )
 
     @patch("ritme.tune_models.run_trials")

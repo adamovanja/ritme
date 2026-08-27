@@ -25,6 +25,7 @@ from ritme.evaluate_tuned_models import (
     _plot_confusion_matrices,
     evaluate_tuned_models,
 )
+from ritme.model_space import nn_trainables as nnt
 from ritme.model_space import static_trainables as st
 from ritme.tune_models import CLASSIFICATION_MODELS, REGRESSION_MODELS, TASK_METRICS
 
@@ -105,6 +106,7 @@ class TestClassificationHelpers(unittest.TestCase):
         mock_get_context.return_value = mock_trial_context
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_trial_context.get_trial_dir.return_value = tmpdir
+            mock_trial_context.get_storage.return_value.trial_fs_path = tmpdir
             tax = pd.DataFrame()
 
             st._report_classification_results_manually(
@@ -253,6 +255,7 @@ class TestClassificationTrainables(unittest.TestCase):
         mock_context = mock_get_context.return_value
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_context.get_trial_dir.return_value = tmpdir
+            mock_context.get_storage.return_value.trial_fs_path = tmpdir
 
             st.train_xgb_class(
                 config,
@@ -272,7 +275,7 @@ class TestClassificationTrainables(unittest.TestCase):
 
 class TestNeuralNetClassificationMetrics(unittest.TestCase):
     def test_calculate_metrics_regression(self):
-        model = st.NeuralNet(
+        model = nnt.NeuralNet(
             n_units=[2, 4, 1],
             learning_rate=0.01,
             nn_type="regression",
@@ -285,7 +288,7 @@ class TestNeuralNetClassificationMetrics(unittest.TestCase):
         self.assertNotIn("accuracy", metrics)
 
     def test_calculate_metrics_classification(self):
-        model = st.NeuralNet(
+        model = nnt.NeuralNet(
             n_units=[2, 4, 3],
             learning_rate=0.01,
             nn_type="classification",

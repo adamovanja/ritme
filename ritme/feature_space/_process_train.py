@@ -2,6 +2,8 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import ray
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from sklearn.preprocessing import LabelEncoder
 
 from ritme.feature_space.aggregate_features import aggregate_microbial_features
@@ -313,6 +315,102 @@ def process_train(
     return (X_train.values, y_train, X_val.values, y_val)
 
 
+def _engineer_fold_arrays(
+    config,
+    train_val: pd.DataFrame,
+    tax: pd.DataFrame,
+    tr_idx: np.ndarray,
+    va_idx: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Engineer one fold's design matrices: fit on the train slice, apply the
+    captured params on the val slice (no cross-sample statistic crosses the
+    fold's train/val boundary). Also runs as a ``ray.remote`` task in the
+    parallel path; there ``config`` is a per-task copy, so its transient
+    mutations never reach the caller."""
+    train_raw = train_val.iloc[tr_idx]
+    val_raw = train_val.iloc[va_idx]
+    train_engineered, fold_ft_ls, frozen_params = _engineer_features(
+        config, train_raw, tax
+    )
+    val_engineered, _, _ = _engineer_features(
+        config, val_raw, tax, frozen_params=frozen_params
+    )
+    X_tr = train_engineered[fold_ft_ls].fillna(np.nan).astype(float).values
+    X_va = val_engineered[fold_ft_ls].fillna(np.nan).astype(float).values
+    return X_tr, X_va
+
+
+def _engineer_refit_arrays(
+    config, train_val: pd.DataFrame, tax: pd.DataFrame
+) -> Tuple[np.ndarray, List[str], Optional[Dict[str, int]]]:
+    """Engineer the full-data refit matrix (fit mode on all of ``train_val``).
+
+    Returns ``(X_refit, refit_ft_ls, alr_denom_map)``; the ALR denominator
+    map is ``None`` unless ``data_transform == "alr"``. In the serial path
+    ``_engineer_features`` stashes the map on ``config`` directly; the
+    parallel path applies the returned map to the caller's ``config`` so the
+    deployable artifact's compat shim (``data_alr_denom_idx_map``) ends up
+    identical in both paths.
+    """
+    refit_engineered, refit_ft_ls, _ = _engineer_features(config, train_val, tax)
+    X_refit = refit_engineered[refit_ft_ls].fillna(np.nan).astype(float).values
+    return X_refit, refit_ft_ls, config.get("data_alr_denom_idx_map")
+
+
+def _engineer_kfold_parallel(
+    config,
+    train_val: pd.DataFrame,
+    tax: pd.DataFrame,
+    fold_indices: List[Tuple[np.ndarray, np.ndarray]],
+    n_workers: int,
+) -> Tuple[
+    List[Tuple[np.ndarray, np.ndarray]],
+    np.ndarray,
+    List[str],
+    Optional[Dict[str, int]],
+]:
+    """Fan the K per-fold engineering passes + the refit pass out as Ray tasks.
+
+    The per-fold pipeline runs ``2K + 1`` engineering passes; serially they
+    hold the trial while its reserved CPUs idle. Tasks are node-pinned with
+    ``num_cpus=0`` and throttled to ``n_workers``, mirroring the fold-fit
+    dispatch in ``static_trainables``, so the fan-out stays inside the
+    trial's existing reservation. Each task gets its own deserialized copy
+    of ``config``, so the outputs are identical to the serial path (the
+    engineering itself is deterministic and RNG-free).
+    """
+    config_ref = ray.put(config)
+    train_val_ref = ray.put(train_val)
+    tax_ref = ray.put(tax)
+    node_id = ray.get_runtime_context().get_node_id()
+    strategy = NodeAffinitySchedulingStrategy(node_id, soft=False)
+    remote_fold = ray.remote(num_cpus=0)(_engineer_fold_arrays)
+    remote_refit = ray.remote(num_cpus=0)(_engineer_refit_arrays)
+
+    submissions = [
+        (remote_fold, (config_ref, train_val_ref, tax_ref, tr_idx, va_idx))
+        for tr_idx, va_idx in fold_indices
+    ]
+    submissions.append((remote_refit, (config_ref, train_val_ref, tax_ref)))
+
+    results: List[Any] = [None] * len(submissions)
+    in_flight: Dict[Any, int] = {}
+    next_idx = 0
+    while next_idx < len(submissions) or in_flight:
+        while next_idx < len(submissions) and len(in_flight) < n_workers:
+            remote_fn, args = submissions[next_idx]
+            ref = remote_fn.options(scheduling_strategy=strategy).remote(*args)
+            in_flight[ref] = next_idx
+            next_idx += 1
+        done, _ = ray.wait(list(in_flight.keys()), num_returns=1)
+        ref = done[0]
+        results[in_flight.pop(ref)] = ray.get(ref)
+
+    fold_arrays = results[:-1]
+    X_refit, refit_ft_ls, alr_denom_map = results[-1]
+    return fold_arrays, X_refit, refit_ft_ls, alr_denom_map
+
+
 def process_train_kfold(
     config,
     train_val: pd.DataFrame,
@@ -322,6 +420,7 @@ def process_train_kfold(
     seed_data: int,
     n_splits: int,
     stratify_by: list[str] | None = None,
+    n_workers: int = 1,
 ) -> KFoldEngineered:
     """K-fold variant of :func:`process_train` with per-fold engineering.
 
@@ -339,6 +438,11 @@ def process_train_kfold(
     Side effect: for non-numeric targets, fits a ``LabelEncoder`` and stashes
     it on ``config['_label_encoder']`` (consumed by the trainable's
     ``_save_label_encoder``).
+
+    ``n_workers > 1`` (with Ray initialized) fans the ``2K + 1`` engineering
+    passes out as ``K + 1`` node-pinned Ray tasks throttled to ``n_workers``
+    -- the engineering is deterministic, so the outputs are identical to the
+    serial path.
 
     Returns
     -------
@@ -376,32 +480,33 @@ def process_train_kfold(
     # data-dependent survivors (e.g. abundance / variance thresholds), so
     # each fold tracks its own ``ft_ls`` for the within-fold X_tr/X_va
     # alignment.
+    if n_workers > 1 and ray.is_initialized():
+        fold_arrays, X_refit, refit_ft_ls, alr_denom_map = _engineer_kfold_parallel(
+            config, train_val, tax, fold_indices, n_workers
+        )
+        if alr_denom_map is not None:
+            # Serial-path equivalent: the refit pass (last) stashes the ALR
+            # denominator map on ``config`` for the TunedModel compat shim.
+            config["data_alr_denom_idx_map"] = alr_denom_map
+    else:
+        fold_arrays = [
+            _engineer_fold_arrays(config, train_val, tax, tr_idx, va_idx)
+            for tr_idx, va_idx in fold_indices
+        ]
+        # Full-data refit engineering -- last so the final ``config`` ALR
+        # denom map matches the deployable artifact (TunedModel test-time
+        # path reads ``config['data_alr_denom_idx_map']``). ``ft_ls_used``
+        # in the returned bundle describes the refit matrix (the deployable
+        # checkpoint's column space) and may differ from any individual
+        # fold's column list.
+        X_refit, refit_ft_ls, _ = _engineer_refit_arrays(config, train_val, tax)
+
     folds: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
-    for tr_idx, va_idx in fold_indices:
-        train_raw = train_val.iloc[tr_idx]
-        val_raw = train_val.iloc[va_idx]
-
-        train_engineered, fold_ft_ls, frozen_params = _engineer_features(
-            config, train_raw, tax
-        )
-        val_engineered, _, _ = _engineer_features(
-            config, val_raw, tax, frozen_params=frozen_params
-        )
-
-        X_tr = train_engineered[fold_ft_ls].fillna(np.nan).astype(float).values
-        X_va = val_engineered[fold_ft_ls].fillna(np.nan).astype(float).values
-        y_tr = _encode_target(config, train_val, target, train_raw[target])
-        y_va = _encode_target(config, train_val, target, val_raw[target])
+    for (tr_idx, va_idx), (X_tr, X_va) in zip(fold_indices, fold_arrays):
+        y_tr = _encode_target(config, train_val, target, train_val.iloc[tr_idx][target])
+        y_va = _encode_target(config, train_val, target, train_val.iloc[va_idx][target])
         folds.append((X_tr, y_tr, X_va, y_va))
 
-    # Full-data refit engineering -- last so the final ``config`` ALR
-    # denom map matches the deployable artifact (TunedModel test-time
-    # path reads ``config['data_alr_denom_idx_map']``). ``ft_ls_used`` in
-    # the returned bundle describes the refit matrix (the deployable
-    # checkpoint's column space) and may differ from any individual
-    # fold's column list.
-    refit_engineered, refit_ft_ls, _ = _engineer_features(config, train_val, tax)
-    X_refit = refit_engineered[refit_ft_ls].fillna(np.nan).astype(float).values
     y_refit = _encode_target(config, train_val, target, train_val[target])
 
     return KFoldEngineered(

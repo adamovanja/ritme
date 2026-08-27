@@ -18,8 +18,8 @@ from ritme.feature_space.enrich_features import enrich_features
 from ritme.feature_space.select_features import select_microbial_features
 from ritme.feature_space.transform_features import transform_microbial_features
 from ritme.feature_space.utils import _add_suffix, _extract_time_labels, _slice_snapshot
-from ritme.model_space.static_trainables import NeuralNet
-from ritme.tune_models import CLASSIFICATION_MODELS, TASK_METRICS
+from ritme.model_space.nn_trainables import NeuralNet
+from ritme.tune_models import TASK_METRICS
 
 plt.rcParams.update({"font.family": "DejaVu Sans"})
 plt.style.use("seaborn-v0_8-pastel")
@@ -539,13 +539,25 @@ def _drop_checkpointless_trials(
     metric and Ray error status -- and raise if none remain deployable.
     """
     deployable = []
+    n_stopped_early = 0
+    n_time_capped = 0
     for result in result_grid:
+        metrics = result.metrics or {}
         if result.checkpoint is not None:
             deployable.append(result)
             continue
         value = _metric_value(result, metric)
         if value is None or (isinstance(value, float) and np.isnan(value)):
             # Never reported the metric -> not a selection candidate anyway.
+            continue
+        if result.error is None and metric not in metrics:
+            # Last report is a mid-trial running aggregate (bare metric keys
+            # are stripped there) and Ray recorded no error: the trial was
+            # pruned by the scheduler or stopped by the per-trial time cap
+            # -- expected, not a crash. Errored trials fall through to the
+            # warning below whatever their last report's shape.
+            n_stopped_early += 1
+            n_time_capped += bool(metrics.get("time_capped"))
             continue
         warnings.warn(
             f"Skipping '{model_type}' trial with {metric}={value}: it reported a "
@@ -554,6 +566,15 @@ def _drop_checkpointless_trials(
             stacklevel=2,
         )
     if not deployable:
+        if n_stopped_early:
+            raise RuntimeError(
+                f"No '{model_type}' trial saved a deployable checkpoint: "
+                f"{n_stopped_early} trial(s) were stopped before their final "
+                f"report ({n_time_capped} by max_trial_duration_s, the rest "
+                f"by the trial scheduler or the experiment time budget). "
+                f"Raise max_trial_duration_s / time_budget_s, or make the "
+                f"scheduler less aggressive via scheduler_grace_period."
+            )
         raise RuntimeError(
             f"No '{model_type}' trial saved a deployable checkpoint: every trial "
             f"crashed before persisting one (e.g. OOM kill, SIGSEGV, or node "
@@ -595,6 +616,11 @@ def _select_best_with_one_se(
     candidates = []
     for result in results:
         m = result.metrics or {}
+        if model_type not in _CHECKPOINT_MODEL_TYPES and "model_path" not in m:
+            # sklearn / trac trials pruned by the scheduler or stopped by the
+            # per-trial time cap end on a running aggregate that carries no
+            # deployable artifact; selecting one would crash the model loader.
+            continue
         mean = m.get(f"{metric}_mean", m.get(metric))
         se = m.get(f"{metric}_se")
         if mean is None or (isinstance(mean, float) and np.isnan(mean)):
@@ -618,7 +644,39 @@ def _select_best_with_one_se(
                 for r in results
                 if _metric_value(r, metric) is not None
             ]
+            if not scored:
+                raise RuntimeError(
+                    f"No best trial found for the given metric: {metric}. "
+                    f"Deployable '{model_type}' trials exist, but none "
+                    f"carries '{metric}' (or '{metric}_mean') in its final "
+                    f"report -- the selection metric does not match what "
+                    f"the trials reported."
+                )
             return min(scored, key=lambda rv: sign * float(rv[1]))[0]
+        # No trial ever emitted a final report (the bare metric appears only
+        # there): Ray's own "No best trial found" error would hide the
+        # actionable cause, so diagnose the early stops explicitly.
+        if not any("model_path" in (r.metrics or {}) for r in results):
+            n_stopped_early = sum(
+                1
+                for r in results
+                if r.error is None and f"{metric}_mean" in (r.metrics or {})
+            )
+            if n_stopped_early:
+                n_time_capped = sum(
+                    1
+                    for r in results
+                    if r.error is None and (r.metrics or {}).get("time_capped")
+                )
+                raise RuntimeError(
+                    f"No '{model_type}' trial finished its final report: "
+                    f"{n_stopped_early} trial(s) were stopped early "
+                    f"({n_time_capped} by max_trial_duration_s, the rest by "
+                    f"the trial scheduler or the experiment time budget). "
+                    f"Raise max_trial_duration_s / time_budget_s, or make "
+                    f"the scheduler less aggressive via "
+                    f"scheduler_grace_period."
+                )
         # Otherwise defer to Ray Tune's single-best lookup, preserving the
         # pre-K-fold behavior. ``metric`` / ``mode`` are passed explicitly
         # because ``TuneConfig`` no longer carries them (the scheduler owns
@@ -644,7 +702,9 @@ def _select_best_with_one_se(
 
 
 def retrieve_n_init_best_models(
-    result_dic: Dict[str, Result], train_val: pd.DataFrame
+    result_dic: Dict[str, Result],
+    train_val: pd.DataFrame,
+    task_type: str = "regression",
 ) -> Dict[str, TunedModel]:
     """
     Retrieve and initialize the best models from the result dictionary.
@@ -659,19 +719,18 @@ def retrieve_n_init_best_models(
         result grids as values.
         train_val (pd.DataFrame): The training and validation data used to set
         all feature engineering parameters in TunedModel.
+        task_type (str): ``"regression"`` or ``"classification"`` -- the run's
+        task type. Selection uses the same metric the trials optimized and
+        reported, which follows the run's task type, not the model registry:
+        dual-task ``nn_class`` reports regression metrics in a regression run.
 
     Returns:
         Dict[str, TunedModel]: Dictionary with model types as keys and
         TunedModel instances as values.
     """
+    metric, mode = TASK_METRICS[task_type]
     best_model_dic = {}
     for model_type, result_grid in result_dic.items():
-        # The same metric is used for ranking as during tuning. We honor
-        # task_type via the regression vs classification model registry.
-        if model_type in CLASSIFICATION_MODELS:
-            metric, mode = TASK_METRICS["classification"]
-        else:
-            metric, mode = TASK_METRICS["regression"]
         best_result = _select_best_with_one_se(
             result_grid, metric=metric, mode=mode, model_type=model_type
         )

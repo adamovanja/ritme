@@ -1,6 +1,7 @@
 import os
 import pickle
 import unittest
+import warnings
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -12,6 +13,7 @@ from ray.air.result import Result
 from ritme.evaluate_models import (
     _MODEL_SIMPLICITY_KNOBS,
     TunedModel,
+    _drop_checkpointless_trials,
     _get_checkpoint_path,
     _select_best_with_one_se,
     _trial_simplicity_key,
@@ -87,7 +89,7 @@ class TestEvaluateModels(unittest.TestCase):
         mock_booster.assert_called_once()
 
     @patch(
-        "ritme.model_space.static_trainables.NeuralNet.load_from_checkpoint",
+        "ritme.model_space.nn_trainables.NeuralNet.load_from_checkpoint",
         return_value=MagicMock(),
     )
     def test_load_nn_model(self, mock_load_from_checkpoint):
@@ -126,6 +128,44 @@ class TestEvaluateModels(unittest.TestCase):
             self.assertIsInstance(tuned_model, TunedModel)
         # assert that tuned model was called with predict for each model type
         self.assertEqual(mock_tuned_predict.call_count, 2)
+
+    @patch("ritme.evaluate_models._select_best_with_one_se")
+    @patch("ritme.evaluate_models.get_model", return_value=MagicMock())
+    @patch("ritme.evaluate_models.get_data_processing")
+    @patch("ritme.evaluate_models.get_taxonomy")
+    @patch("ritme.evaluate_models.TunedModel.predict")
+    def test_retrieve_selects_on_run_task_metric_not_model_registry(
+        self,
+        mock_tuned_predict,
+        mock_get_taxonomy,
+        mock_get_data_processing,
+        mock_get_model,
+        mock_select,
+    ):
+        # Dual-task nn_class reports the RUN's metric: in a regression sweep
+        # its trials carry rmse_val, never roc_auc. Selecting it by the
+        # classification-registry metric finds no values and crashes the
+        # retrieve step after the full search budget was spent.
+        mock_get_data_processing.return_value = {
+            "data_aggregation": None,
+            "data_transform": None,
+            "data_selection": None,
+        }
+        mock_select.return_value = self.result
+
+        retrieve_n_init_best_models(
+            {"nn_class": self.result_grid}, self.data, task_type="regression"
+        )
+        self.assertEqual(mock_select.call_args.kwargs["metric"], "rmse_val")
+        self.assertEqual(mock_select.call_args.kwargs["mode"], "min")
+
+        retrieve_n_init_best_models(
+            {"nn_class": self.result_grid}, self.data, task_type="classification"
+        )
+        self.assertEqual(
+            mock_select.call_args.kwargs["metric"], "roc_auc_macro_ovr_val"
+        )
+        self.assertEqual(mock_select.call_args.kwargs["mode"], "max")
 
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("pickle.dump")
@@ -678,15 +718,30 @@ class TestOneStandardErrorRule(unittest.TestCase):
         # Three configs: A best mean but high SE; B and C both inside the band.
         # Within the band, the simplest (highest alpha for linreg) should win.
         a = _make_mock_result(
-            {"rmse_val_mean": 0.45, "rmse_val_se": 0.05, "nb_features": 200},
+            {
+                "rmse_val_mean": 0.45,
+                "rmse_val_se": 0.05,
+                "nb_features": 200,
+                "model_path": "model.pkl",
+            },
             {"alpha": 0.001, "l1_ratio": 0.5},
         )
         b = _make_mock_result(
-            {"rmse_val_mean": 0.47, "rmse_val_se": 0.02, "nb_features": 180},
+            {
+                "rmse_val_mean": 0.47,
+                "rmse_val_se": 0.02,
+                "nb_features": 180,
+                "model_path": "model.pkl",
+            },
             {"alpha": 0.01, "l1_ratio": 0.5},
         )
         c = _make_mock_result(
-            {"rmse_val_mean": 0.49, "rmse_val_se": 0.01, "nb_features": 60},
+            {
+                "rmse_val_mean": 0.49,
+                "rmse_val_se": 0.01,
+                "nb_features": 60,
+                "model_path": "model.pkl",
+            },
             {"alpha": 1.0, "l1_ratio": 0.5},
         )
         rg = MagicMock()
@@ -698,11 +753,21 @@ class TestOneStandardErrorRule(unittest.TestCase):
     def test_picks_best_when_band_is_just_the_winner(self):
         # B is far worse than A (gap >> SE). Selector must keep A.
         a = _make_mock_result(
-            {"rmse_val_mean": 0.40, "rmse_val_se": 0.001, "nb_features": 100},
+            {
+                "rmse_val_mean": 0.40,
+                "rmse_val_se": 0.001,
+                "nb_features": 100,
+                "model_path": "model.pkl",
+            },
             {"alpha": 0.01},
         )
         b = _make_mock_result(
-            {"rmse_val_mean": 0.50, "rmse_val_se": 0.001, "nb_features": 50},
+            {
+                "rmse_val_mean": 0.50,
+                "rmse_val_se": 0.001,
+                "nb_features": 50,
+                "model_path": "model.pkl",
+            },
             {"alpha": 1.0},
         )
         rg = MagicMock()
@@ -717,6 +782,7 @@ class TestOneStandardErrorRule(unittest.TestCase):
                 "roc_auc_macro_ovr_val_mean": 0.85,
                 "roc_auc_macro_ovr_val_se": 0.04,
                 "nb_features": 200,
+                "model_path": "model.pkl",
             },
             {"C": 100.0},
         )
@@ -725,6 +791,7 @@ class TestOneStandardErrorRule(unittest.TestCase):
                 "roc_auc_macro_ovr_val_mean": 0.82,
                 "roc_auc_macro_ovr_val_se": 0.02,
                 "nb_features": 50,
+                "model_path": "model.pkl",
             },
             {"C": 0.01},  # smaller C = more regularised = simpler for logreg
         )
@@ -754,6 +821,7 @@ class TestOneStandardErrorRule(unittest.TestCase):
                 "rmse_val_mean": 0.42,
                 "rmse_val_se": 0.10,  # wide band: 0.42 + 0.10 covers 0.50 below
                 "nb_features": 200,
+                "model_path": "model.pkl",
             },
             {"alpha": 0.001, "l1_ratio": 0.5},
         )
@@ -765,6 +833,7 @@ class TestOneStandardErrorRule(unittest.TestCase):
                 "rmse_val_mean": 0.50,
                 "rmse_val_se": 0.02,
                 "nb_features": 60,
+                "model_path": "model.pkl",
             },
             {"alpha": 1.0, "l1_ratio": 0.5},
         )
@@ -773,7 +842,11 @@ class TestOneStandardErrorRule(unittest.TestCase):
         # is excluded from the band; the selector still treats it as a
         # candidate with se=0.0 but it isn't selected on simplicity grounds.
         single_split = _make_mock_result(
-            {"rmse_val": 0.55, "nb_features": 150},
+            {
+                "rmse_val": 0.55,
+                "nb_features": 150,
+                "model_path": "model.pkl",
+            },
             {"alpha": 0.01, "l1_ratio": 0.5},
         )
         rg = MagicMock()
@@ -820,12 +893,22 @@ class TestOneStandardErrorRule(unittest.TestCase):
         """
         # Mean=0.30 looks best, but SE=NaN means K-1 folds failed: unreliable.
         unreliable = _make_mock_result(
-            {"rmse_val_mean": 0.30, "rmse_val_se": float("nan"), "nb_features": 100},
+            {
+                "rmse_val_mean": 0.30,
+                "rmse_val_se": float("nan"),
+                "nb_features": 100,
+                "model_path": "model.pkl",
+            },
             {"alpha": 0.001, "l1_ratio": 0.5},
         )
         # Reliable K-fold winner with a real, finite SE.
         reliable_best = _make_mock_result(
-            {"rmse_val_mean": 0.42, "rmse_val_se": 0.02, "nb_features": 80},
+            {
+                "rmse_val_mean": 0.42,
+                "rmse_val_se": 0.02,
+                "nb_features": 80,
+                "model_path": "model.pkl",
+            },
             {"alpha": 1.0, "l1_ratio": 0.5},
         )
         rg = MagicMock()
@@ -842,11 +925,21 @@ class TestOneStandardErrorRule(unittest.TestCase):
         single-best lookup -- there is no reliable basis for the 1-SE rule.
         """
         a = _make_mock_result(
-            {"rmse_val_mean": 0.30, "rmse_val_se": float("nan"), "nb_features": 100},
+            {
+                "rmse_val_mean": 0.30,
+                "rmse_val_se": float("nan"),
+                "nb_features": 100,
+                "model_path": "model.pkl",
+            },
             {"alpha": 0.001},
         )
         b = _make_mock_result(
-            {"rmse_val_mean": 0.40, "rmse_val_se": float("nan"), "nb_features": 80},
+            {
+                "rmse_val_mean": 0.40,
+                "rmse_val_se": float("nan"),
+                "nb_features": 80,
+                "model_path": "model.pkl",
+            },
             {"alpha": 1.0},
         )
         rg = MagicMock()
@@ -1114,6 +1207,21 @@ class TestCheckpointlessTrialSelection(unittest.TestCase):
         chosen = _select_best_with_one_se(rg, "rmse_val", "min", "nn_reg")
         self.assertIs(chosen, deployable)
 
+    def test_raises_no_best_trial_when_deployable_trials_lack_metric(self):
+        # Deployable trials exist, but none carries the selection metric --
+        # e.g. the metric asked for does not match what the trials reported.
+        # Must raise the informative no-best-trial error, not crash with
+        # ``min() iterable argument is empty``.
+        deployable_keyless = _make_checkpoint_result(
+            {"rmse_val": 1.0, "rmse_val_mean": 1.0, "nb_features": 10},
+            {"max_depth": 4},
+            has_checkpoint=True,
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([deployable_keyless])
+        with self.assertRaisesRegex(RuntimeError, "No best trial found"):
+            _select_best_with_one_se(rg, "roc_auc_macro_ovr_val", "max", "nn_class")
+
     def test_raises_when_every_trial_lacks_a_checkpoint(self):
         a = _make_checkpoint_result(
             {"rmse_val": 1.0, "nb_features": 100},
@@ -1131,6 +1239,134 @@ class TestCheckpointlessTrialSelection(unittest.TestCase):
         rg.__iter__ = lambda self: iter([a, b])
         with self.assertRaises(RuntimeError):
             _select_best_with_one_se(rg, "rmse_val", "min", "xgb")
+
+    def test_pruned_sklearn_trial_without_model_path_excluded(self):
+        # A K-fold sklearn trial pruned by the scheduler (or stopped by the
+        # per-trial time cap) ends on a running aggregate: suffixed metric
+        # keys only, no ``model_path``, no checkpoint. Even with the best
+        # mean it must not be selectable -- its model was never persisted.
+        pruned = _make_checkpoint_result(
+            {
+                "rmse_val_mean": 0.10,
+                "rmse_val_se": 0.01,
+                "n_folds": 2,
+                "nb_features": 100,
+            },
+            {"alpha": 0.001, "l1_ratio": 0.5},
+            has_checkpoint=False,
+        )
+        completed = _make_checkpoint_result(
+            {
+                "rmse_val": 0.42,
+                "rmse_val_mean": 0.42,
+                "rmse_val_se": 0.02,
+                "nb_features": 80,
+                "model_path": "model.pkl",
+            },
+            {"alpha": 1.0, "l1_ratio": 0.5},
+            has_checkpoint=False,
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([pruned, completed])
+        rg.get_best_result.side_effect = AssertionError(
+            "must not fall through when a completed K-fold trial exists"
+        )
+        chosen = _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIs(chosen, completed)
+
+    def test_drop_checkpointless_skips_pruned_rows_without_warning(self):
+        # A pruned / time-capped K-fold xgb trial ends on a running aggregate
+        # (no bare metric key, no checkpoint). It must be skipped silently --
+        # the "crashed mid-training" warning is reserved for rows whose last
+        # report has final shape (bare metric present) but no checkpoint.
+        pruned = _make_checkpoint_result(
+            {"rmse_val_mean": 0.10, "rmse_val_se": 0.01, "nb_features": 10},
+            {"max_depth": 4},
+            has_checkpoint=False,
+        )
+        deployable = _make_checkpoint_result(
+            {"rmse_val": 0.42, "rmse_val_mean": 0.42, "nb_features": 10},
+            {"max_depth": 4},
+            has_checkpoint=True,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            kept = _drop_checkpointless_trials(
+                MagicMock(__iter__=lambda self: iter([pruned, deployable])),
+                "rmse_val",
+                "xgb",
+            )
+        self.assertEqual(kept, [deployable])
+
+    def test_crashed_kfold_trial_after_running_report_still_warns(self):
+        # A K-fold trial that crashed after a running-aggregate report has
+        # the same last-report shape as a pruned one (suffixed keys only, no
+        # checkpoint) -- but Ray recorded an error, so it must not disappear
+        # silently.
+        crashed = _make_checkpoint_result(
+            {"rmse_val_mean": 0.10, "rmse_val_se": 0.01, "nb_features": 10},
+            {"max_depth": 4},
+            has_checkpoint=False,
+            error="SIGSEGV",
+        )
+        deployable = _make_checkpoint_result(
+            {"rmse_val": 0.42, "rmse_val_mean": 0.42, "nb_features": 10},
+            {"max_depth": 4},
+            has_checkpoint=True,
+        )
+        rg = MagicMock(__iter__=lambda self: iter([crashed, deployable]))
+        with self.assertWarns(UserWarning):
+            kept = _drop_checkpointless_trials(rg, "rmse_val", "xgb")
+        self.assertEqual(kept, [deployable])
+
+    def test_all_trials_stopped_early_raises_actionable_error(self):
+        # Every trial stopped before its final report (e.g. an overly tight
+        # max_trial_duration_s): the error must point at the budget knobs,
+        # not claim the trials crashed with OOM/SIGSEGV.
+        capped = _make_checkpoint_result(
+            {
+                "rmse_val_mean": 0.10,
+                "rmse_val_se": 0.01,
+                "nb_features": 10,
+                "time_capped": True,
+            },
+            {"max_depth": 4},
+            has_checkpoint=False,
+        )
+        pruned = _make_checkpoint_result(
+            {"rmse_val_mean": 0.20, "rmse_val_se": 0.02, "nb_features": 10},
+            {"max_depth": 4},
+            has_checkpoint=False,
+        )
+        rg = MagicMock(__iter__=lambda self: iter([capped, pruned]))
+        with self.assertRaisesRegex(
+            RuntimeError, "stopped before their final report"
+        ) as ctx:
+            _drop_checkpointless_trials(rg, "rmse_val", "xgb")
+        self.assertIn("1 by max_trial_duration_s", str(ctx.exception))
+
+    def test_all_sklearn_trials_stopped_early_raises_actionable_error(self):
+        # Every linreg trial pruned/capped before its final report: Ray's
+        # opaque "No best trial found" must be preempted by the actionable
+        # budget/scheduler diagnosis.
+        pruned = _make_checkpoint_result(
+            {"rmse_val_mean": 0.10, "rmse_val_se": 0.01, "n_folds": 2},
+            {"alpha": 0.1},
+            has_checkpoint=False,
+        )
+        capped = _make_checkpoint_result(
+            {"rmse_val_mean": 0.20, "rmse_val_se": 0.02, "time_capped": True},
+            {"alpha": 1.0},
+            has_checkpoint=False,
+        )
+        rg = MagicMock()
+        rg.__iter__ = lambda self: iter([pruned, capped])
+        rg.get_best_result.side_effect = AssertionError(
+            "must diagnose early stops before deferring to get_best_result"
+        )
+        with self.assertRaisesRegex(RuntimeError, "stopped early") as ctx:
+            _select_best_with_one_se(rg, "rmse_val", "min", "linreg")
+        self.assertIn("1 by max_trial_duration_s", str(ctx.exception))
 
     def test_sklearn_selection_unaffected_by_checkpoint_filter(self):
         # sklearn / trac trainables never attach a checkpoint (their artifact is
