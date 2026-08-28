@@ -15,6 +15,7 @@ from ritme.evaluate_models import (
     _get_checkpoint_path,
     _select_best_with_one_se,
     _trial_simplicity_key,
+    build_tuned_model_from_result,
     get_data_processing,
     get_predictions,
     load_best_model,
@@ -1149,6 +1150,44 @@ class TestCheckpointlessTrialSelection(unittest.TestCase):
             metric="rmse_val", mode="min", scope="all"
         )
         self.assertIs(chosen, sentinel)
+
+
+class TestBuildTunedModelFromResult(unittest.TestCase):
+    @patch("ritme.evaluate_models.get_taxonomy")
+    @patch("ritme.evaluate_models.get_model")
+    @patch.object(TunedModel, "predict")
+    def test_builds_and_warms_model(self, mock_predict, mock_get_model, mock_get_tax):
+        mock_get_model.return_value = MagicMock()
+        mock_get_tax.return_value = pd.DataFrame()
+        result = MagicMock()
+        result.config = {"data_aggregation": None, "model": "linreg"}
+        result.path = "/nonexistent"
+        train_val = pd.DataFrame({"F1": [1.0], "target": [2.0]})
+
+        tmodel = build_tuned_model_from_result("linreg", result, train_val)
+
+        self.assertEqual(tmodel.model_type, "linreg")
+        self.assertEqual(tmodel.data_config, {"data_aggregation": None})
+        mock_predict.assert_called_once_with(train_val, "train")
+
+    @patch("ritme.evaluate_models.get_taxonomy")
+    @patch("ritme.evaluate_models.get_model")
+    @patch.object(TunedModel, "predict")
+    def test_trial_config_override(self, mock_predict, mock_get_model, mock_get_tax):
+        mock_get_model.return_value = MagicMock()
+        mock_get_tax.return_value = pd.DataFrame()
+        result = MagicMock()
+        result.config = {"trial_config": {"data_transform": "clr"}}
+        result.path = "/nonexistent"
+
+        tmodel = build_tuned_model_from_result(
+            "linreg",
+            result,
+            pd.DataFrame({"F1": [1.0]}),
+            trial_config={"data_transform": "clr", "alpha": 0.1},
+        )
+
+        self.assertEqual(tmodel.data_config, {"data_transform": "clr"})
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ from ritme.feature_space.aggregate_features import (
     agg_microbial_fts_taxonomy,
     aggregate_ft_by_taxonomy,
     aggregate_microbial_features,
+    build_taxonomy_mapping,
     extract_taxonomic_entity,
 )
 from ritme.feature_space.enrich_features import (
@@ -378,6 +379,32 @@ class TestAggregateMicrobialFeatures(unittest.TestCase):
             ValueError, "Method FancyMethod is not implemented yet."
         ):
             aggregate_microbial_features(self.ft, "FancyMethod", self.tax)
+
+
+class TestBuildTaxonomyMapping(unittest.TestCase):
+    def setUp(self):
+        self.tax = pd.DataFrame(
+            {
+                "Taxon": [
+                    "d__A; p__B; c__C; o__D; f__Lachnospiraceae; g__Blautia",
+                    "d__A; p__B; c__C; o__D; f__Lachnospiraceae; g__",
+                    "d__A; p__B; c__C; o__D; f__; g__",
+                ]
+            },
+            index=["F1", "F2", "F3"],
+        )
+
+    def test_mapping_labels_match_aggregation_columns(self):
+        ft = pd.DataFrame([[1.0, 2.0, 3.0]], columns=["F1", "F2", "F3"], index=["s1"])
+        mapping = build_taxonomy_mapping(self.tax, "genus")
+        agg = agg_microbial_fts_taxonomy(ft, "genus", self.tax)
+        self.assertEqual(sorted(set(mapping.values())), sorted(agg.columns))
+
+    def test_unknown_backoff_one_level(self):
+        mapping = build_taxonomy_mapping(self.tax, "genus")
+        self.assertEqual(mapping["F1"], "g__Blautia")
+        self.assertEqual(mapping["F2"], "g__unkn_f__Lachnospiraceae")
+        self.assertEqual(mapping["F3"], "g__unkn_f__unknown")
 
 
 class TestSelectMicrobialFeatures(unittest.TestCase):

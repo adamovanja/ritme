@@ -1,7 +1,9 @@
 repos:
   # Formatting scripts
   - repo: https://github.com/psf/black
-    rev: 23.1.0
+    # 23.1.0 cannot run on Python >= 3.12 (it uses the removed ast.Str in
+    # its AST-equivalence check), which breaks black-jupyter outright
+    rev: 24.10.0
     hooks:
       - id: black
         args: [ --safe, --quiet ]
@@ -20,6 +22,10 @@ repos:
     rev: 1.9.1
     hooks:
       - id: nbqa-ruff
+        # pinned to match the ruff hook below; unpinned, nbQA installs the
+        # latest ruff, whose far broader default rule set flags notebook
+        # idioms the repo's own ruff version does not
+        additional_dependencies: [ ruff==0.0.260 ]
 
   # Ruff linting other scripts
   - repo: https://github.com/charliermarsh/ruff-pre-commit

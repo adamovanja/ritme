@@ -22,6 +22,7 @@ from ray.air.integrations.mlflow import MLflowLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import ResultGrid
 from ray.tune.schedulers import AsyncHyperBandScheduler, HyperBandScheduler
+from ray.tune.search.basic_variant import BasicVariantGenerator
 from ray.tune.search.optuna import OptunaSearch
 
 from ritme.feature_space.utils import _PAST_SUFFIX_RE
@@ -707,6 +708,136 @@ def run_trials(
     _check_for_errors_in_trials(result, max_trial_failure_rate=max_trial_failure_rate)
 
     return result
+
+
+_ORIGINAL_BASIC_VARIANT_GET_STATE = BasicVariantGenerator.get_state
+
+
+def _get_state_without_trial_iter(self):
+    """Work around a Ray bug (ray==2.55.1): ``get_state()`` strips the
+    unpicklable ``_trial_generator`` but leaves ``_trial_iter`` (also a live
+    ``itertools.chain``), which crashes cloudpickle on the first
+    experiment-state checkpoint. Affects any Tuner without an explicit
+    ``search_alg``.
+    """
+    state = _ORIGINAL_BASIC_VARIANT_GET_STATE(self)
+    if state is not False:
+        state.pop("_trial_iter", None)
+    return state
+
+
+BasicVariantGenerator.get_state = _get_state_without_trial_iter
+
+
+def _fixed_config_trainable(
+    config: dict,
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: list,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
+    cpus_per_trial: int,
+    gpus_per_trial: int,
+    task_type: str,
+    k_folds: int,
+    nn_corn_max_levels: int,
+) -> None:
+    """Dispatch one fixed trial config to its model's trainable.
+
+    The inner config is passed by reference so in-trial mutations
+    (e.g. ``data_alr_denom_idx_map``) reach the reported result config.
+    """
+    inner = config["trial_config"]
+    MODEL_TRAINABLES[inner["model"]](
+        inner,
+        train_val=train_val,
+        target=target,
+        host_id=host_id,
+        stratify_by=stratify_by,
+        seed_data=seed_data,
+        seed_model=seed_model,
+        tax=tax,
+        tree_phylo=tree_phylo,
+        cpus_per_trial=cpus_per_trial,
+        gpus_per_trial=gpus_per_trial,
+        task_type=task_type,
+        k_folds=k_folds,
+        nn_corn_max_levels=nn_corn_max_levels,
+    )
+
+
+def retrain_fixed_configs(
+    trial_configs: list,
+    train_val: pd.DataFrame,
+    target: str,
+    host_id: str,
+    stratify_by: list,
+    seed_data: int,
+    seed_model: int,
+    tax: pd.DataFrame,
+    tree_phylo: skbio.TreeNode,
+    path2exp: str,
+    max_concurrent_trials: int,
+    task_type: str = "regression",
+    k_folds: int = 1,
+    nn_corn_max_levels: int = DEFAULT_NN_CORN_MAX_LEVELS,
+    resources: dict = None,
+) -> ResultGrid:
+    """Re-train an explicit list of trial configs: no search algorithm, no
+    scheduler (hence no pruning), same seeds and K folds as the original run.
+    """
+    if resources is None:
+        resources = _get_resources(max_concurrent_trials)
+
+    random.seed(seed_model)
+    np.random.seed(seed_model)
+    torch.manual_seed(seed_model)
+
+    init(address="local", include_dashboard=False, ignore_reinit_error=True)
+
+    metric, mode = TASK_METRICS[task_type]
+    cpus_per_trial = resources.get("cpu", 1)
+    gpus_per_trial = resources.get("gpu", 0)
+
+    analysis = tune.Tuner(
+        tune.with_resources(
+            tune.with_parameters(
+                _fixed_config_trainable,
+                train_val=train_val,
+                target=target,
+                host_id=host_id,
+                stratify_by=stratify_by,
+                seed_data=seed_data,
+                seed_model=seed_model,
+                tax=tax,
+                tree_phylo=tree_phylo,
+                cpus_per_trial=cpus_per_trial,
+                gpus_per_trial=gpus_per_trial,
+                task_type=task_type,
+                k_folds=k_folds,
+                nn_corn_max_levels=nn_corn_max_levels,
+            ),
+            resources,
+        ),
+        run_config=tune.RunConfig(
+            name="stability_retrain",
+            storage_path=os.path.abspath(path2exp),
+            checkpoint_config=tune.CheckpointConfig(
+                checkpoint_score_attribute=metric,
+                checkpoint_score_order=mode,
+                num_to_keep=3,
+            ),
+            failure_config=tune.FailureConfig(max_failures=2),
+        ),
+        param_space={"trial_config": tune.grid_search(trial_configs)},
+        tune_config=tune.TuneConfig(
+            max_concurrent_trials=max_concurrent_trials,
+        ),
+    )
+    return analysis.fit()
 
 
 def run_all_trials(

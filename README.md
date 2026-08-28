@@ -15,7 +15,7 @@ conda install -c adamova -c conda-forge -c bioconda -c pytorch ritme
 (If on a Apple Silicon chip, prefix the above installation with `CONDA_SUBDIR=osx-64` and run the following after activating the conda environnment: `conda config --env --set subdir osx-64`.)
 
 ## Usage
-*ritme* provides four main functions to prepare your data, find the best model configuration (feature + model class) for the specified target, evaluate the best model configuration on a test set and explain feature importance with SHAP. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function run `ritme <function-name> --help` or have a look at the examples in the notebook [`experiments/ritme_example_usage.ipynb`](https://github.com/adamovanja/ritme/blob/main/experiments/ritme_example_usage.ipynb).
+*ritme* provides five main functions to prepare your data, find the best model configuration (feature + model class) for the specified target, evaluate the best model configuration on a test set, explain feature importance with SHAP, and check how stable that importance is across near-optimal trials. All of them can be run in the CLI or via the Python API. To see the arguments needed for each function run `ritme <function-name> --help` or have a look at the examples in the notebook [`experiments/ritme_example_usage.ipynb`](https://github.com/adamovanja/ritme/blob/main/experiments/ritme_example_usage.ipynb).
 
 | *ritme* function       | Description                                                                      |
 |------------------------|----------------------------------------------------------------------------------|
@@ -23,6 +23,7 @@ conda install -c adamova -c conda-forge -c bioconda -c pytorch ritme
 | find_best_model_config | Find the best model configuration (incl. feature representation and model class) |
 | evaluate_tuned_models  | Evaluate the best model configuration on the complete train and a left-out test set                     |
 | explain_features       | Compute feature importance for a specified best tuned model — coefficients for linear/sparse-linear models (`linreg`, `logreg`, `trac`), SHAP for tree- and neural-network-based models |
+| explain_stability       | Compare the deployed model's top feature ranks against other trials that perform indistinguishably well |
 
 ## Preprocess your dataset and split it into train-test with `split_train_test`
 
@@ -142,6 +143,31 @@ Via the CLI, artifacts are saved in the experiment directory. For coefficient-be
 ```shell
 ritme explain-features \
   ritme_example_logs/example_linreg linreg data_splits/train_val.pkl data_splits/test.pkl
+```
+
+## Check feature-importance stability with `explain_stability`
+
+Near-optimal trials can rely on different feature sets (the Rashomon effect), so one model's importance ranking is not necessarily robust. `explain_stability` selects the trials whose cross-validation performance is indistinguishable from the deployed model's (within `band_se_factor` standard errors either way, capped at `max_trials`), re-trains them deterministically, and reports where the deployed model's top features rank in each.
+
+The deployed model (the *reference*) is the trial `find_best_model_config` ships: the simplest one within one standard error of the best, which is not necessarily the best performer.
+
+Since trials may use different feature engineering, features are matched by their source features rather than by column name, and every comparison is labelled: unchanged, contained in a coarser taxon, split into finer parts, lumped into the low-abundance bucket, absent, or not comparable (`ilr`/`trac` share no feature namespace).
+
+```python
+from ritme.explain_stability import explain_stability
+
+manifest, importances, ranks, agreement, fig = explain_stability(
+    exp_config, trial_records, train_val, test, model_type="linreg", tax=tax
+)
+```
+
+Requires a K-fold experiment (`k_folds > 1`). Via the CLI, `stability_<model_type>/` is written into the experiment directory, holding the trial manifest, per-trial importances, the per-feature rank comparison, the per-trial top-N containment, and the figure:
+
+```shell
+ritme explain-stability \
+  ritme_example_logs/example_linreg linreg \
+  data_splits/train_val.pkl data_splits/test.pkl \
+  --path-to-tax data/movpic_taxonomy.tsv
 ```
 
 ## Model tracking
