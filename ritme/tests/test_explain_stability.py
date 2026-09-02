@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from functools import partial
 from unittest.mock import MagicMock, patch
 
 import matplotlib
@@ -11,12 +12,14 @@ import shap
 from matplotlib.colors import to_rgba
 from matplotlib.patches import Rectangle
 
+from ritme.evaluate_models import _select_best_with_one_se
 from ritme.explain_stability import (
     _CELL_LEGEND_ENTRIES,
     _legend_max_chars,
     _pack_legend_lines,
     _parse_param_value,
     _rank_cell_text,
+    _reproducible_trials_in_scope,
     align_feature_ranks,
     cli_explain_stability,
     compute_normalized_importance,
@@ -197,6 +200,33 @@ class TestSelectBandTrials(unittest.TestCase):
             )
         self.assertEqual(len(band), 1)
 
+    def test_max_trials_cap_keeps_anchor_row(self):
+        # the anchor is the worst performer of its own symmetric band, so a
+        # best-first cut would drop the very trial the band is built around.
+        records = pd.DataFrame(
+            {
+                "run_id": ["t1", "t2", "t3", "anchor"],
+                "experiment_name": ["linreg"] * 4,
+                "status": ["FINISHED"] * 4,
+                "params.model": ["linreg"] * 4,
+                "metrics.rmse_val_mean": [3.0, 3.1, 3.2, 3.3],
+                "metrics.rmse_val_se": [0.1, 0.1, 0.1, 0.4],
+                "metrics.n_folds": [5.0] * 4,
+                "metrics.nb_features": [20.0, 20.0, 20.0, 5.0],
+            }
+        )
+        with self.assertWarns(UserWarning):
+            band = select_band_trials(
+                records,
+                "linreg",
+                "rmse_val",
+                "min",
+                max_trials=2,
+                anchor_run_id="anchor",
+                symmetric=True,
+            )
+        self.assertEqual(list(band["run_id"]), ["t1", "anchor"])
+
     def test_unknown_scope_raises(self):
         with self.assertRaises(ValueError):
             select_band_trials(_records_df(), "trac", "rmse_val", "min")
@@ -220,6 +250,16 @@ class TestSelectReferenceRunId(unittest.TestCase):
         records.loc[records["run_id"] == "r2", "metrics.nb_features"] = 2.0
         band = select_band_trials(records, "linreg", "rmse_val", "min")
         self.assertEqual(select_reference_run_id(band, "rmse_val", "min"), "r2")
+
+    def test_best_mean_among_per_type_winners_wins(self):
+        records = _two_type_records()
+        pool = _reproducible_trials_in_scope(records, "all", "rmse_val")
+        per_type = {
+            model_type: _deployed_run_id(records, model_type, "rmse_val", "min")
+            for model_type in ["linreg", "xgb"]
+        }
+        self.assertEqual(per_type, {"linreg": "l_simple", "xgb": "x1"})
+        self.assertEqual(select_reference_run_id(pool, "rmse_val", "min"), "x1")
 
 
 class TestComputeNormalizedImportance(unittest.TestCase):
@@ -892,6 +932,102 @@ class TestPlotStability(unittest.TestCase):
         plt.close(fig)
 
 
+def _one_se_band_records():
+    # four linreg trials inside the best trial's (b1, se=0.5) 1-SE band; the
+    # simplest one -- the trial find_best_model_config deploys -- has the
+    # worst mean, so any best-first truncation drops it.
+    return pd.DataFrame(
+        {
+            "run_id": ["b1", "b2", "b3", "simple"],
+            "experiment_name": ["linreg"] * 4,
+            "status": ["FINISHED"] * 4,
+            "params.model": ["linreg"] * 4,
+            "metrics.rmse_val_mean": [3.0, 3.05, 3.1, 3.4],
+            "metrics.rmse_val_se": [0.5, 0.1, 0.1, 0.5],
+            "metrics.n_folds": [5.0] * 4,
+            "metrics.nb_features": [40.0, 30.0, 20.0, 5.0],
+        }
+    )
+
+
+def _two_type_records():
+    # linreg's 1-SE winner is its simplest trial (l_simple, mean 3.4); xgb's
+    # is its only trial (x1, mean 3.3). The best mean across those two
+    # deployed trials is x1, so the reference must be x1 -- even though a
+    # best-first candidate band would hold linreg trials only.
+    return pd.DataFrame(
+        {
+            "run_id": ["l1", "l2", "x1", "l_simple"],
+            "experiment_name": ["linreg", "linreg", "xgb", "linreg"],
+            "status": ["FINISHED"] * 4,
+            "params.model": ["linreg", "linreg", "xgb", "linreg"],
+            "metrics.rmse_val_mean": [3.0, 3.05, 3.3, 3.4],
+            "metrics.rmse_val_se": [0.5, 0.1, 0.2, 0.5],
+            "metrics.n_folds": [5.0] * 4,
+            "metrics.nb_features": [40.0, 30.0, 100.0, 5.0],
+        }
+    )
+
+
+def _deployed_run_id(records, model_type, metric, mode):
+    # the trial find_best_model_config deploys for this model type: the 1-SE
+    # winner over that type's full result grid.
+    of_type = filter_reproducible_trials(records, metric)
+    of_type = of_type[of_type["experiment_name"] == model_type]
+    results = []
+    for _, row in of_type.iterrows():
+        result = MagicMock()
+        result.metrics = {
+            f"{metric}_mean": row[f"metrics.{metric}_mean"],
+            f"{metric}_se": row[f"metrics.{metric}_se"],
+            "nb_features": row["metrics.nb_features"],
+        }
+        result.config = reconstruct_trial_config(row)
+        results.append(result)
+    chosen = _select_best_with_one_se(results, metric, mode, model_type)
+    return chosen.config["mlflow_run_id"]
+
+
+def _retrain_results(means, trial_configs, *args, **kwargs):
+    # stand-in for retrain_fixed_configs: one successful result per requested
+    # config, echoing the logged mean.
+    results = []
+    for config in trial_configs:
+        result = MagicMock()
+        result.error = None
+        result.config = {"trial_config": config}
+        result.metrics = {"rmse_val_mean": means[config["mlflow_run_id"]]}
+        results.append(result)
+    return results
+
+
+def _run_explain_stability(
+    records, mock_retrain, mock_imp, mock_prov, mock_plot, model_type="linreg", **kwargs
+):
+    means = dict(zip(records["run_id"], records["metrics.rmse_val_mean"]))
+    mock_retrain.side_effect = partial(_retrain_results, means)
+    mock_imp.return_value = _imp(["clr_F1"])
+    mock_prov.return_value = {
+        "clr_F1": FeatureProvenance("clr_F1", "taxon", "t0", frozenset({"F1"}))
+    }
+    mock_plot.return_value = MagicMock()
+    exp_config = {
+        "task_type": "regression",
+        "target": "y",
+        "group_by_column": None,
+        "seed_data": 1,
+        "seed_model": 2,
+    }
+    return explain_stability(
+        exp_config,
+        records,
+        train_val=pd.DataFrame({"F1": [1.0], "y": [2.0]}),
+        test=pd.DataFrame({"F1": [1.0], "y": [2.0]}),
+        model_type=model_type,
+        **kwargs,
+    )
+
+
 class TestExplainStability(unittest.TestCase):
     @patch("ritme.explain_stability.plot_stability")
     @patch("ritme.explain_stability.build_provenance_map")
@@ -1075,6 +1211,93 @@ class TestExplainStability(unittest.TestCase):
                 model_type="linreg",
                 tax=tax,
             )
+
+    @patch("ritme.explain_stability.plot_stability")
+    @patch("ritme.explain_stability.build_provenance_map")
+    @patch("ritme.explain_stability.compute_normalized_importance")
+    @patch("ritme.explain_stability.build_tuned_model_from_result")
+    @patch("ritme.explain_stability.retrain_fixed_configs")
+    def test_reference_is_deployed_winner_beyond_max_trials(
+        self, mock_retrain, mock_build, mock_imp, mock_prov, mock_plot
+    ):
+        # more trials than max_trials lie in the 1-SE band and the deployed
+        # (simplest) one has the worst mean: it must still be the reference.
+        records = _one_se_band_records()
+        deployed = _deployed_run_id(records, "linreg", "rmse_val", "min")
+        self.assertEqual(deployed, "simple")
+
+        with self.assertWarns(UserWarning):
+            manifest, *_ = _run_explain_stability(
+                records, mock_retrain, mock_imp, mock_prov, mock_plot, max_trials=2
+            )
+
+        self.assertEqual(
+            manifest.loc[manifest["is_reference"], "run_id"].tolist(), [deployed]
+        )
+
+    @patch("ritme.explain_stability.plot_stability")
+    @patch("ritme.explain_stability.build_provenance_map")
+    @patch("ritme.explain_stability.compute_normalized_importance")
+    @patch("ritme.explain_stability.build_tuned_model_from_result")
+    @patch("ritme.explain_stability.retrain_fixed_configs")
+    def test_reference_independent_of_band_se_factor(
+        self, mock_retrain, mock_build, mock_imp, mock_prov, mock_plot
+    ):
+        # band_se_factor sizes the plotted band only; the reference stays the
+        # deployed trial.
+        records = _one_se_band_records()
+        manifest, *_ = _run_explain_stability(
+            records, mock_retrain, mock_imp, mock_prov, mock_plot, band_se_factor=0.1
+        )
+        self.assertEqual(
+            manifest.loc[manifest["is_reference"], "run_id"].tolist(), ["simple"]
+        )
+
+    @patch("ritme.explain_stability.plot_stability")
+    @patch("ritme.explain_stability.build_provenance_map")
+    @patch("ritme.explain_stability.compute_normalized_importance")
+    @patch("ritme.explain_stability.build_tuned_model_from_result")
+    @patch("ritme.explain_stability.retrain_fixed_configs")
+    def test_truncated_band_keeps_reference_row(
+        self, mock_retrain, mock_build, mock_imp, mock_prov, mock_plot
+    ):
+        # the symmetric band around the reference holds four trials; capped at
+        # two it must keep the reference (worst mean) plus the best performer.
+        records = _one_se_band_records()
+        with self.assertWarns(UserWarning):
+            manifest, *_ = _run_explain_stability(
+                records, mock_retrain, mock_imp, mock_prov, mock_plot, max_trials=2
+            )
+
+        self.assertEqual(manifest["run_id"].tolist(), ["b1", "simple"])
+        self.assertEqual(manifest["is_reference"].tolist(), [False, True])
+        self.assertEqual(manifest["is_best"].tolist(), [True, False])
+        self.assertEqual(len(mock_retrain.call_args.args[0]), 2)
+
+    @patch("ritme.explain_stability.plot_stability")
+    @patch("ritme.explain_stability.build_provenance_map")
+    @patch("ritme.explain_stability.compute_normalized_importance")
+    @patch("ritme.explain_stability.build_tuned_model_from_result")
+    @patch("ritme.explain_stability.retrain_fixed_configs")
+    def test_reference_across_model_types_is_a_deployed_winner(
+        self, mock_retrain, mock_build, mock_imp, mock_prov, mock_plot
+    ):
+        # scoped to "all", the reference is the best-scoring of the per-type
+        # deployed trials -- not the simplest trial of whichever type happens
+        # to hold the best performer.
+        records = _two_type_records()
+        manifest, *_ = _run_explain_stability(
+            records,
+            mock_retrain,
+            mock_imp,
+            mock_prov,
+            mock_plot,
+            model_type="all",
+            max_trials=2,
+        )
+        self.assertEqual(
+            manifest.loc[manifest["is_reference"], "run_id"].tolist(), ["x1"]
+        )
 
     def test_trac_without_tree_raises(self):
         records = _records_df()
