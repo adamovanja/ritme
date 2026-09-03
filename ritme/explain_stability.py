@@ -116,6 +116,40 @@ def filter_reproducible_trials(records: pd.DataFrame, metric: str) -> pd.DataFra
     return records[mask].copy()
 
 
+@helper_function
+def _reproducible_trials_in_scope(
+    records: pd.DataFrame, model_type: str, metric: str
+) -> pd.DataFrame:
+    """Reproducible trials of the requested model type ('all' = every type)."""
+    if model_type != "all":
+        available = sorted(records["experiment_name"].unique())
+        if model_type not in available:
+            raise ValueError(
+                f"Model type {model_type!r} not found in trial records. "
+                f"Available: {available} (or 'all')."
+            )
+        records = records[records["experiment_name"] == model_type]
+
+    reproducible = filter_reproducible_trials(records, metric)
+    if reproducible.empty:
+        raise ValueError(
+            f"No completed K-fold trial with finite {metric}_mean/_se found. "
+            "Stability analysis requires a K-fold run (k_folds > 1)."
+        )
+    return reproducible
+
+
+@helper_function
+def _cap_band_keeping_anchor(
+    band: pd.DataFrame, anchor_idx, max_trials: int
+) -> pd.DataFrame:
+    """Keep the anchor row plus the ``max_trials - 1`` best other rows of a
+    best-first sorted band, preserving that order."""
+    is_anchor = band.index == anchor_idx
+    keep = is_anchor | ((~is_anchor).cumsum() <= max_trials - 1)
+    return band[keep]
+
+
 @main_function
 def select_band_trials(
     records: pd.DataFrame,
@@ -135,30 +169,18 @@ def select_band_trials(
     the single best-performing trial and the test is the classic one-sided
     1-SE rule (``mean - anchor_mean <= factor * anchor_se``) — it only
     bounds how much *worse* a trial may be than the anchor, never how much
-    better. This is the candidate pool used to choose the deployed
-    reference model, matching ``evaluate_models._select_best_with_one_se``.
+    better.
 
     Pass a specific ``anchor_run_id`` (typically the reference itself) with
     ``symmetric=True`` to instead select trials whose performance is
     indistinguishable from that trial in *either* direction
     (``|mean - anchor_mean| <= factor * anchor_se``) — the set that is
     retrained and plotted.
-    """
-    if model_type != "all":
-        available = sorted(records["experiment_name"].unique())
-        if model_type not in available:
-            raise ValueError(
-                f"Model type {model_type!r} not found in trial records. "
-                f"Available: {available} (or 'all')."
-            )
-        records = records[records["experiment_name"] == model_type]
 
-    reproducible = filter_reproducible_trials(records, metric)
-    if reproducible.empty:
-        raise ValueError(
-            f"No completed K-fold trial with finite {metric}_mean/_se found. "
-            "Stability analysis requires a K-fold run (k_folds > 1)."
-        )
+    A band larger than ``max_trials`` is cut to the anchor plus the best
+    other trials.
+    """
+    reproducible = _reproducible_trials_in_scope(records, model_type, metric)
 
     sign = 1 if mode == "min" else -1
     means = sign * reproducible[f"metrics.{metric}_mean"]
@@ -182,10 +204,10 @@ def select_band_trials(
     band = band.sort_values(f"metrics.{metric}_mean", ascending=(mode == "min"))
     if len(band) > max_trials:
         warnings.warn(
-            f"Band holds {len(band)} trials; keeping the {max_trials} best "
-            f"(raise max_trials to include more)."
+            f"Band holds {len(band)} trials; keeping the anchor and the "
+            f"{max_trials - 1} best others (raise max_trials to include more)."
         )
-        band = band.head(max_trials)
+        band = _cap_band_keeping_anchor(band, anchor_idx, max_trials)
     return band.reset_index(drop=True)
 
 
@@ -208,18 +230,15 @@ def _one_se_winner_run_id(band_of_type: pd.DataFrame, metric: str, mode: str) ->
 
 
 @main_function
-def select_reference_run_id(band: pd.DataFrame, metric: str, mode: str) -> str:
-    """Applies ritme's deployment rule (per model type the 1-SE-rule winner,
-    then the winner with the best mean across types) to the candidate band.
-
-    Can differ from the trial ``find_best_model_config`` deployed when
-    ``max_trials`` truncated the candidate band: truncation keeps the best
-    performers, while the 1-SE rule picks the simplest trial.
+def select_reference_run_id(trials: pd.DataFrame, metric: str, mode: str) -> str:
+    """Applies ritme's deployment rule to the reproducible trials in scope:
+    per model type the 1-SE-rule winner (the trial ``find_best_model_config``
+    deploys), then the winner with the best mean across types.
     """
     sign = 1 if mode == "min" else -1
     winners = {
         _one_se_winner_run_id(group, metric, mode): group
-        for _, group in band.groupby("experiment_name")
+        for _, group in trials.groupby("experiment_name")
     }
     winner_means = {
         run_id: sign
@@ -646,20 +665,14 @@ def explain_stability(
     Returns ``(manifest, importances_long, ranks, agreement, figure)``.
     """
     metric, mode = TASK_METRICS[exp_config.get("task_type", "regression")]
-    # Candidate pool for picking the reference, mirroring
-    # evaluate_models._select_best_with_one_se.
-    candidate_band = select_band_trials(
-        trial_records,
-        model_type,
-        metric,
-        mode,
-        band_se_factor=band_se_factor,
-        max_trials=max_trials,
-    )
-    reference_run_id = select_reference_run_id(candidate_band, metric, mode)
+    # The reference is the trial find_best_model_config deploys for this
+    # scope, so it is picked from the full pool of reproducible trials:
+    # neither band_se_factor nor max_trials may narrow that pool.
+    trials = _reproducible_trials_in_scope(trial_records, model_type, metric)
+    reference_run_id = select_reference_run_id(trials, metric, mode)
 
-    reference_model = candidate_band.loc[
-        candidate_band["run_id"] == reference_run_id, "experiment_name"
+    reference_model = trials.loc[
+        trials["run_id"] == reference_run_id, "experiment_name"
     ].iloc[0]
     if reference_model == "trac":
         raise ValueError(
@@ -843,9 +856,9 @@ def cli_explain_stability(
         path_to_tree_phylo: Path to a phylogeny Newick file. Required when
             the band includes trac.
         band_se_factor: Half-width of the comparable-performance band, in
-            units of the *reference* trial's standard error (the same factor
-            is applied to the best trial's SE when picking the reference).
-        max_trials: Maximum number of band trials to retrain.
+            units of the reference trial's standard error.
+        max_trials: Maximum number of band trials to retrain; the reference
+            trial is always among them.
         top_n: Number of the reference model's top features to compare. Also
             sets the figure's colour-scale clamp at ``2 * top_n``.
         max_background_samples: If set, subsample the SHAP background to
