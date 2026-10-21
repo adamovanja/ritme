@@ -5,8 +5,7 @@ authors:
     given-names: Anja
     orcid: https://orcid.org/0000-0002-7506-1583
 title: "ritme"
-# set by .github/workflows/sync_citation_version.yml on each release
-version: 1.4.4
+version: 1.2.8
 doi: 10.5281/zenodo.14149081
 url: "https://github.com/adamovanja/ritme"
 preferred-citation:
