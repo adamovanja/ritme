@@ -1,0 +1,36 @@
+name: Sync CITATION.cff version
+
+# keeps the top-level `version` in CITATION.cff equal to the newest published
+# (non-pre-release) GitHub release
+on:
+  release:
+    types: [published]
+
+# serialize runs so that quick successive releases cannot push out of order
+concurrency:
+  group: sync-citation-version
+
+jobs:
+  sync-citation-version:
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Set version from the release tag
+        run: python3 ci/update_citation.py CITATION.cff "$RELEASE_TAG"
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet -- CITATION.cff; then
+            echo "CITATION.cff already at $RELEASE_TAG"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "MAINT: Set CITATION.cff version to ${RELEASE_TAG#v}" -- CITATION.cff
+          git push origin main
