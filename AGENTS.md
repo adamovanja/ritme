@@ -8,7 +8,7 @@ Guidelines for AI coding agents working on this repository.
 
 **ritme** is a Python package for finding the best microbial feature representation and model algorithm for a predictive regression task on next-generation sequencing data. Microbial features are engineered accounting for their statistical characteristics (compositionality, high dimensionality, hierarchical relationships, sparsity).
 
-The software (ritme v1.2.8) and its implications are described in this preprint: https://www.biorxiv.org/content/10.64898/2025.12.08.693045v2.abstract
+The software and its implications are described in this publication: https://doi.org/10.1016/j.patter.2026.101731
 
 A high-level overview of the package functionality is in [`README.md`](README.md).
 
