@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 
 from ritme.feature_space.aggregate_features import aggregate_microbial_features
-from ritme.feature_space.enrich_features import enrich_features
+from ritme.feature_space.enrich_features import enrich_features, is_categorical_feature
 from ritme.feature_space.select_features import select_microbial_features
 from ritme.feature_space.transform_features import (
     _find_most_nonzero_feature_idx,
@@ -243,7 +243,7 @@ def _stash_enrich_categories(config: dict, train_val: pd.DataFrame) -> None:
         if feat not in train_val.columns:
             continue
         col = train_val[feat]
-        if isinstance(col.dtype, pd.CategoricalDtype) or col.dtype == object:
+        if is_categorical_feature(col):
             universes[feat] = sorted(col.dropna().unique().tolist())
     if universes:
         config["_enrich_categories"] = universes

@@ -15,6 +15,17 @@ def compute_shannon_diversity(
     return pd.Series(entropy, index=df.index)
 
 
+def is_categorical_feature(col: pd.Series) -> bool:
+    """Whether a metadata column is one-hot encoded rather than used as numeric.
+
+    Covers categorical, ``object`` and pandas string dtypes (``str`` is the
+    default for string columns from pandas 3 onwards).
+    """
+    return isinstance(col.dtype, pd.CategoricalDtype) or pd.api.types.is_string_dtype(
+        col.dtype
+    )
+
+
 def enrich_features(
     train_val_raw: pd.DataFrame,
     microbial_ft_ls: list,
@@ -64,7 +75,7 @@ def enrich_features(
             universes = config.get("_enrich_categories") or {}
             for feat in config["data_enrich_with"]:
                 col = train_val_raw[feat]
-                if isinstance(col.dtype, pd.CategoricalDtype) or col.dtype == object:
+                if is_categorical_feature(col):
                     categories = universes.get(feat)
                     if categories is not None:
                         col = col.astype(pd.CategoricalDtype(categories=categories))
