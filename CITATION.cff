@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use ritme in your research, please cite it using:\nAdamov, A., Mueller, C. L., & Bokulich, N. (2026). Target-driven optimization of feature representation and model selection for microbiome sequencing data with ritme. Patterns. https://doi.org/10.1016/j.patter.2026.101731"
+message: "If you use ritme in your research, please cite it using:\nAdamov, A., Mueller, C. L., & Bokulich, N. (2026). Target-driven optimization of feature representation and model selection for microbiome sequencing data with ritme. Patterns. https://www.cell.com/patterns/fulltext/S2666-3899(26)00240-0"
 authors:
   - family-names: Adamov
     given-names: Anja
@@ -21,4 +21,4 @@ preferred-citation:
   year: 2026
   journal: Patterns
   doi: 10.1016/j.patter.2026.101731
-  url: "https://doi.org/10.1016/j.patter.2026.101731"
+  url: "https://www.cell.com/patterns/fulltext/S2666-3899(26)00240-0"
