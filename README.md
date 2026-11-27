@@ -1,5 +1,5 @@
 # ritme
-[![DOI](https://img.shields.io/badge/DOI-10.64898%2F2025.12.08.693045-B31B1B.svg)](https://doi.org/10.64898/2025.12.08.693045)
+[![DOI](https://img.shields.io/badge/DOI-10.1016%2Fj.patter.2026.101731-B31B1B.svg)](https://doi.org/10.1016/j.patter.2026.101731)
 [![DOI](https://zenodo.org/badge/601045059.svg)](https://doi.org/10.5281/zenodo.14149081)
 ![CI](https://github.com/adamovanja/ritme/actions/workflows/ci.yml/badge.svg)
 [![codecov](https://codecov.io/gh/adamovanja/ritme/graph/badge.svg?token=VQ4D7FXMCB)](https://codecov.io/gh/adamovanja/ritme)
@@ -219,7 +219,7 @@ The feature table (`.qza`) is required; taxonomy, phylogeny and metadata are opt
 ## Citation
 If you use *ritme* in your research, please cite it using:
 
-Adamov, A., Mueller, C. L., & Bokulich, N. (2025). Target-driven optimization of feature representation and model selection for microbiome sequencing data with ritme. bioRxiv, 2025.12.08.693045. https://doi.org/10.64898/2025.12.08.693045
+Adamov, A., Mueller, C. L., & Bokulich, N. (2026). Target-driven optimization of feature representation and model selection for microbiome sequencing data with ritme. Patterns. https://doi.org/10.1016/j.patter.2026.101731
 
 ## Contact
 In case of questions or comments feel free to raise an issue in this repository.

@@ -25,6 +25,7 @@ from ritme.feature_space._process_train import (
     _apply_frozen_selection,
     _encode_target,
     _engineer_features,
+    _stash_enrich_categories,
     process_train,
     process_train_kfold,
 )
@@ -38,6 +39,7 @@ from ritme.feature_space.aggregate_features import (
 from ritme.feature_space.enrich_features import (
     compute_shannon_diversity,
     enrich_features,
+    is_categorical_feature,
 )
 from ritme.feature_space.select_features import (
     find_features_to_group_by_abundance_ith,
@@ -325,8 +327,7 @@ class TestAggregateMicrobialFeatures(unittest.TestCase):
 
     def test_aggregate_ft_by_taxonomy(self):
         # expected
-        exp_ft = self.ft.copy()
-        exp_ft = exp_ft.groupby(self.tax_dict_class, axis=1).sum()
+        exp_ft = self.ft.T.groupby(self.tax_dict_class).sum().T
         # observed
         obs_ft = aggregate_ft_by_taxonomy(self.ft, self.tax_dict_class)
 
@@ -841,6 +842,70 @@ class TestEnrichFeatures(unittest.TestCase):
         self.assertListEqual(val_out["md_cat_b"].tolist(), [0.0, 0.0])
         self.assertListEqual(val_out["md_cat_c"].tolist(), [1.0, 0.0])
         self.assertListEqual(val_out["md_cat_d"].tolist(), [0.0, 1.0])
+
+    @parameterized.expand(
+        [
+            ("object", object),
+            ("string_pd_na", pd.StringDtype()),
+            # default dtype of string columns from pandas 3 onwards
+            ("str_np_nan", pd.StringDtype(na_value=np.nan)),
+            ("category", "category"),
+        ]
+    )
+    def test_is_categorical_feature_string_like(self, _name, dtype):
+        self.assertTrue(is_categorical_feature(pd.Series(["a", "b"], dtype=dtype)))
+
+    @parameterized.expand(
+        [("int", [1, 2]), ("float", [1.0, 2.0]), ("bool", [True, False])]
+    )
+    def test_is_categorical_feature_numeric(self, _name, values):
+        self.assertFalse(is_categorical_feature(pd.Series(values)))
+
+    def test_enrich_features_metadata_str_dtype_categorical(self):
+        microbial_fts = ["F1", "F2", "F3", "F4"]
+        config = {"data_enrich": "metadata_only", "data_enrich_with": ["md1"]}
+        train_val = self.train_val.astype({"md1": pd.StringDtype(na_value=np.nan)})
+
+        exp_df = self.train_val_t.copy()
+        exp_df["md1_b"] = [0.0, 1.0, 0.0]
+        exp_df["md1_c"] = [0.0, 0.0, 1.0]
+
+        obs_other_ft_ls, obs_df = enrich_features(
+            train_val, microbial_fts, self.train_val_t, config
+        )
+
+        assert_frame_equal(exp_df, obs_df)
+        self.assertEqual(["md1_b", "md1_c"], obs_other_ft_ls)
+
+
+class TestStashEnrichCategories(unittest.TestCase):
+    @parameterized.expand(
+        [
+            ("object", object),
+            ("str_np_nan", pd.StringDtype(na_value=np.nan)),
+            ("category", "category"),
+        ]
+    )
+    def test_stashes_sorted_universe_of_categorical_columns(self, _name, dtype):
+        train_val = pd.DataFrame(
+            {
+                "md_cat": pd.Series(["b", "a", None, "b"], dtype=dtype),
+                "md_num": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        config = {"data_enrich_with": ["md_cat", "md_num"]}
+
+        _stash_enrich_categories(config, train_val)
+
+        self.assertEqual({"md_cat": ["a", "b"]}, config["_enrich_categories"])
+
+    def test_no_stash_for_numeric_only_columns(self):
+        train_val = pd.DataFrame({"md_num": [1.0, 2.0]})
+        config = {"data_enrich_with": ["md_num"]}
+
+        _stash_enrich_categories(config, train_val)
+
+        self.assertNotIn("_enrich_categories", config)
 
 
 class TestProcessTrain(unittest.TestCase):
